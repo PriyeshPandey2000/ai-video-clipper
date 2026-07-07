@@ -1,7 +1,16 @@
 import { ipcMain, BrowserWindow, app } from "electron"
 import { join } from "path"
 import { copyFile, mkdir } from "fs/promises"
-import { getDb, projects, words, segments, clips, eq, desc } from "@video-editor/database"
+import {
+  getDb,
+  projects,
+  words,
+  segments,
+  clips,
+  aiOutputs,
+  eq,
+  desc,
+} from "@video-editor/database"
 import { generateProxy, extractAudio, resolveFfmpegBinary } from "@video-editor/ffmpeg"
 import {
   downloadModel,
@@ -12,7 +21,18 @@ import {
 import type { WhisperModel } from "@video-editor/types"
 import { generateId, now } from "@video-editor/utils"
 import type { PipelineProgress, PipelineStage } from "@video-editor/types"
-import { whisperToWords, detectFillerWords, detectSilences } from "@video-editor/transcript"
+import {
+  whisperToWords,
+  detectFillerWords,
+  detectSilences,
+  wordsToPlainText,
+} from "@video-editor/transcript"
+import {
+  createAiClient,
+  selectClips,
+  generateBlogPost,
+  generateSocialCaptions,
+} from "@video-editor/ai"
 
 function getResourcesPath(): string {
   return app.isPackaged ? process.resourcesPath : join(__dirname, "../../../../resources")
@@ -174,6 +194,64 @@ export function registerIpcHandlers(): void {
       const silenceSegments = detectSilences(wordRows, projectId)
       if (silenceSegments.length > 0) {
         db.insert(segments).values(silenceSegments).run()
+      }
+
+      // ── AI content generation stage ──────────────────────────────────────
+      try {
+        const client = createAiClient()
+
+        const plainText = wordsToPlainText(wordRows)
+
+        sendProgress(projectId, "generating_clips", 0.1, "Analyzing transcript for clips")
+        const clipSuggestions = await selectClips(client, plainText)
+        const clipRows = clipSuggestions.map((c) => ({
+          id: generateId(),
+          projectId,
+          title: c.title,
+          startMs: c.startMs,
+          endMs: c.endMs,
+          aiScore: c.score,
+          aiReason: c.reason,
+          status: "suggested" as const,
+          platform: c.platform,
+          createdAt: now(),
+        }))
+        if (clipRows.length > 0) {
+          db.insert(clips).values(clipRows).run()
+        }
+
+        sendProgress(projectId, "generating_content", 0.4, "Generating blog post")
+        const blogPost = await generateBlogPost(client, plainText)
+        db.insert(aiOutputs)
+          .values({
+            id: generateId(),
+            projectId,
+            type: "blog_post",
+            content: blogPost,
+            createdAt: now(),
+          })
+          .run()
+
+        if (clipSuggestions.length > 0) {
+          sendProgress(projectId, "generating_content", 0.7, "Generating social captions")
+          const topClip = clipSuggestions[0]!
+          const clipWords = wordRows.filter(
+            (w) => w.startMs >= topClip.startMs && w.endMs <= topClip.endMs,
+          )
+          const clipText = wordsToPlainText(clipWords)
+          const captions = await generateSocialCaptions(client, topClip.title, clipText)
+          db.insert(aiOutputs)
+            .values({
+              id: generateId(),
+              projectId,
+              type: "social_caption",
+              content: JSON.stringify(captions),
+              createdAt: now(),
+            })
+            .run()
+        }
+      } catch (err) {
+        console.warn("AI stage failed — transcript is still available:", err)
       }
 
       db.update(projects)

@@ -8,21 +8,22 @@ export type AiProvider = (typeof SUPPORTED_PROVIDERS)[number]
 export type AiClientConfig = {
   provider?: AiProvider
   apiKey?: string
-  model?: string
+  textModel?: string
+  structuredModel?: string
 }
 
 export interface AiClient {
   readonly provider: AiProvider
-  readonly model: string
+  readonly textModel: string
+  readonly structuredModel: string
 
   complete(prompt: string, system?: string): Promise<string>
 
   generateObject<T>(params: { prompt: string; schema: z.ZodType<T>; system?: string }): Promise<T>
 }
 
-const DEFAULT_MODELS: Record<AiProvider, string> = {
-  groq: "llama-3.3-70b-versatile",
-}
+const DEFAULT_TEXT_MODEL = "llama-3.3-70b-versatile"
+const DEFAULT_STRUCTURED_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 const ENV_KEYS: Record<AiProvider, string | undefined> = {
   groq: "GROQ_API_KEY",
@@ -34,7 +35,8 @@ function envKey(provider: AiProvider): string | undefined {
 
 export function createAiClient(config?: AiClientConfig): AiClient {
   const provider = config?.provider ?? "groq"
-  const model = config?.model ?? DEFAULT_MODELS[provider]
+  const textModel = config?.textModel ?? DEFAULT_TEXT_MODEL
+  const structuredModel = config?.structuredModel ?? DEFAULT_STRUCTURED_MODEL
   const key = config?.apiKey ?? (envKey(provider) ? process.env[envKey(provider)!] : undefined)
 
   if (!key) {
@@ -45,19 +47,24 @@ export function createAiClient(config?: AiClientConfig): AiClient {
 
   if (provider === "groq") {
     const groq = createGroq({ apiKey: key })
-    return createGroqClient(groq, model)
+    return createGroqClient(groq, textModel, structuredModel)
   }
 
   throw new Error(`Unsupported provider: ${provider}`)
 }
 
-function createGroqClient(groq: ReturnType<typeof createGroq>, model: string): AiClient {
+function createGroqClient(
+  groq: ReturnType<typeof createGroq>,
+  textModel: string,
+  structuredModel: string,
+): AiClient {
   return {
     provider: "groq",
-    model,
+    textModel,
+    structuredModel,
     async complete(prompt, system) {
       const { text } = await generateText({
-        model: groq(model),
+        model: groq(textModel),
         prompt,
         ...(system ? { system } : {}),
       })
@@ -65,15 +72,10 @@ function createGroqClient(groq: ReturnType<typeof createGroq>, model: string): A
     },
     async generateObject({ prompt, schema: _schema, system }) {
       const { output } = await generateText({
-        model: groq(model),
-        prompt: `${prompt}\n\nReturn ONLY valid JSON. No explanation, no markdown, no code fences.`,
+        model: groq(structuredModel),
+        prompt,
         ...(system ? { system } : {}),
         output: Output.object({ schema: _schema }),
-        providerOptions: {
-          groq: {
-            structuredOutputs: false,
-          },
-        },
       })
       return output as never
     },
