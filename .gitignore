@@ -7,3 +7,4 @@ out
 *.db-shm
 *.db-wal
 release/
+*.tsbuildinfo

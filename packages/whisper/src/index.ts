@@ -3,10 +3,13 @@ import { join } from "node:path"
 import { existsSync } from "node:fs"
 import { mkdir, writeFile } from "node:fs/promises"
 
-export type { WhisperWord, WhisperSegment, WhisperTranscriptionResult } from "@video-editor/types"
-import type { WhisperTranscriptionResult } from "@video-editor/types"
-
-export type WhisperModel = "tiny" | "base" | "small" | "medium"
+export type {
+  WhisperWord,
+  WhisperSegment,
+  WhisperTranscriptionResult,
+  WhisperModel,
+} from "@video-editor/types"
+import type { WhisperTranscriptionResult, WhisperModel } from "@video-editor/types"
 
 export interface WhisperConfig {
   binaryPath: string
@@ -14,11 +17,13 @@ export interface WhisperConfig {
 }
 
 export function resolveWhisperBinary(resourcesPath: string): string {
-  return join(
+  const bundled = join(
     resourcesPath,
     "whisper",
     process.platform === "win32" ? "whisper-cli.exe" : "whisper-cli",
   )
+  if (existsSync(bundled)) return bundled
+  return "whisper-cli"
 }
 
 export function modelPath(modelsDir: string, model: WhisperModel): string {

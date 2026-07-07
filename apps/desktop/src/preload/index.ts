@@ -1,10 +1,15 @@
-import { contextBridge, ipcRenderer } from "electron"
-import { electronAPI } from "@electron-toolkit/preload"
+import { contextBridge, ipcRenderer, webUtils } from "electron"
 import type { IpcChannels } from "@video-editor/types"
 
 type InvokeChannels = Pick<
   IpcChannels,
-  "project:list" | "project:create" | "pipeline:start" | "clip:update-status" | "export:clips"
+  | "project:list"
+  | "project:create"
+  | "project:get"
+  | "pipeline:start"
+  | "clip:update-status"
+  | "export:clips"
+  | "export:full"
 >
 
 const api = {
@@ -22,9 +27,11 @@ const api = {
     ipcRenderer.on(channel as string, handler)
     return () => ipcRenderer.removeListener(channel as string, handler)
   },
+  getFilePath(file: File): string {
+    return webUtils.getPathForFile(file)
+  },
 }
 
-contextBridge.exposeInMainWorld("electron", electronAPI)
 contextBridge.exposeInMainWorld("api", api)
 
 export type Api = typeof api

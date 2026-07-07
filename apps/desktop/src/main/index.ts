@@ -1,6 +1,6 @@
 import { app, BrowserWindow, shell } from "electron"
 import { join } from "path"
-import { is } from "@electron-toolkit/utils"
+import { closeDb } from "@video-editor/database"
 import { registerIpcHandlers } from "./ipc"
 
 function createWindow(): void {
@@ -16,6 +16,7 @@ function createWindow(): void {
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
+      webSecurity: false,
     },
   })
 
@@ -26,7 +27,7 @@ function createWindow(): void {
     return { action: "deny" }
   })
 
-  if (is.dev && process.env["ELECTRON_RENDERER_URL"]) {
+  if (!app.isPackaged && process.env["ELECTRON_RENDERER_URL"]) {
     win.loadURL(process.env["ELECTRON_RENDERER_URL"])
   } else {
     win.loadFile(join(__dirname, "../renderer/index.html"))
@@ -43,4 +44,8 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit()
+})
+
+app.on("will-quit", () => {
+  closeDb()
 })

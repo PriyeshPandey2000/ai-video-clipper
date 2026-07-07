@@ -65,9 +65,15 @@ importers:
       '@video-editor/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      '@video-editor/utils':
+        specifier: workspace:*
+        version: link:../../packages/utils
       '@video-editor/whisper':
         specifier: workspace:*
         version: link:../../packages/whisper
+      better-sqlite3:
+        specifier: ^11.0.0
+        version: 11.10.0
       electron-updater:
         specifier: ^6.3.0
         version: 6.8.9

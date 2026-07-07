@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { join } from "node:path"
-import { mkdir, writeFile } from "node:fs/promises"
+import { existsSync } from "node:fs"
 
 export interface ExportOptions {
   binaryPath: string
@@ -24,7 +24,13 @@ export interface AudioExtractOptions {
 }
 
 export function resolveFfmpegBinary(resourcesPath: string): string {
-  return join(resourcesPath, "ffmpeg", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg")
+  const bundled = join(
+    resourcesPath,
+    "ffmpeg",
+    process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg",
+  )
+  if (existsSync(bundled)) return bundled
+  return "ffmpeg"
 }
 
 function run(binaryPath: string, args: string[]): Promise<void> {
@@ -104,5 +110,3 @@ export async function extractAudio(opts: AudioExtractOptions): Promise<void> {
     opts.outputPath,
   ])
 }
-
-export { join, mkdir, writeFile }

@@ -2,10 +2,17 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ES2022"],
-    "module": "CommonJS",
+    "module": "ESNext",
     "moduleResolution": "node",
     "outDir": "out",
-    "composite": true
+    "composite": true,
+    "noEmit": true,
+    "rootDir": "../../",
+    "skipLibCheck": true,
+    "paths": {
+      "@main/*": ["./src/main/*"],
+      "@video-editor/*": ["../../packages/*/dist/index.d.ts"]
+    }
   },
-  "include": ["electron.vite.config.*", "src/main/**/*", "src/preload/**/*"]
+  "include": ["src/main/**/*", "src/preload/**/*"]
 }

@@ -17,9 +17,11 @@
     "@video-editor/transcript": "workspace:*",
     "@video-editor/types": "workspace:*",
     "@video-editor/ui": "workspace:*",
+    "@video-editor/utils": "workspace:*",
     "@video-editor/whisper": "workspace:*",
     "@electron-toolkit/preload": "^3.0.0",
     "@electron-toolkit/utils": "^3.0.0",
+    "better-sqlite3": "^11.0.0",
     "electron-updater": "^6.3.0"
   },
   "devDependencies": {
