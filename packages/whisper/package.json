@@ -1,0 +1,26 @@
+{
+  "name": "@video-editor/whisper",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@video-editor/types": "workspace:*",
+    "@video-editor/utils": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "*"
+  }
+}

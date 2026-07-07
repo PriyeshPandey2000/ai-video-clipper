@@ -1,0 +1,27 @@
+{
+  "name": "@video-editor/ai",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.0",
+    "@video-editor/types": "workspace:*",
+    "openai": "^4.55.0"
+  },
+  "devDependencies": {
+    "typescript": "*"
+  }
+}

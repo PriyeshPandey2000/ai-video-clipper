@@ -1,0 +1,9 @@
+node_modules
+dist
+out
+.turbo
+*.log
+.DS_Store
+*.db-shm
+*.db-wal
+release/
