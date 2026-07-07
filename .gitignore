@@ -8,3 +8,4 @@ out
 *.db-wal
 release/
 *.tsbuildinfo
+.env
