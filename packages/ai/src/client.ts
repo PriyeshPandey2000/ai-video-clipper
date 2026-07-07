@@ -23,7 +23,10 @@ export interface AiClient {
 }
 
 const DEFAULT_TEXT_MODEL = "llama-3.3-70b-versatile"
-const DEFAULT_STRUCTURED_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+// json_object mode works on all Groq models. The SDK validates against Zod client-side.
+// strict json_schema mode has limited model support and requires additionalProperties:false
+// in every object which the AI SDK doesn't always produce correctly.
+const DEFAULT_STRUCTURED_MODEL = "llama-3.3-70b-versatile"
 
 const ENV_KEYS: Record<AiProvider, string | undefined> = {
   groq: "GROQ_API_KEY",
@@ -73,9 +76,14 @@ function createGroqClient(
     async generateObject({ prompt, schema: _schema, system }) {
       const { output } = await generateText({
         model: groq(structuredModel),
-        prompt,
+        prompt: `${prompt}\n\nReturn ONLY valid JSON. No explanation, no markdown, no code fences.`,
         ...(system ? { system } : {}),
         output: Output.object({ schema: _schema }),
+        providerOptions: {
+          groq: {
+            structuredOutputs: false,
+          },
+        },
       })
       return output as never
     },

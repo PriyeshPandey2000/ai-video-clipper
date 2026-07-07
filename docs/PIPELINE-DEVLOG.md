@@ -23,6 +23,30 @@
 
 **Trade-off:** Runs AI stages sequentially (not parallel) to keep progress reporting simple. For long transcripts this adds ~10-15s to pipeline time, but avoids race conditions in DB writes.
 
+### Structured output: approach and constraints
+
+**Current approach:** `json_object` mode (`structuredOutputs: false`) with `llama-3.3-70b-versatile`. The model outputs valid JSON following field descriptions in the prompt. The AI SDK validates the result against the Zod schema client-side and throws if it doesn't match.
+
+**Why not strict `json_schema`?** We tried three routes:
+
+| Route                                                                      | Result                                                                                                                                                                       |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `meta-llama/llama-4-scout-17b-16e-instruct` with best-effort `json_schema` | Model occasionally violates enum constraints → API throws 400                                                                                                                |
+| `openai/gpt-oss-20b` with `strict: true`                                   | Requires `additionalProperties: false` on every nested object in the JSON Schema. The AI SDK's Zod→JSON Schema conversion doesn't always set this correctly → API throws 400 |
+| `moonshotai/kimi-k2-instruct-0905` with structured outputs                 | Not tested. The AI SDK docs list this model as supporting structured outputs. Likely the right choice if strict enforcement is needed                                        |
+
+**Why the initial test failed (and the real fix):** The prompt just said "find the top N most engaging clips" — it never told the model what field names to use. The model invented `start`/`end`/`description` instead of `title`/`startMs`/`endMs`/`score`/`reason`/`platform`. Adding explicit field descriptions to the system prompt fixed it. This was a prompt problem, not a mode problem.
+
+**Trade-off accepted:** `json_object` mode doesn't enforce schema — the model could return wrong field names or types. If that happens, the AI SDK throws `NoObjectGeneratedError`, which the pipeline catches gracefully (logs a warning, pipeline still completes with transcript). For v1 this is acceptable.
+
+**To upgrade for strict enforcement in future:**
+
+1. Switch structured model to `moonshotai/kimi-k2-instruct-0905`
+2. Remove `structuredOutputs: false` (let it default to true)
+3. Ensure Zod schemas use Zod v4's `toJSONSchema()` which AI SDK v7 recognizes
+
+See [ADR in client.ts](../packages/ai/src/client.ts#L25-L29) for model defaults.
+
 ---
 
 ## Phase 2 — Transcript Viewer UI

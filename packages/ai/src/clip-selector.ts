@@ -21,7 +21,17 @@ const ClipSuggestionSchema = zod.object({
 })
 
 const SYSTEM_PROMPT = `You are a viral content editor. Given a podcast transcript with word-level timestamps,
-identify the most engaging segments that would perform well as short-form social media clips.`
+identify the most engaging segments that would perform well as short-form social media clips.
+
+For each clip, provide these exact fields:
+- title: short catchy title for the clip
+- startMs: start time in milliseconds
+- endMs: end time in milliseconds
+- score: engagement score from 0 to 1
+- reason: 1-2 sentence explanation of why this clip would perform well
+- platform: one of "tiktok", "reels", "shorts", or "generic"
+
+Return as JSON with a "clips" array containing the clips.`
 
 export async function selectClips(
   client: AiClient,
