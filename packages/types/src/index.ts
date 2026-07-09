@@ -74,7 +74,7 @@ export interface AiOutput {
 
 export type PipelineStage = "transcribing" | "analyzing" | "generating_clips" | "generating_content"
 
-export type WhisperModel = "tiny" | "base" | "small" | "medium"
+export type WhisperModel = "tiny" | "base" | "small" | "medium" | "large"
 
 export interface PipelineProgress {
   projectId: string
@@ -92,7 +92,9 @@ export interface IpcChannels {
   "project:list": { args: void; result: Project[] }
   "project:create": { args: { name: string; mediaPath: string }; result: Project }
   "project:get": { args: { id: string }; result: Project | null }
+  "project:get-words": { args: { projectId: string }; result: Word[] }
   "pipeline:start": { args: { projectId: string; model: WhisperModel }; result: void }
+  "clip:list": { args: { projectId: string }; result: Clip[] }
   "clip:update-status": { args: { clipId: string; status: Clip["status"] }; result: void }
   "export:clips": { args: { projectId: string; clipIds: string[] }; result: string[] }
   "export:full": { args: { projectId: string }; result: string }

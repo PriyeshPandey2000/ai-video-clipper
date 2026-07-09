@@ -4,192 +4,162 @@
 
 ---
 
-## Phase 1 — Wire AI stages into pipeline
+## Session 1 — AI stages wired into pipeline
 
-**Goal:** Connect the existing `@video-editor/ai` modules into `pipeline:start` IPC handler so the pipeline produces clip suggestions, blog posts, and social captions automatically after transcription.
+**Goal:** Connect `@video-editor/ai` modules into `pipeline:start` so the pipeline produces clip suggestions, blog posts, and social captions automatically after transcription.
 
 ### Changes
 
 #### `apps/desktop/src/main/ipc.ts`
 
 - Imported `selectClips`, `generateBlogPost`, `generateSocialCaptions` from `@video-editor/ai`
-- After transcription + filler/silence detection completes, call:
-  1. `selectClips()` → write results to `clips` table (one row per clip suggestion)
-  2. `generateBlogPost()` → write to `ai_outputs` table with type `blog`
-  3. `generateSocialCaptions()` → write to `ai_outputs` table with type `captions`
-- Sent `pipeline:complete` only after all AI stages finish
+- After transcription + filler/silence detection completes:
+  1. `selectClips()` → write results to `clips` table
+  2. `generateBlogPost()` → write to `ai_outputs` (type `blog_post`)
+  3. `generateSocialCaptions()` → write to `ai_outputs` (type `social_caption`)
+- AI stage wrapped in try/catch — pipeline still completes with transcript if AI fails
 
-**Why:** The AI package was complete but disconnected. This was <30 lines of glue code that completes the data flow from import → transcription → AI analysis → stored results. Without this, no data exists for the review UI to display.
-
-**Trade-off:** Runs AI stages sequentially (not parallel) to keep progress reporting simple. For long transcripts this adds ~10-15s to pipeline time, but avoids race conditions in DB writes.
-
-### Structured output: approach and constraints
-
-**Current approach:** `json_object` mode (`structuredOutputs: false`) with `llama-3.3-70b-versatile`. The model outputs valid JSON following field descriptions in the prompt. The AI SDK validates the result against the Zod schema client-side and throws if it doesn't match.
-
-**Why not strict `json_schema`?** We tried three routes:
-
-| Route                                                                      | Result                                                                                                                                                                       |
-| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `meta-llama/llama-4-scout-17b-16e-instruct` with best-effort `json_schema` | Model occasionally violates enum constraints → API throws 400                                                                                                                |
-| `openai/gpt-oss-20b` with `strict: true`                                   | Requires `additionalProperties: false` on every nested object in the JSON Schema. The AI SDK's Zod→JSON Schema conversion doesn't always set this correctly → API throws 400 |
-| `moonshotai/kimi-k2-instruct-0905` with structured outputs                 | Not tested. The AI SDK docs list this model as supporting structured outputs. Likely the right choice if strict enforcement is needed                                        |
-
-**Why the initial test failed (and the real fix):** The prompt just said "find the top N most engaging clips" — it never told the model what field names to use. The model invented `start`/`end`/`description` instead of `title`/`startMs`/`endMs`/`score`/`reason`/`platform`. Adding explicit field descriptions to the system prompt fixed it. This was a prompt problem, not a mode problem.
-
-**Trade-off accepted:** `json_object` mode doesn't enforce schema — the model could return wrong field names or types. If that happens, the AI SDK throws `NoObjectGeneratedError`, which the pipeline catches gracefully (logs a warning, pipeline still completes with transcript). For v1 this is acceptable.
-
-**To upgrade for strict enforcement in future:**
-
-1. Switch structured model to `moonshotai/kimi-k2-instruct-0905`
-2. Remove `structuredOutputs: false` (let it default to true)
-3. Ensure Zod schemas use Zod v4's `toJSONSchema()` which AI SDK v7 recognizes
-
-See [ADR in client.ts](../packages/ai/src/client.ts#L25-L29) for model defaults.
+**Trade-off:** Sequential AI calls for simpler progress reporting. Adds ~10-15s to pipeline but avoids DB write races.
 
 ---
 
-## Phase 2 — Transcript Viewer UI
+## Session 2 — Structured output: approach and constraints
 
-**Goal:** Show the word-level transcript in the renderer with filler word highlighting, silence markers, and click-to-seek.
+**Problem:** LLM returning wrong field names (`start`/`end` instead of `startMs`/`endMs`).
 
-### Changes
+**Root cause:** Prompt never told the model what fields to use — model invented them.
 
-#### `apps/desktop/src/renderer/src/TranscriptViewer.tsx`
+**Fix:** Added explicit field descriptions to system prompts. This was a prompt problem, not a mode problem.
 
-- New component: renders words from DB with color-coded filler words (`uh`, `um`, `like`, etc.)
-- Silence markers shown as clickable gaps between words
-- Click any word → `window.api.invoke("player:seek", { ms })` to jump video to that timestamp
+### Structured output mode decisions
 
-**Why:** The transcript is the most immediate output of the pipeline and the foundation for reviewing clip suggestions. Users need to quickly scan the transcript, see where filler words cluster, and jump to specific moments.
+| Route                                                          | Result                                                                            |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `meta-llama/llama-4-scout-17b-16e-instruct` with `json_schema` | Model violates enum constraints → 400                                             |
+| `openai/gpt-oss-20b` with `strict: true`                       | AI SDK Zod→JSON Schema doesn't set `additionalProperties: false` everywhere → 400 |
+| `llama-3.3-70b-versatile` with `json_object` mode              | Works — model follows explicit field descriptions                                 |
 
-**Design choices:**
+**Current approach:** `json_object` mode (best-effort). AI SDK validates against Zod client-side, throws `NoObjectGeneratedError` on mismatch. Pipeline catches this gracefully.
 
-- Flat word list (not grouped into sentences) to stay aligned with DB storage — sentences are reconstructed server-side later
-- Filler words highlighted in amber, silence markers as thin gray bars — easy to spot at a glance
-- Click-to-seek uses existing IPC channel `project:get` pattern
-
----
-
-## Phase 3 — Clip Review UI
-
-**Goal:** Display AI-suggested clips with score, reason, and platform targeting. Let user approve/reject.
-
-### Changes
-
-#### `apps/desktop/src/renderer/src/ClipList.tsx`
-
-- New component: fetches clips from `clips` table via `project:get` IPC
-- Each clip card shows: title, score (0-1), platform badge, reason text, duration bar
-- Approve/Reject buttons → `clip:update-status` IPC
-
-#### `apps/desktop/src/renderer/src/ClipPreview.tsx`
-
-- New component: plays clip boundaries on the VideoPlayer (startMs → endMs loop)
-- Shows clip number cards overlaying the timeline
-
-**Why:** Clip suggestions are the core deliverable. The UI needs to make it fast to scan suggestions and decide which to keep.
-
-**Design choices:**
-
-- Score as a progress bar (visual, fast to scan)
-- Platform badge with icon (TikTok/Reels/Shorts)
-- Reason text kept to 1-2 lines (details on hover)
-- Approve/Reject is optimistic UI — updates instantly, syncs to DB in background
+**To upgrade:** Switch to `moonshotai/kimi-k2-instruct-0905` with `structuredOutputs: true` + Zod v4's `toJSONSchema()`.
 
 ---
 
-## Phase 4 — Export
+## Session 3 — Whisper CLI integration rewrite
 
-**Goal:** Render approved clips as MP4 files using FFmpeg.
+**Problem:** Old code used `-oj` (stdout JSON) + `--word-timestamps true`. whisper-cli outputs JSON to a file (`audio.wav.json`) not stdout; the stdout reader was never getting any data.
+
+**Fix:** Switch to `-ojf` (output JSON file) + read the file after the process closes. Added `normalizeWhisperResult()` to map whisper-cli JSON format (`WhisperCliResult`) to the internal `WhisperTranscriptionResult` type.
 
 ### Changes
 
-#### `packages/export/src/index.ts`
+#### `packages/whisper/src/index.ts`
 
-- Filled in stub: `exportSingleClip()` now calls `ffmpeg.exportClip()` with correct start/end times
-- Added `exportMultipleClips()` for batch exporting all approved clips
+- Args changed: `-oj --word-timestamps true` → `-ojf -sow -t 4`
+  - `-ojf`: write JSON to `<audioPath>.json` file
+  - `-sow`: split output on word boundaries (subtitle formatting, harmless for JSON)
+  - `-t 4`: 4 threads
+- Added `normalizeWhisperResult(raw: WhisperCliResult)`: maps token-level offsets (ms) to `WhisperWord` (seconds), filters special tokens (those starting with `[` or `<`)
+- Added `MODEL_FILES` record: model → filename (e.g. `large` → `ggml-large-v3.bin`)
+- Added `large` model support
+
+**Why separate `MODEL_FILES`:** `modelPath()` was previously computing `ggml-${model}.bin` which breaks for `large` (file is `ggml-large-v3.bin`, not `ggml-large.bin`).
+
+---
+
+## Session 4 — TranscriptViewer + ClipReview UI
+
+**Goal:** Show transcript and clips in the app with highlight sync between them.
+
+### Changes
+
+#### `apps/desktop/src/renderer/src/TranscriptViewer.tsx` (new)
+
+- Fetches words via `project:get-words` IPC
+- Renders word-by-word with filler word dimming (grey), click-to-seek
+- Silence gap markers shown inline (e.g. `● 2.3s`)
+- `highlightRange` prop: words within range get violet highlight + auto-scroll
+- Virtual pagination: renders 500 words at a time, loads more on scroll
+
+#### `apps/desktop/src/renderer/src/ClipReview.tsx` (new)
+
+- Fetches clips via `clip:list` IPC
+- Sorted by `startMs`
+- Click card → calls `onSelectClip(startMs, endMs)` → sets `highlightRange` in parent → TranscriptViewer highlights matching words
+- Approve/Reject → `clip:update-status` IPC, optimistic UI update
 
 #### `apps/desktop/src/main/ipc.ts`
 
-- `export:clips` handler now calls `exportSingleClip()` per approved clip
-- Sends progress per clip, then `export:complete` with array of output paths
+- Added `project:get-words` handler
+- Added `clip:list` handler
 
-**Why:** Without export, clips live only in the app database. Export is what makes them usable (upload to social media, share with team).
+#### `apps/desktop/src/renderer/src/App.tsx` (ProjectView)
 
-**Design choices:**
+- Added `highlightRange` state
+- `handleSelectClip`: sets `highlightRange` + seeks video to clip start
+- `handleSeekWord`: seeks video + clears `highlightRange`
+- Renders `<TranscriptViewer>` and `<ClipReview>` when `project.status === "ready"`
+- Model picker moved into ProjectView header (inline segment button group)
 
-- One FFmpeg call per clip (not a single concatenated render) — allows parallel processing in future, and each clip is independently usable
-- Output format: MP4 with H.264 + AAC, matching source resolution
+#### `apps/desktop/src/preload/index.ts` + `env.d.ts`
 
----
-
-## Phase 5 — Content Generation UI
-
-**Goal:** Show AI-generated blog post and social captions inside the app.
-
-### Changes
-
-#### `apps/desktop/src/renderer/src/AiOutputPanel.tsx`
-
-- New component: fetches `ai_outputs` from DB, shows blog post (rendered markdown) and social captions per platform
-- Copy-to-clipboard button for each output
-
-**Why:** These are secondary outputs but valuable for repurposing content across formats. Users expect to see them after the pipeline runs.
+- Added `project:get-words` and `clip:list` to `InvokeChannels`
 
 ---
 
-## Phase 6 — Testing & Error Handling
+## Session 5 — .env loading in main process
 
-**Goal:** Add basic test infrastructure and error recovery for AI calls.
+**Problem:** `GROQ_API_KEY` not available in Electron main process. Node doesn't auto-load `.env`; in dev mode `process.cwd()` isn't the monorepo root.
 
-### Changes
+**Fix:** Search upward from `app.getAppPath()` for a `.env` file and load it via `dotenv` before anything else.
 
-#### Root `package.json`
+#### `apps/desktop/src/main/index.ts`
 
-- Added `vitest` as devDependency
-- `test` script: `vitest run`
+```ts
+const envPaths = [
+  join(dirname(app.getAppPath()), ".env"), // works in dev: app is at apps/desktop → goes to root
+  join(app.getAppPath(), ".env"),
+  join(app.getAppPath(), "../../.env"),
+  join(__dirname, "../../../../.env"),
+]
+for (const p of envPaths) {
+  if (existsSync(p)) {
+    dotenv.config({ path: p })
+    break
+  }
+}
+```
 
-#### `packages/ai/src/__tests__/client.test.ts`
-
-- Tests: `createAiClient` throws without API key, `generateText` returns string, `generateObject` returns validated schema
-
-#### `apps/desktop/src/main/__tests__/ipc.test.ts`
-
-- Tests: pipeline stages handle AI failures gracefully, DB writes rollback on error
-
-**Why:** The AI stage is the most failure-prone part (network errors, API errors, malformed responses). Without tests, regressions are silent.
-
-**Design choices:**
-
-- AI calls wrapped in try/catch with retry (3 attempts, exponential backoff)
-- If AI stage fails, pipeline still completes with partial results (transcript still useful)
-- All errors logged to DB for debugging
+**Note:** `app.getAppPath()` is safe to call before `app.whenReady()`. `app.getPath("userData")` is not.
 
 ---
 
-## Appendix: Key Decisions During Implementation
+## Session 6 — Chapter↔transcript timestamp fixes
 
-### Why Groq over OpenAI/Anthropic?
+**Problem:** Chapters (AI clip suggestions) weren't highlighting the correct transcript sections. Three bugs:
 
-- Cheaper (Llama 4 Scout: ~$0.15/M tokens vs GPT-4o: $2.50/M)
-- Fast inference (280+ tokens/s)
-- Vercel AI SDK gives us provider abstraction — swap later with one config change
+### Bug 1 — No timestamps in LLM input
 
-### Why Llama 4 Scout for structured output?
+`wordsToPlainText` was passed to `selectClips` → LLM received raw text with no timestamps → any `startMs`/`endMs` values were hallucinated.
 
-- Supports `json_schema` response format (best-effort mode), unlike most Groq models
-- Fast enough for ~10s clip analysis per request
-- Falls back to `llama-3.3-70b` for freeform text (blog posts, captions)
+**Fix:** Switch to `wordsToTimestampedText` which produces `[10.50] Hello [11.20] world ...` format.
 
-### Why not use `strict: true` structured outputs?
+### Bug 2 — Seconds vs milliseconds mismatch
 
-- Only GPT-OSS models support it on Groq
-- GPT-OSS 20B/120B are good but cost more and are less available under load
-- Best-effort + client-side Zod validation + retry is sufficient reliability for v1
+Transcript shows timestamps in seconds (`[10.50]`) but system prompt asked for milliseconds output with no explanation of how to convert. LLM returned seconds-as-milliseconds (off by 1000x).
 
-### Why wire AI in main process (not a separate worker)?
+**Fix:** System prompt now explicitly says "multiply by 1000" with a worked example.
 
-- Simpler architecture for v1 — no IPC between worker and main
-- AI calls are simple HTTP requests (no CPU-bound work), so they don't block the event loop
-- Can extract to a worker later if needed
+### Bug 3 — Impossible clip constraints for short videos
+
+`selectClips` was called with hardcoded "find 5 clips of 30-90 seconds". For a 50-second video this is physically impossible → LLM forced to hallucinate timestamps to satisfy the count.
+
+**Fix:** `selectClips` now takes `videoDurationMs` and computes:
+
+- `targetMin = max(10s, duration × 20%)`
+- `targetMax = duration × 60%`
+- `clipCount = min(maxClips, floor(duration / targetMin))`
+
+### Bonus — durationMs was always 0
+
+`projects.durationMs` was never updated after transcription (defaulted to 0 from `project:create`). Now computed from last word's `endMs` and written to DB during the analyzing stage.

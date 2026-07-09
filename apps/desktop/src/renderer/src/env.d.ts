@@ -5,6 +5,8 @@ type InvokeChannels = Pick<
   | "project:list"
   | "project:create"
   | "project:get"
+  | "project:get-words"
+  | "clip:list"
   | "pipeline:start"
   | "clip:update-status"
   | "export:clips"

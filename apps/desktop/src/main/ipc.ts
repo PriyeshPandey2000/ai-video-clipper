@@ -26,6 +26,7 @@ import {
   detectFillerWords,
   detectSilences,
   wordsToPlainText,
+  wordsToTimestampedText,
 } from "@video-editor/transcript"
 import {
   createAiClient,
@@ -107,6 +108,10 @@ export function registerIpcHandlers(): void {
     return db.select().from(projects).where(eq(projects.id, id)).all()[0] ?? null
   })
 
+  ipcMain.handle("project:get-words", async (_event, { projectId }) => {
+    return db.select().from(words).where(eq(words.projectId, projectId)).all()
+  })
+
   ipcMain.handle(
     "project:create",
     async (_event, { name, mediaPath }: { name: string; mediaPath: string }) => {
@@ -150,118 +155,135 @@ export function registerIpcHandlers(): void {
         .where(eq(projects.id, projectId))
         .run()
 
-      const modelsDir = join(app.getPath("userData"), "models")
-      const audioPath = join(projectDir(projectId), "audio.wav")
-      const whisperBin = resolveWhisperBinary(getResourcesPath())
-
-      if (!isModelDownloaded(modelsDir, model)) {
-        sendProgress(projectId, "transcribing", 0, `Downloading ${model} model`)
-        await downloadModel(modelsDir, model, (pct) => {
-          sendProgress(projectId, "transcribing", pct * 0.3, `Downloading ${model} model`)
-        })
-      }
-
-      sendProgress(projectId, "transcribing", 0.35, "Transcribing audio")
-
-      const result = await whisperTranscribe(
-        { binaryPath: whisperBin, modelsDir },
-        audioPath,
-        model,
-        (pct) => {
-          sendProgress(projectId, "transcribing", 0.35 + pct * 0.5, "Transcribing audio")
-        },
-      )
-
-      sendProgress(projectId, "transcribing", 0.9, "Writing transcript to database")
-
-      const wordRows = whisperToWords(result.segments, projectId)
-      if (wordRows.length > 0) {
-        db.insert(words).values(wordRows).run()
-      }
-
-      db.update(projects)
-        .set({ status: "analyzing", updatedAt: now() })
-        .where(eq(projects.id, projectId))
-        .run()
-
-      sendProgress(projectId, "analyzing", 0.1, "Detecting filler words")
-      const fillerSegments = detectFillerWords(wordRows, projectId)
-      if (fillerSegments.length > 0) {
-        db.insert(segments).values(fillerSegments).run()
-      }
-
-      sendProgress(projectId, "analyzing", 0.6, "Detecting silences")
-      const silenceSegments = detectSilences(wordRows, projectId)
-      if (silenceSegments.length > 0) {
-        db.insert(segments).values(silenceSegments).run()
-      }
-
-      // ── AI content generation stage ──────────────────────────────────────
       try {
-        const client = createAiClient()
+        const modelsDir = join(app.getPath("userData"), "models")
+        const audioPath = join(projectDir(projectId), "audio.wav")
+        const whisperBin = resolveWhisperBinary(getResourcesPath())
 
-        const plainText = wordsToPlainText(wordRows)
-
-        sendProgress(projectId, "generating_clips", 0.1, "Analyzing transcript for clips")
-        const clipSuggestions = await selectClips(client, plainText)
-        const clipRows = clipSuggestions.map((c) => ({
-          id: generateId(),
-          projectId,
-          title: c.title,
-          startMs: c.startMs,
-          endMs: c.endMs,
-          aiScore: c.score,
-          aiReason: c.reason,
-          status: "suggested" as const,
-          platform: c.platform,
-          createdAt: now(),
-        }))
-        if (clipRows.length > 0) {
-          db.insert(clips).values(clipRows).run()
+        if (!isModelDownloaded(modelsDir, model)) {
+          sendProgress(projectId, "transcribing", 0, `Downloading ${model} model`)
+          await downloadModel(modelsDir, model, (pct) => {
+            sendProgress(projectId, "transcribing", pct * 0.3, `Downloading ${model} model`)
+          })
         }
 
-        sendProgress(projectId, "generating_content", 0.4, "Generating blog post")
-        const blogPost = await generateBlogPost(client, plainText)
-        db.insert(aiOutputs)
-          .values({
-            id: generateId(),
-            projectId,
-            type: "blog_post",
-            content: blogPost,
-            createdAt: now(),
-          })
+        sendProgress(projectId, "transcribing", 0.35, "Transcribing audio")
+
+        const result = await whisperTranscribe(
+          { binaryPath: whisperBin, modelsDir },
+          audioPath,
+          model,
+          (pct) => {
+            sendProgress(projectId, "transcribing", 0.35 + pct * 0.5, "Transcribing audio")
+          },
+        )
+
+        sendProgress(projectId, "transcribing", 0.9, "Writing transcript to database")
+
+        const wordRows = whisperToWords(result.segments, projectId)
+        const durationMs = wordRows[wordRows.length - 1]?.endMs ?? 0
+        if (wordRows.length > 0) {
+          db.insert(words).values(wordRows).run()
+        }
+
+        db.update(projects)
+          .set({ status: "analyzing", durationMs, updatedAt: now() })
+          .where(eq(projects.id, projectId))
           .run()
 
-        if (clipSuggestions.length > 0) {
-          sendProgress(projectId, "generating_content", 0.7, "Generating social captions")
-          const topClip = clipSuggestions[0]!
-          const clipWords = wordRows.filter(
-            (w) => w.startMs >= topClip.startMs && w.endMs <= topClip.endMs,
-          )
-          const clipText = wordsToPlainText(clipWords)
-          const captions = await generateSocialCaptions(client, topClip.title, clipText)
+        sendProgress(projectId, "analyzing", 0.1, "Detecting filler words")
+        const fillerSegments = detectFillerWords(wordRows, projectId)
+        if (fillerSegments.length > 0) {
+          db.insert(segments).values(fillerSegments).run()
+        }
+
+        sendProgress(projectId, "analyzing", 0.6, "Detecting silences")
+        const silenceSegments = detectSilences(wordRows, projectId)
+        if (silenceSegments.length > 0) {
+          db.insert(segments).values(silenceSegments).run()
+        }
+
+        // AI content generation — failure here is non-fatal, transcript is still saved
+        try {
+          const client = createAiClient()
+
+          const plainText = wordsToPlainText(wordRows)
+          const timestampedText = wordsToTimestampedText(wordRows)
+
+          sendProgress(projectId, "generating_clips", 0.1, "Analyzing transcript for clips")
+          const clipSuggestions = await selectClips(client, timestampedText, durationMs)
+          const clipRows = clipSuggestions.map((c) => ({
+            id: generateId(),
+            projectId,
+            title: c.title,
+            startMs: c.startMs,
+            endMs: c.endMs,
+            aiScore: c.score,
+            aiReason: c.reason,
+            status: "suggested" as const,
+            platform: c.platform,
+            createdAt: now(),
+          }))
+          if (clipRows.length > 0) {
+            db.insert(clips).values(clipRows).run()
+          }
+
+          sendProgress(projectId, "generating_content", 0.4, "Generating blog post")
+          const blogPost = await generateBlogPost(client, plainText)
           db.insert(aiOutputs)
             .values({
               id: generateId(),
               projectId,
-              type: "social_caption",
-              content: JSON.stringify(captions),
+              type: "blog_post",
+              content: blogPost,
               createdAt: now(),
             })
             .run()
+
+          if (clipSuggestions.length > 0) {
+            sendProgress(projectId, "generating_content", 0.7, "Generating social captions")
+            const topClip = clipSuggestions[0]!
+            const clipWords = wordRows.filter(
+              (w) => w.startMs >= topClip.startMs && w.endMs <= topClip.endMs,
+            )
+            const clipText = wordsToPlainText(clipWords)
+            const captions = await generateSocialCaptions(client, topClip.title, clipText)
+            db.insert(aiOutputs)
+              .values({
+                id: generateId(),
+                projectId,
+                type: "social_caption",
+                content: JSON.stringify(captions),
+                createdAt: now(),
+              })
+              .run()
+          }
+        } catch (err) {
+          console.warn(
+            "AI stage failed (GROQ_API_KEY missing or AI error) — transcript saved:",
+            String(err),
+          )
         }
+
+        db.update(projects)
+          .set({ status: "ready", updatedAt: now() })
+          .where(eq(projects.id, projectId))
+          .run()
+
+        send("pipeline:complete", { projectId })
       } catch (err) {
-        console.warn("AI stage failed — transcript is still available:", err)
+        db.update(projects)
+          .set({ status: "error", updatedAt: now() })
+          .where(eq(projects.id, projectId))
+          .run()
+        send("pipeline:error", { projectId, error: String(err) })
       }
-
-      db.update(projects)
-        .set({ status: "ready", updatedAt: now() })
-        .where(eq(projects.id, projectId))
-        .run()
-
-      send("pipeline:complete", { projectId })
     },
   )
+
+  ipcMain.handle("clip:list", async (_event, { projectId }) => {
+    return db.select().from(clips).where(eq(clips.projectId, projectId)).all()
+  })
 
   ipcMain.handle(
     "clip:update-status",

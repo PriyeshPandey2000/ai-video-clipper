@@ -10,6 +10,8 @@
     "lint": "eslint src"
   },
   "dependencies": {
+    "@electron-toolkit/preload": "^3.0.0",
+    "@electron-toolkit/utils": "^3.0.0",
     "@video-editor/ai": "workspace:*",
     "@video-editor/database": "workspace:*",
     "@video-editor/export": "workspace:*",
@@ -19,16 +21,15 @@
     "@video-editor/ui": "workspace:*",
     "@video-editor/utils": "workspace:*",
     "@video-editor/whisper": "workspace:*",
-    "@electron-toolkit/preload": "^3.0.0",
-    "@electron-toolkit/utils": "^3.0.0",
     "better-sqlite3": "^11.0.0",
+    "dotenv": "^17.4.2",
     "electron-updater": "^6.3.0"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",
-    "@tailwindcss/vite": "^4.0.0",
     "electron": "^32.0.0",
     "electron-builder": "^25.0.0",
     "electron-vite": "^2.3.0",

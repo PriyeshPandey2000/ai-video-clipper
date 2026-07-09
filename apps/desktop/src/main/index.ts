@@ -1,7 +1,25 @@
 import { app, BrowserWindow, shell } from "electron"
-import { join } from "path"
+import { join, dirname } from "path"
+import { existsSync } from "fs"
 import { closeDb } from "@video-editor/database"
 import { registerIpcHandlers } from "./ipc"
+
+// Load .env into process.env for the main process.
+// dotenv searches from process.cwd() by default, which in dev mode
+// is apps/desktop — the .env is at the monorepo root, so we search upward.
+import * as dotenv from "dotenv"
+const envPaths = [
+  join(dirname(app.getAppPath()), ".env"),
+  join(app.getAppPath(), ".env"),
+  join(app.getAppPath(), "../../.env"),
+  join(__dirname, "../../../../.env"),
+]
+for (const p of envPaths) {
+  if (existsSync(p)) {
+    dotenv.config({ path: p })
+    break
+  }
+}
 
 function createWindow(): void {
   const win = new BrowserWindow({

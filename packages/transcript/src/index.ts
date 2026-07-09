@@ -1,7 +1,7 @@
 import type { Word, Segment, WhisperSegment } from "@video-editor/types"
 import { generateId } from "@video-editor/utils"
 
-const FILLER_WORDS = new Set([
+export const FILLER_WORDS = new Set([
   "um",
   "uh",
   "uhm",

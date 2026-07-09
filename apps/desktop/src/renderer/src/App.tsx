@@ -5,6 +5,8 @@ import { Progress } from "@video-editor/ui"
 import { Spinner } from "@video-editor/ui"
 import { Badge } from "@video-editor/ui"
 import { Card } from "@video-editor/ui"
+import { TranscriptViewer } from "./TranscriptViewer"
+import { ClipReview } from "./ClipReview"
 
 type View = "empty" | "projects" | "project"
 
@@ -13,6 +15,7 @@ const MODEL_SIZES: { key: WhisperModel; label: string; size: string }[] = [
   { key: "base", label: "Base", size: "~142 MB" },
   { key: "small", label: "Small", size: "~466 MB" },
   { key: "medium", label: "Medium", size: "~1.5 GB" },
+  { key: "large", label: "Large", size: "~3.1 GB" },
 ]
 
 function statusColor(status: Project["status"]): "violet" | "green" | "yellow" | "red" | "neutral" {
@@ -49,7 +52,7 @@ export default function App(): React.ReactElement {
   const [importing, setImporting] = useState(false)
   const [importProgress, setImportProgress] = useState(0)
   const [importMessage, setImportMessage] = useState("")
-  const [selectedModel, setSelectedModel] = useState<WhisperModel>("base")
+  const [selectedModel, setSelectedModel] = useState<WhisperModel>("medium")
   const [showImportDialog, setShowImportDialog] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -112,7 +115,11 @@ export default function App(): React.ReactElement {
 
       try {
         const proj = await window.api.invoke("project:create", {
-          name: filePath.split("/").pop()?.split(".")[0] ?? "Untitled",
+          name:
+            filePath
+              .split("/")
+              .pop()
+              ?.replace(/\.[^.]+$/, "") ?? "Untitled",
           mediaPath: filePath,
         })
 
@@ -197,7 +204,9 @@ export default function App(): React.ReactElement {
               pipelineProgress={
                 pipelineProgress?.projectId === selectedProject.id ? pipelineProgress : null
               }
+              selectedModel={selectedModel}
               onTranscribe={handleStartPipeline}
+              onModelChange={setSelectedModel}
             />
           ) : (
             <DropZone
@@ -306,16 +315,49 @@ function DropZone({
 interface ProjectViewProps {
   project: Project
   pipelineProgress: PipelineProgress | null
+  selectedModel: WhisperModel
   onTranscribe: () => void
+  onModelChange: (m: WhisperModel) => void
 }
 
 function ProjectView({
   project,
   pipelineProgress,
+  selectedModel,
   onTranscribe,
+  onModelChange,
 }: ProjectViewProps): React.ReactElement {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const [highlightRange, setHighlightRange] = useState<{
+    startMs: number
+    endMs: number
+  } | null>(null)
+
+  const seekTo = useCallback((startMs: number, autoPlay = false) => {
+    const vid = videoRef.current
+    if (!vid) return
+    vid.currentTime = startMs / 1000
+    if (autoPlay) vid.play().catch(() => {})
+  }, [])
+
+  const handleSeekWord = useCallback(
+    (startMs: number) => {
+      setHighlightRange(null)
+      seekTo(startMs, true)
+    },
+    [seekTo],
+  )
+
+  const handleSelectClip = useCallback(
+    (startMs: number, endMs: number) => {
+      setHighlightRange({ startMs, endMs })
+      seekTo(startMs, false)
+    },
+    [seekTo],
+  )
+
   return (
-    <div className="flex-1 p-6 space-y-6">
+    <div className="flex-1 p-6 space-y-6 overflow-y-auto">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-lg font-medium">{project.name}</h1>
@@ -328,11 +370,29 @@ function ProjectView({
           </p>
         </div>
 
-        <div className="flex gap-2">
-          {project.status === "idle" && (
-            <Button size="sm" onClick={onTranscribe}>
-              Transcribe
-            </Button>
+        <div className="flex items-center gap-2">
+          {(project.status === "idle" || project.status === "error") && (
+            <>
+              <div className="flex rounded-lg border border-neutral-700 overflow-hidden text-xs">
+                {MODEL_SIZES.map((m) => (
+                  <button
+                    key={m.key}
+                    onClick={() => onModelChange(m.key)}
+                    className={`px-2 py-1 font-medium transition-colors ${
+                      selectedModel === m.key
+                        ? "bg-violet-600 text-white"
+                        : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
+                    }`}
+                    title={m.size}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              <Button size="sm" onClick={onTranscribe}>
+                {project.status === "error" ? "Retry Transcribe" : "Transcribe"}
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -355,12 +415,24 @@ function ProjectView({
       {project.proxyPath && (
         <div className="aspect-video bg-neutral-900 rounded-xl overflow-hidden">
           <video
+            ref={videoRef}
             src={`file://${project.proxyPath}`}
             className="w-full h-full object-contain"
             controls
             playsInline
           />
         </div>
+      )}
+
+      {project.status === "ready" && (
+        <>
+          <TranscriptViewer
+            projectId={project.id}
+            onSeekWord={handleSeekWord}
+            highlightRange={highlightRange}
+          />
+          <ClipReview projectId={project.id} onSelectClip={handleSelectClip} />
+        </>
       )}
     </div>
   )
