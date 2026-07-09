@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 import { join } from "node:path"
 import { existsSync } from "node:fs"
-import { mkdir, writeFile } from "node:fs/promises"
+import { mkdir, writeFile, readFile } from "node:fs/promises"
 
 export type {
   WhisperWord,
@@ -9,7 +9,12 @@ export type {
   WhisperTranscriptionResult,
   WhisperModel,
 } from "@video-editor/types"
-import type { WhisperTranscriptionResult, WhisperModel } from "@video-editor/types"
+import type {
+  WhisperWord,
+  WhisperSegment,
+  WhisperTranscriptionResult,
+  WhisperModel,
+} from "@video-editor/types"
 
 export interface WhisperConfig {
   binaryPath: string
@@ -26,19 +31,28 @@ export function resolveWhisperBinary(resourcesPath: string): string {
   return "whisper-cli"
 }
 
+const MODEL_FILES: Record<WhisperModel, string> = {
+  tiny: "ggml-tiny.bin",
+  base: "ggml-base.bin",
+  small: "ggml-small.bin",
+  medium: "ggml-medium.bin",
+  large: "ggml-large-v3.bin",
+}
+
+const MODEL_URLS: Record<WhisperModel, string> = {
+  tiny: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILES.tiny}`,
+  base: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILES.base}`,
+  small: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILES.small}`,
+  medium: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILES.medium}`,
+  large: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILES.large}`,
+}
+
 export function modelPath(modelsDir: string, model: WhisperModel): string {
-  return join(modelsDir, `ggml-${model}.bin`)
+  return join(modelsDir, MODEL_FILES[model])
 }
 
 export function isModelDownloaded(modelsDir: string, model: WhisperModel): boolean {
   return existsSync(modelPath(modelsDir, model))
-}
-
-const MODEL_URLS: Record<WhisperModel, string> = {
-  tiny: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
-  base: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
-  small: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
-  medium: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
 }
 
 export async function downloadModel(
@@ -70,6 +84,54 @@ export async function downloadModel(
   await writeFile(modelPath(modelsDir, model), Buffer.concat(chunks))
 }
 
+interface WhisperCliToken {
+  text: string
+  offsets: { from: number; to: number }
+  p: number
+  id: number
+  t_dtw: number
+}
+
+interface WhisperCliSegment {
+  timestamps: { from: string; to: string }
+  offsets: { from: number; to: number }
+  text: string
+  tokens: WhisperCliToken[]
+}
+
+interface WhisperCliResult {
+  systeminfo: string
+  model: { type: string }
+  params: Record<string, unknown>
+  result: { language: string }
+  transcription: WhisperCliSegment[]
+}
+
+function normalizeWhisperResult(raw: WhisperCliResult): WhisperTranscriptionResult {
+  const segments: WhisperSegment[] = raw.transcription.map((seg, i) => {
+    const words: WhisperWord[] = []
+    for (const t of seg.tokens) {
+      const text = t.text.trim()
+      if (!text || text.startsWith("[") || text.startsWith("<")) continue
+      words.push({
+        word: text,
+        start: t.offsets.from / 1000,
+        end: t.offsets.to / 1000,
+        probability: t.p,
+      })
+    }
+    return {
+      id: i,
+      start: seg.offsets.from / 1000,
+      end: seg.offsets.to / 1000,
+      text: seg.text.trim(),
+      words,
+    }
+  })
+
+  return { segments, language: raw.result.language }
+}
+
 export async function transcribe(
   config: WhisperConfig,
   audioPath: string,
@@ -81,34 +143,47 @@ export async function transcribe(
   }
 
   return new Promise((resolve, reject) => {
+    const jsonPath = `${audioPath}.json`
     const args = [
       "-m",
       modelPath(config.modelsDir, model),
       "-f",
       audioPath,
-      "-oj",
-      "--word-timestamps",
-      "true",
+      "-ojf",
+      "-sow",
       "-t",
       "4",
     ]
 
     const proc = spawn(config.binaryPath, args)
-    const stdout: string[] = []
     const stderr: string[] = []
 
-    proc.stdout.on("data", (d: Buffer) => stdout.push(d.toString()))
-    proc.stderr.on("data", (d: Buffer) => stderr.push(d.toString()))
+    proc.stderr.on("data", (d: Buffer) => {
+      const chunk = d.toString()
+      stderr.push(chunk)
+      if (onProgress) {
+        const match = chunk.match(/whisper_full(?:_parallel)?:?\s+progress\s*=\s*(\d+)\s*%/)
+        if (match) {
+          onProgress(parseInt(match[1]!, 10) / 100)
+        }
+      }
+    })
 
-    proc.on("close", (code) => {
+    proc.on("close", async (code) => {
       if (code !== 0) {
         reject(new Error(`Whisper exited ${code}:\n${stderr.join("")}`))
         return
       }
       try {
-        resolve(JSON.parse(stdout.join("")) as WhisperTranscriptionResult)
+        const raw = await readFile(jsonPath, "utf-8")
+        const parsed = JSON.parse(raw) as WhisperCliResult
+        resolve(normalizeWhisperResult(parsed))
       } catch {
-        reject(new Error("Failed to parse Whisper JSON output"))
+        reject(
+          new Error(
+            `Failed to parse Whisper JSON output from ${jsonPath}\nstderr: ${stderr.join("").slice(0, 500)}`,
+          ),
+        )
       }
     })
   })
