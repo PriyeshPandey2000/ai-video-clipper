@@ -163,3 +163,78 @@ Transcript shows timestamps in seconds (`[10.50]`) but system prompt asked for m
 ### Bonus — durationMs was always 0
 
 `projects.durationMs` was never updated after transcription (defaulted to 0 from `project:create`). Now computed from last word's `endMs` and written to DB during the analyzing stage.
+
+---
+
+## Session 7 — Social captions panel + pipeline hardening
+
+**Goal:** Phase 4 completion — surface AI outputs in the UI, remove out-of-scope blog post feature, make pipeline failure-safe.
+
+### Changes
+
+#### `apps/desktop/src/renderer/src/CaptionsPanel.tsx` (new)
+
+- Fetches `ai_outputs` via `project:get-ai-outputs` IPC
+- Finds `social_caption` row, parses JSON as `SocialCaption[]` (`platform`, `caption`, `hashtags`)
+- Per-platform copy button: copies `caption + "\n\n" + #hashtag #hashtag`; shows "Copied!" for 1500 ms
+- Hashtags styled `text-violet-400/70`
+- Empty state explains GROQ_API_KEY requirement
+
+#### `apps/desktop/src/main/ipc.ts`
+
+- Added `project:get-ai-outputs` handler
+- Removed `generateBlogPost` import and call from pipeline — blog post not relevant to video app; data still accumulates in DB from prior runs
+- Removed `plainText` variable (was only used by blog post)
+- Entire `pipeline:start` body now wrapped in outer try/catch → sets project `status: "error"`, fires `pipeline:error` event
+
+#### Bug fixes
+
+- `selectClips` score thresholds in `ClipReview` were checking raw `0–1` value against `>= 7` / `>= 4` → score always showed red. Fixed to `>= 0.7` / `>= 0.4`.
+- AI score display: raw `0–1` value shown as `0.8/10`. Fixed to `Math.round(score * 10)/10` display.
+- `Button` import in `ClipReview` was unused → ESLint pre-commit hook failure. Removed.
+
+---
+
+## Session 8 — Export (Phase 5)
+
+**Goal:** Full export pipeline — clip cuts, episode edit, SRT, subtitle burn-in, output folder picker.
+
+### Architecture decisions
+
+**Clip subtitle burn-in:** Each clip gets its own SRT with timestamps offset by `-clip.startMs`. Written to OS temp dir, passed to FFmpeg `-vf subtitles=`, deleted after encode. This keeps clip SRTs self-contained (start at 00:00:00,000).
+
+**Episode export concat filter:** FFmpeg `trim`+`setpts`+`concat` filter graph removes filler and silence segments. Keep intervals computed as the inverse of the segments table: sort segments by startMs, walk a cursor from 0, push gap before each segment. Optional `subtitles=` filter appended to `[outv]` output when burn-in enabled.
+
+**SRT grouping strategy:** ≤8 words per subtitle line, hard break on >4s duration or >1s pause between words. Produces readable output without a forced-alignment library.
+
+### Changes
+
+#### `packages/ffmpeg/src/index.ts`
+
+- Added `EpisodeExportOptions` + `exportEpisode()`: builds FFmpeg `filter_complex` from keep-intervals array, optional `srtPath` appends `subtitles=` filter on concat output
+- Added `srtPath?` to `EpisodeExportOptions`
+
+#### `packages/database/src/index.ts`
+
+- Exported `inArray` from `drizzle-orm` (needed by `export:clips` for batch clip lookup)
+
+#### `apps/desktop/src/main/ipc.ts`
+
+- `export:clips`: loads clips by ID, generates per-clip offset SRT when `burnSubtitles=true`, writes to temp file, calls `exportClip`, deletes temp file, marks clips `exported` in DB
+- `export:full`: inverts segments → keep intervals, calls `exportEpisode` with optional full SRT
+- `export:srt`: builds SRT from words table, writes to output folder
+- `dialog:pick-folder`: opens native `showOpenDialog({ openDirectory })`, returns chosen path or null
+- `shell:show-item`: calls `shell.showItemInFolder(path)` — reveals file in Finder/Explorer
+- Helper functions added: `sanitizeName`, `msToSrtTime`, `buildSrt`
+
+#### `apps/desktop/src/renderer/src/ClipReview.tsx`
+
+- Accepts `exportSettings: { outputDir: string; burnSubtitles: boolean }` prop
+- "Export" button appears on `approved` clips, shows "Exporting..." state, transitions to "Exported" on success, auto-reveals file in Finder
+
+#### `apps/desktop/src/renderer/src/App.tsx`
+
+- ProjectView: `outputDir` + `burnSubtitles` state
+- Header (when `status === "ready"`): "Burn subs" checkbox, folder picker button (shows current folder name), "Export SRT", "Export Episode" buttons
+- Folder picker opens `dialog:pick-folder` IPC, updates `outputDir` state for session
+- All export calls use shared `outputDir` / `burnSubtitles` settings

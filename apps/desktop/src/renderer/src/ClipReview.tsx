@@ -2,9 +2,16 @@ import { useState, useEffect, useCallback } from "react"
 import type { Clip } from "@video-editor/types"
 import { Spinner, Badge } from "@video-editor/ui"
 
+interface ExportSettings {
+  outputDir: string
+  burnSubtitles: boolean
+}
+
 interface ClipReviewProps {
   projectId: string
   onSelectClip: (startMs: number, endMs: number) => void
+  exportSettings: ExportSettings
+  refreshTrigger?: number
 }
 
 function formatDuration(ms: number): string {
@@ -38,10 +45,13 @@ function statusBadgeColor(
 export function ClipReview({
   projectId,
   onSelectClip,
+  exportSettings,
+  refreshTrigger,
 }: ClipReviewProps): React.ReactElement | null {
   const [clips, setClips] = useState<Clip[] | null>(null)
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [exportingIds, setExportingIds] = useState<Set<string>>(new Set())
 
   const loadClips = useCallback(async () => {
     try {
@@ -56,7 +66,7 @@ export function ClipReview({
 
   useEffect(() => {
     loadClips()
-  }, [loadClips])
+  }, [loadClips, refreshTrigger])
 
   const handleSelect = useCallback(
     (clip: Clip) => {
@@ -66,37 +76,51 @@ export function ClipReview({
     [onSelectClip],
   )
 
-  const handleApprove = useCallback(async (clipId: string) => {
-    try {
-      await window.api.invoke("clip:update-status", {
-        clipId,
-        status: "approved",
-      })
-      setClips((prev) =>
-        prev
-          ? prev.map((c) => (c.id === clipId ? { ...c, status: "approved" as const } : c))
-          : null,
-      )
-    } catch (err) {
-      console.error("Failed to approve clip:", err)
-    }
-  }, [])
+  const handleSetStatus = useCallback(
+    async (clipId: string, current: Clip["status"], target: "approved" | "rejected") => {
+      const newStatus = current === target ? "suggested" : target
+      try {
+        await window.api.invoke("clip:update-status", { clipId, status: newStatus })
+        setClips((prev) =>
+          prev ? prev.map((c) => (c.id === clipId ? { ...c, status: newStatus } : c)) : null,
+        )
+      } catch (err) {
+        console.error("Failed to update clip status:", err)
+      }
+    },
+    [],
+  )
 
-  const handleReject = useCallback(async (clipId: string) => {
-    try {
-      await window.api.invoke("clip:update-status", {
-        clipId,
-        status: "rejected",
-      })
-      setClips((prev) =>
-        prev
-          ? prev.map((c) => (c.id === clipId ? { ...c, status: "rejected" as const } : c))
-          : null,
-      )
-    } catch (err) {
-      console.error("Failed to reject clip:", err)
-    }
-  }, [])
+  const handleExport = useCallback(
+    async (clipId: string) => {
+      setExportingIds((prev) => new Set(prev).add(clipId))
+      try {
+        const paths = await window.api.invoke("export:clips", {
+          projectId,
+          clipIds: [clipId],
+          ...(exportSettings.outputDir ? { outputDir: exportSettings.outputDir } : {}),
+          burnSubtitles: exportSettings.burnSubtitles,
+        })
+        setClips((prev) =>
+          prev
+            ? prev.map((c) => (c.id === clipId ? { ...c, status: "exported" as const } : c))
+            : null,
+        )
+        if (paths[0]) {
+          await window.api.invoke("shell:show-item", { path: paths[0] })
+        }
+      } catch (err) {
+        console.error("Failed to export clip:", err)
+      } finally {
+        setExportingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(clipId)
+          return next
+        })
+      }
+    },
+    [projectId],
+  )
 
   if (loading) {
     return (
@@ -136,7 +160,8 @@ export function ClipReview({
       <div className="space-y-2">
         {sorted.map((clip) => {
           const isSelected = clip.id === selectedId
-          const isDecided = clip.status === "approved" || clip.status === "rejected"
+          const isExporting = exportingIds.has(clip.id)
+          const isExported = clip.status === "exported"
 
           return (
             <div
@@ -174,29 +199,52 @@ export function ClipReview({
                 <span
                   onClick={(e) => {
                     e.stopPropagation()
-                    if (clip.status !== "exported") handleApprove(clip.id)
+                    if (!isExported) handleSetStatus(clip.id, clip.status, "approved")
                   }}
                   className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors cursor-pointer ${
                     clip.status === "approved"
-                      ? "bg-green-600 text-white"
+                      ? "bg-green-600 text-white hover:bg-green-700"
                       : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
-                  } ${clip.status === "exported" ? "opacity-50 pointer-events-none" : ""}`}
+                  } ${isExported ? "opacity-50 pointer-events-none" : ""}`}
+                  title={clip.status === "approved" ? "Click to undo" : undefined}
                 >
-                  {clip.status === "approved" ? "Approved" : "Approve"}
+                  {clip.status === "approved" ? "✓ Approved" : "Approve"}
                 </span>
                 <span
                   onClick={(e) => {
                     e.stopPropagation()
-                    if (!isDecided) handleReject(clip.id)
+                    if (!isExported) handleSetStatus(clip.id, clip.status, "rejected")
                   }}
                   className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors cursor-pointer ${
                     clip.status === "rejected"
-                      ? "bg-red-600 text-white"
+                      ? "bg-red-600 text-white hover:bg-red-700"
                       : "bg-neutral-800 text-neutral-400 hover:bg-neutral-700 hover:text-red-400"
-                  } ${isDecided ? "opacity-50 pointer-events-none" : ""}`}
+                  } ${isExported ? "opacity-50 pointer-events-none" : ""}`}
+                  title={clip.status === "rejected" ? "Click to undo" : undefined}
                 >
-                  {clip.status === "rejected" ? "Rejected" : "Reject"}
+                  {clip.status === "rejected" ? "✕ Rejected" : "Reject"}
                 </span>
+                {(clip.status === "approved" || clip.status === "exported") && (
+                  <span
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (clip.status === "approved" && !isExporting) handleExport(clip.id)
+                    }}
+                    className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors cursor-pointer ${
+                      clip.status === "exported"
+                        ? "bg-neutral-700 text-neutral-400 pointer-events-none"
+                        : isExporting
+                          ? "bg-neutral-800 text-neutral-500 pointer-events-none"
+                          : "bg-violet-700 text-white hover:bg-violet-600"
+                    }`}
+                  >
+                    {clip.status === "exported"
+                      ? "Exported"
+                      : isExporting
+                        ? "Exporting..."
+                        : "Export"}
+                  </span>
+                )}
               </div>
             </div>
           )

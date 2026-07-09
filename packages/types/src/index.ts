@@ -93,11 +93,22 @@ export interface IpcChannels {
   "project:create": { args: { name: string; mediaPath: string }; result: Project }
   "project:get": { args: { id: string }; result: Project | null }
   "project:get-words": { args: { projectId: string }; result: Word[] }
+  "project:get-ai-outputs": { args: { projectId: string }; result: AiOutput[] }
   "pipeline:start": { args: { projectId: string; model: WhisperModel }; result: void }
   "clip:list": { args: { projectId: string }; result: Clip[] }
   "clip:update-status": { args: { clipId: string; status: Clip["status"] }; result: void }
-  "export:clips": { args: { projectId: string; clipIds: string[] }; result: string[] }
-  "export:full": { args: { projectId: string }; result: string }
+  "export:clips": {
+    args: { projectId: string; clipIds: string[]; outputDir?: string; burnSubtitles?: boolean }
+    result: string[]
+  }
+  "export:full": {
+    args: { projectId: string; outputDir?: string; burnSubtitles?: boolean }
+    result: string
+  }
+  "export:srt": { args: { projectId: string; outputDir?: string }; result: string }
+  "dialog:pick-folder": { args: { defaultPath?: string }; result: string | null }
+  "ffmpeg:has-subtitles-filter": { args: void; result: boolean }
+  "shell:show-item": { args: { path: string }; result: void }
   // event channels (main → renderer)
   "pipeline:progress": PipelineProgress
   "pipeline:complete": { projectId: string }

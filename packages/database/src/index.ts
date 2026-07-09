@@ -4,7 +4,7 @@ import * as schema from "./schema"
 
 export * from "./schema"
 export type { BetterSQLite3Database }
-export { eq, and, or, desc, asc, sql } from "drizzle-orm"
+export { eq, and, or, desc, asc, sql, inArray } from "drizzle-orm"
 
 let _db: BetterSQLite3Database<typeof schema> | null = null
 let _sqlite: Database.Database | null = null

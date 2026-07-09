@@ -6,11 +6,16 @@ type InvokeChannels = Pick<
   | "project:create"
   | "project:get"
   | "project:get-words"
+  | "project:get-ai-outputs"
   | "clip:list"
   | "pipeline:start"
   | "clip:update-status"
   | "export:clips"
   | "export:full"
+  | "export:srt"
+  | "dialog:pick-folder"
+  | "ffmpeg:has-subtitles-filter"
+  | "shell:show-item"
 >
 
 interface ElectronAPI {
