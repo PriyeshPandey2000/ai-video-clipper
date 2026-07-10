@@ -2,7 +2,21 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import type { Word } from "@video-editor/types"
 import { Spinner } from "@video-editor/ui"
 
-const FILLER_WORDS = new Set(["um", "uh", "uhm", "hmm", "like", "right", "so", "yeah"])
+const FILLER_WORDS = new Set([
+  "um",
+  "uh",
+  "uhm",
+  "hmm",
+  "like",
+  "you know",
+  "i mean",
+  "basically",
+  "literally",
+  "actually",
+  "right",
+  "so",
+  "yeah",
+])
 
 const SILENCE_GAP_THRESHOLD_MS = 1000
 const WORDS_PER_PAGE = 500
