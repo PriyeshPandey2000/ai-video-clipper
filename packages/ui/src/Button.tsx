@@ -36,7 +36,7 @@ export function Button({
       {...props}
       disabled={disabled || loading}
       className={`inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors duration-75
-        disabled:opacity-50 disabled:pointer-events-none
+        cursor-pointer disabled:cursor-default disabled:opacity-50 disabled:pointer-events-none
         ${variantClasses[variant]} ${sizeClasses[size]} ${className}`}
     >
       {loading && (

@@ -5,6 +5,7 @@ import { Progress } from "@video-editor/ui"
 import { Spinner } from "@video-editor/ui"
 import { Badge } from "@video-editor/ui"
 import { Card } from "@video-editor/ui"
+import { Search, Settings, X, Plus } from "lucide-react"
 import { TranscriptViewer } from "./TranscriptViewer"
 import { ClipReview } from "./ClipReview"
 import { CaptionsPanel } from "./CaptionsPanel"
@@ -56,7 +57,15 @@ const STAGE_TO_STATUS: Record<PipelineStage, Project["status"]> = {
   generating_content: "analyzing",
 }
 
-function formatDate(ts: number): string {
+function timeAgo(ts: number): string {
+  const sec = Math.floor((Date.now() - ts) / 1000)
+  if (sec < 60) return "just now"
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m ago`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  const day = Math.floor(hr / 24)
+  if (day < 7) return `${day}d ago`
   return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" })
 }
 
@@ -72,10 +81,12 @@ export default function App(): React.ReactElement {
   const [importError, setImportError] = useState<string | null>(null)
   const [selectedModel, setSelectedModel] = useState<WhisperModel>("medium")
   const [showImportDialog, setShowImportDialog] = useState(false)
+  const [search, setSearch] = useState("")
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const progressRef = useRef(pipelineProgress)
   progressRef.current = pipelineProgress
+  const initialLoadDone = useRef(false)
 
   const liveProjects = useMemo(() => {
     if (!pipelineProgress) return projects
@@ -92,14 +103,15 @@ export default function App(): React.ReactElement {
     try {
       const list = await window.api.invoke("project:list")
       setProjects(list)
-      if (list.length > 0 && view === "empty") {
+      if (!initialLoadDone.current && list.length > 0) {
+        initialLoadDone.current = true
         setSelectedId(list[0]!.id)
         setView("project")
       }
     } catch {
       console.error("Failed to load projects")
     }
-  }, [view])
+  }, [])
 
   useEffect(() => {
     loadProjects()
@@ -197,34 +209,87 @@ export default function App(): React.ReactElement {
 
   return (
     <div className="flex h-screen flex-col bg-neutral-950 text-neutral-100">
-      <div className="flex h-10 items-center px-4 drag-region">
-        <span className="text-xs font-medium text-neutral-500">Video AI Editor</span>
+      <div className="flex h-10 items-center drag-region">
+        <div className="w-64 flex items-center justify-center">
+          <button
+            className="no-drag text-sm font-bold text-white hover:text-neutral-300 transition-colors cursor-pointer"
+            onClick={() => {
+              setSelectedId(null)
+              setView("empty")
+            }}
+          >
+            Clipper
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
         <aside className="w-64 border-r border-neutral-800 flex flex-col">
-          <div className="p-3 border-b border-neutral-800">
-            <Button size="sm" className="w-full" onClick={handleNewProject}>
-              + New Project
-            </Button>
+          <div className="px-3 pt-3 pb-2 flex items-center gap-2">
+            <div className="flex flex-1 items-center gap-2 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5">
+              <Search size={12} className="text-neutral-600 shrink-0" />
+              <input
+                type="text"
+                placeholder="Search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="flex-1 bg-transparent text-xs text-neutral-300 placeholder:text-neutral-600 outline-none"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  className="text-neutral-600 hover:text-neutral-400 cursor-pointer"
+                >
+                  <X size={10} />
+                </button>
+              )}
+            </div>
+            <button
+              onClick={handleNewProject}
+              title="New Project"
+              className="shrink-0 rounded-md border border-neutral-800 bg-neutral-900 p-1.5 text-neutral-500 hover:text-neutral-200 hover:border-neutral-700 transition-colors cursor-pointer"
+            >
+              <Plus size={13} />
+            </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-2 space-y-1">
-            {liveProjects.map((proj) => (
-              <button
-                key={proj.id}
-                onClick={() => handleSelectProject(proj.id)}
-                className={`w-full text-left rounded-lg p-3 transition-colors ${
-                  selectedId === proj.id ? "bg-neutral-800" : "hover:bg-neutral-800/50"
-                }`}
-              >
-                <div className="text-sm font-medium truncate">{proj.name}</div>
-                <div className="flex items-center gap-2 mt-1">
-                  <Badge color={statusColor(proj.status)}>{proj.status}</Badge>
-                  <span className="text-xs text-neutral-500">{formatDate(proj.createdAt)}</span>
-                </div>
-              </button>
-            ))}
+          <div className="flex-1 overflow-y-auto px-2 divide-y divide-neutral-800/60">
+            {liveProjects
+              .filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
+              .map((proj) => (
+                <button
+                  key={proj.id}
+                  onClick={() => handleSelectProject(proj.id)}
+                  className={`w-full text-left rounded-lg px-2 py-2.5 transition-colors cursor-pointer ${
+                    selectedId === proj.id ? "bg-neutral-800" : "hover:bg-neutral-800/50"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`shrink-0 w-1.5 h-1.5 rounded-full ${
+                        proj.status === "ready"
+                          ? "bg-green-500"
+                          : proj.status === "transcribing" || proj.status === "analyzing"
+                            ? "bg-yellow-500"
+                            : proj.status === "error"
+                              ? "bg-red-500"
+                              : "bg-neutral-600"
+                      }`}
+                    />
+                    <span className="text-sm font-medium truncate">{proj.name}</span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-0.5 pl-3.5">
+                    <span className="text-xs text-neutral-500">{timeAgo(proj.createdAt)}</span>
+                  </div>
+                </button>
+              ))}
+          </div>
+
+          <div className="border-t border-neutral-800 p-3">
+            <button className="flex items-center gap-2 text-xs text-neutral-500 hover:text-neutral-300 transition-colors cursor-pointer w-full">
+              <Settings size={13} />
+              <span>Settings</span>
+            </button>
           </div>
         </aside>
 
@@ -240,7 +305,9 @@ export default function App(): React.ReactElement {
               onModelChange={setSelectedModel}
             />
           ) : (
-            <DropZone
+            <HomePage
+              recentProjects={liveProjects.slice(0, 3)}
+              onSelectProject={handleSelectProject}
               dragOver={dragOver}
               onDragOver={setDragOver}
               onDrop={handleFileDrop}
@@ -288,6 +355,72 @@ export default function App(): React.ReactElement {
   )
 }
 
+interface HomePageProps extends DropZoneProps {
+  recentProjects: Project[]
+  onSelectProject: (id: string) => void
+}
+
+function HomePage({
+  recentProjects,
+  onSelectProject,
+  dragOver,
+  onDragOver,
+  onDrop,
+  onBrowse,
+  importing,
+  importProgress,
+  importMessage,
+  error,
+  onClearError,
+}: HomePageProps): React.ReactElement {
+  return (
+    <div className="flex-1 overflow-y-auto p-8 space-y-8">
+      {recentProjects.length > 0 && (
+        <div className="space-y-3">
+          <h2 className="text-xs font-medium text-neutral-500 uppercase tracking-wider">Recent</h2>
+          <div className="grid grid-cols-3 gap-3">
+            {recentProjects.map((proj) => (
+              <button
+                key={proj.id}
+                onClick={() => onSelectProject(proj.id)}
+                className="text-left rounded-xl border border-neutral-800 bg-neutral-900/50 p-4 hover:border-neutral-700 transition-colors cursor-pointer"
+              >
+                <div className="text-sm font-medium truncate mb-2">{proj.name}</div>
+                <div className="flex items-center gap-2">
+                  <Badge color={statusColor(proj.status)}>{proj.status}</Badge>
+                  <span className="text-xs text-neutral-500">{timeAgo(proj.createdAt)}</span>
+                </div>
+                {proj.durationMs > 0 && (
+                  <div className="text-xs text-neutral-600 mt-1">
+                    {Math.round(proj.durationMs / 1000)}s
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-3 mt-6">
+        <h2 className="text-xs font-medium text-neutral-500 uppercase tracking-wider">
+          New Project
+        </h2>
+        <DropZone
+          dragOver={dragOver}
+          onDragOver={onDragOver}
+          onDrop={onDrop}
+          onBrowse={onBrowse}
+          importing={importing}
+          importProgress={importProgress}
+          importMessage={importMessage}
+          error={error}
+          onClearError={onClearError}
+        />
+      </div>
+    </div>
+  )
+}
+
 interface DropZoneProps {
   dragOver: boolean
   onDragOver: (v: boolean) => void
@@ -296,8 +429,8 @@ interface DropZoneProps {
   importing: boolean
   importProgress: number
   importMessage: string
-  error?: string | null
-  onClearError?: () => void
+  error: string | null
+  onClearError: () => void
 }
 
 function DropZone({
@@ -313,7 +446,7 @@ function DropZone({
 }: DropZoneProps): React.ReactElement {
   return (
     <div
-      className="flex-1 flex items-center justify-center cursor-pointer"
+      className="flex items-center justify-center cursor-pointer"
       onClick={importing || error ? undefined : onBrowse}
       onDragOver={(e) => {
         e.preventDefault()
@@ -503,45 +636,11 @@ function ProjectView({
         <div className="flex items-center gap-2">
           {project.status === "ready" && (
             <>
-              <label
-                className={`flex items-center gap-1.5 select-none ${subtitlesSupported === false ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
-                title={
-                  subtitlesSupported === false
-                    ? "Your FFmpeg build lacks libass — run: brew install libass && brew reinstall ffmpeg"
-                    : "Embed subtitles into the exported video"
-                }
-              >
-                <input
-                  type="checkbox"
-                  checked={burnSubtitles}
-                  disabled={subtitlesSupported === false}
-                  onChange={(e) => setBurnSubtitles(e.target.checked)}
-                  className="accent-violet-500 w-3 h-3"
-                />
-                <span className="text-xs text-neutral-400">Add subtitles</span>
-              </label>
-              <button
-                onClick={handlePickFolder}
-                className="flex items-center gap-1 rounded-md border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-neutral-400 transition-colors hover:bg-neutral-700 hover:text-neutral-200 max-w-[140px]"
-                title={outputDir || "~/Downloads/<project-name>"}
-              >
-                <span className="truncate">
-                  {outputDir ? outputDir.split("/").pop() : "Downloads"}
-                </span>
-                <span className="shrink-0 text-neutral-600">▾</span>
-              </button>
-              <button
-                onClick={handleExportSrt}
-                disabled={exportingSrt}
-                className="rounded-md border border-neutral-700 bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 transition-colors hover:bg-neutral-700 hover:text-neutral-100 disabled:opacity-50 disabled:pointer-events-none"
-              >
-                {exportingSrt ? "Exporting..." : "Export SRT"}
-              </button>
               <button
                 onClick={handleExportAllClips}
                 disabled={exportingAllClips}
                 title="Export all approved clips as separate video files"
-                className="rounded-md border border-violet-700 bg-violet-900/40 px-2.5 py-1 text-xs font-medium text-violet-300 transition-colors hover:bg-violet-800/60 hover:text-violet-100 disabled:opacity-50 disabled:pointer-events-none"
+                className="rounded-md border border-violet-700 bg-violet-900/40 px-3 py-1.5 text-xs font-medium text-violet-300 transition-colors hover:bg-violet-800/60 hover:text-violet-100 disabled:opacity-50 disabled:pointer-events-none cursor-pointer disabled:cursor-default"
               >
                 {exportingAllClips ? "Exporting..." : "Export Clips"}
               </button>
@@ -549,7 +648,7 @@ function ProjectView({
                 onClick={handleExportEpisode}
                 disabled={exportingEpisode}
                 title="Export full video with fillers and silences removed"
-                className="rounded-md border border-neutral-700 bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 transition-colors hover:bg-neutral-700 hover:text-neutral-100 disabled:opacity-50 disabled:pointer-events-none"
+                className="rounded-md bg-violet-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50 disabled:pointer-events-none cursor-pointer disabled:cursor-default"
               >
                 {exportingEpisode ? "Exporting..." : "Export Episode"}
               </button>
@@ -562,7 +661,7 @@ function ProjectView({
                   <button
                     key={m.key}
                     onClick={() => onModelChange(m.key)}
-                    className={`px-2 py-1 font-medium transition-colors ${
+                    className={`px-2 py-1 font-medium transition-colors cursor-pointer ${
                       selectedModel === m.key
                         ? "bg-violet-600 text-white"
                         : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
@@ -580,6 +679,46 @@ function ProjectView({
           )}
         </div>
       </div>
+
+      {project.status === "ready" && (
+        <div className="flex items-center gap-4 -mt-2">
+          <label
+            className={`flex items-center gap-2 select-none ${subtitlesSupported === false ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
+            title={
+              subtitlesSupported === false
+                ? "Your FFmpeg build lacks libass — run: bash scripts/setup-ffmpeg.sh"
+                : "Burn subtitles into exported video"
+            }
+          >
+            <div
+              onClick={subtitlesSupported === false ? undefined : () => setBurnSubtitles((v) => !v)}
+              className={`relative w-7 h-4 rounded-full transition-colors cursor-pointer ${burnSubtitles ? "bg-violet-600" : "bg-neutral-700"}`}
+            >
+              <div
+                className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${burnSubtitles ? "translate-x-3.5" : "translate-x-0.5"}`}
+              />
+            </div>
+            <span className="text-xs text-neutral-400">Subtitles</span>
+          </label>
+
+          <button
+            onClick={handlePickFolder}
+            className="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-300 transition-colors cursor-pointer"
+            title={outputDir || "Output to ~/Downloads"}
+          >
+            <span>{outputDir ? `Save to ${outputDir.split("/").pop()}` : "Save to Downloads"}</span>
+            <span className="text-neutral-600">▾</span>
+          </button>
+
+          <button
+            onClick={handleExportSrt}
+            disabled={exportingSrt}
+            className="text-xs text-neutral-500 hover:text-neutral-300 transition-colors disabled:opacity-40 cursor-pointer disabled:cursor-default"
+          >
+            {exportingSrt ? "Exporting..." : "Export SRT"}
+          </button>
+        </div>
+      )}
 
       {pipelineProgress && (
         <Card className="space-y-2">
@@ -629,7 +768,7 @@ function ProjectView({
                 <button
                   key={tab}
                   onClick={() => setAiTab(tab)}
-                  className={`px-3 py-1.5 text-xs font-medium capitalize transition-colors border-b-2 -mb-px ${
+                  className={`px-3 py-1.5 text-xs font-medium capitalize transition-colors border-b-2 -mb-px cursor-pointer ${
                     aiTab === tab
                       ? "border-violet-500 text-violet-300"
                       : "border-transparent text-neutral-500 hover:text-neutral-300"
@@ -689,7 +828,10 @@ function ImportDialog({
       <Card className="w-full max-w-md mx-4">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-medium">Import Video</h2>
-          <button onClick={onClose} className="text-neutral-500 hover:text-neutral-300 text-sm">
+          <button
+            onClick={onClose}
+            className="text-neutral-500 hover:text-neutral-300 text-sm cursor-pointer"
+          >
             ✕
           </button>
         </div>
