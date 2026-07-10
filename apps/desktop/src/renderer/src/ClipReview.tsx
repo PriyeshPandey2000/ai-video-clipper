@@ -150,13 +150,6 @@ export function ClipReview({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="text-xs font-medium text-neutral-400 uppercase tracking-wider">
-          Suggested Clips
-        </h3>
-        <span className="text-[11px] text-neutral-600">{clips.length} clips</span>
-      </div>
-
       <div className="space-y-2">
         {sorted.map((clip) => {
           const isSelected = clip.id === selectedId
@@ -192,7 +185,9 @@ export function ClipReview({
                   )}
                 </div>
 
-                <Badge color={statusBadgeColor(clip.status)}>{clip.status}</Badge>
+                {clip.status !== "suggested" && (
+                  <Badge color={statusBadgeColor(clip.status)}>{clip.status}</Badge>
+                )}
               </div>
 
               <div className="flex gap-2 mt-2">

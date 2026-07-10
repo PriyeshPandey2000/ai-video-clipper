@@ -137,38 +137,44 @@ export function TranscriptViewer({
         className="overflow-y-auto rounded-lg border border-neutral-800 bg-neutral-900/50 p-4"
         style={{ maxHeight: "320px" }}
       >
-        <div className="leading-loose">
-          {visibleWords.map((w, i) => {
-            const prev = i > 0 ? visibleWords[i - 1] : null
-            const gap = prev ? w.startMs - prev.endMs : 0
-            const gapSec = gap / 1000
-
-            return (
-              <span key={w.id}>
-                {i > 0 && gap >= SILENCE_GAP_THRESHOLD_MS && (
-                  <span className="mx-1 inline-flex items-center gap-1 rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] font-mono text-neutral-500 select-none">
-                    <span className="inline-block w-1 h-1 rounded-full bg-neutral-600" />
-                    {gapSec.toFixed(1)}s
+        <div className="space-y-3 text-left">
+          {visibleWords
+            .reduce<{ words: typeof visibleWords; key: string }[]>((paras, w, i) => {
+              const prev = i > 0 ? visibleWords[i - 1] : null
+              const gap = prev ? w.startMs - prev.endMs : 0
+              if (i === 0 || gap >= SILENCE_GAP_THRESHOLD_MS) {
+                paras.push({ words: [w], key: String(w.id) })
+              } else {
+                paras[paras.length - 1]!.words.push(w)
+              }
+              return paras
+            }, [])
+            .map((para) => (
+              <p
+                key={para.key}
+                className="text-sm leading-7 text-neutral-300 text-left"
+                style={{ textAlign: "left" }}
+              >
+                {para.words.map((w) => (
+                  <span
+                    key={w.id}
+                    onClick={() => onSeekWord(w.startMs)}
+                    data-start-ms={w.startMs}
+                    data-highlighted={isInRange(w.startMs, w.endMs) ? true : undefined}
+                    className={`cursor-pointer rounded-sm px-0.5 transition-colors hover:text-white ${
+                      isInRange(w.startMs, w.endMs)
+                        ? "bg-violet-500/20 text-violet-200"
+                        : isFiller(w.text)
+                          ? "text-neutral-600"
+                          : "text-neutral-300"
+                    }`}
+                    title={isFiller(w.text) ? "filler word" : `[${(w.startMs / 1000).toFixed(1)}s]`}
+                  >
+                    {w.text}{" "}
                   </span>
-                )}
-                <span
-                  onClick={() => onSeekWord(w.startMs)}
-                  data-start-ms={w.startMs}
-                  data-highlighted={isInRange(w.startMs, w.endMs) ? true : undefined}
-                  className={`cursor-pointer rounded-sm px-0.5 transition-colors hover:text-white ${
-                    isInRange(w.startMs, w.endMs)
-                      ? "bg-violet-500/20 text-violet-200"
-                      : isFiller(w.text)
-                        ? "text-neutral-600"
-                        : "text-neutral-300"
-                  }`}
-                  title={isFiller(w.text) ? "filler word" : `[${(w.startMs / 1000).toFixed(1)}s]`}
-                >
-                  {w.text}
-                </span>{" "}
-              </span>
-            )
-          })}
+                ))}
+              </p>
+            ))}
         </div>
 
         {visibleEnd < words.length && (
