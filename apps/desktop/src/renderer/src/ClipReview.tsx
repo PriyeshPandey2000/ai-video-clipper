@@ -9,7 +9,7 @@ interface ExportSettings {
 
 interface ClipReviewProps {
   projectId: string
-  onSelectClip: (startMs: number, endMs: number) => void
+  onSelectClip: (clip: Clip) => void
   exportSettings: ExportSettings
   refreshTrigger?: number
 }
@@ -71,7 +71,7 @@ export function ClipReview({
   const handleSelect = useCallback(
     (clip: Clip) => {
       setSelectedId(clip.id)
-      onSelectClip(clip.startMs, clip.endMs)
+      onSelectClip(clip)
     },
     [onSelectClip],
   )

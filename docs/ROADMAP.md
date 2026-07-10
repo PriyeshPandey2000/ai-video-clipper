@@ -50,7 +50,6 @@
 - [x] Fix disk leak: Whisper JSON temp file cleanup after transcription
 - [x] Fix FILLER_WORDS sync between transcript package and renderer
 - [x] Fix stale `selectedProject` derived from wrong list
-- [x] Fix auto-select on project reopen
 - [x] Fix stale closure on `handleExport` in ClipReview (wrong output folder)
 - [x] Fix word filter in subtitle generation (words straddling clip end were dropped)
 - [x] Fix `srtPath` silently dropped in single-interval episode export fast-path
@@ -59,22 +58,45 @@
 - [x] Sidebar redesign: search, compact + button, status dots, relative timestamps, dividers, Settings footer
 - [x] Export controls: action buttons in header, settings row (subtitles, folder, SRT) below
 - [x] Paragraph-based transcript rendering grouped at silence gaps; fix text-justify globally
-- [x] Home navigation (click Clipper to return home); fix auto-select re-redirect bug
+- [x] Home navigation; fix auto-select re-redirect bug
 - [x] Lucide icons; dark scrollbar styles; cursor-pointer audit
 
 ## Phase 6 — Distribution ❌ Not started
 
 - [ ] App icon + branding (Clipper logo)
-- [ ] Mac DMG build (`electron-builder` mac target)
+- [ ] Mac DMG build
 - [ ] Code signing + notarization (Apple Developer account required)
 - [ ] Auto-update via `electron-updater`
-- [ ] `scripts/setup.sh` — full dev environment bootstrap (FFmpeg + Whisper + models)
-
-## Phase 7 — Growth ❌ Not started
-
 - [ ] Onboarding flow (first-run walkthrough: drop video → pick model → transcribe)
-- [ ] Whisper model manager (download/delete models from UI, show disk usage)
-- [ ] Freemium license gate (local license check, Stripe or LemonSqueezy)
+- [ ] `scripts/setup.sh` — full dev environment bootstrap
+
+## Phase 7 — Creator features ❌ Not started
+
+- [ ] Clip trim UI — adjust AI-suggested clip start/end before export
+- [ ] Animated styled captions — bold word-highlight captions burned into clips (CapCut style)
+- [ ] 9:16 vertical reframe — crop/pad clips for TikTok/Reels/Shorts export
+- [ ] Customizable filler word list — add/remove words per project from UI
+- [ ] Whisper model manager — download/delete models from UI, show disk usage
 - [ ] Audio crossfade at episode splice points (issue #10)
 - [ ] Episode SRT timestamp remapping (issue #7)
+
+## Phase 8 — Distribution + reach ❌ Not started
+
 - [ ] Windows support
+- [ ] Direct publish to TikTok / Instagram Reels / YouTube Shorts
+- [ ] Natural language clip search ("find where I mention pricing")
+
+## Phase 9 — Smarter clip selection ❌ Not started
+
+- [ ] Semantic block preprocessing — group word-level timestamps into silence-bounded blocks with metadata (filler density, WPM, speaker) before LLM call; reduces token usage 50–70%
+- [ ] Block-ID-based LLM output — LLM returns `start_block_id` / `end_block_id` instead of raw milliseconds; backend resolves precise timestamps from DB, eliminating hallucination
+- [ ] Code-level timestamp validation — clamp LLM output to `[0, durationMs]`, snap to nearest word boundary, cap clip at 90s
+- [ ] FFmpeg audio energy scoring — extract per-second RMS amplitude, compute energy level per block, pass as `Energy: High/Low` signal to LLM
+- [ ] Animated word-highlight captions — Remotion-based karaoke-style captions burned into clips (word pops as it's spoken); biggest visual differentiator
+
+## Out of scope (premature for early stage)
+
+- Face tracking / computer vision scoring — requires Python/ML infra, different stack entirely
+- Hook pattern matching engine — semantic block prompt already handles 80% of this
+- Dynamic hot-zone windowing — matters only for 2h+ recordings, overengineered for MVP
+- Audio pitch / laughter detection — nice signal but high complexity vs. marginal gain

@@ -21,6 +21,7 @@
     "@video-editor/ui": "workspace:*",
     "@video-editor/utils": "workspace:*",
     "@video-editor/whisper": "workspace:*",
+    "@vidstack/react": "^1.15.6",
     "better-sqlite3": "^11.0.0",
     "dotenv": "^17.4.2",
     "electron-updater": "^6.3.0",

@@ -97,6 +97,7 @@ export interface IpcChannels {
   "pipeline:start": { args: { projectId: string; model: WhisperModel }; result: void }
   "clip:list": { args: { projectId: string }; result: Clip[] }
   "clip:update-status": { args: { clipId: string; status: Clip["status"] }; result: void }
+  "clip:update-times": { args: { clipId: string; startMs: number; endMs: number }; result: void }
   "export:clips": {
     args: { projectId: string; clipIds: string[]; outputDir?: string; burnSubtitles?: boolean }
     result: string[]
