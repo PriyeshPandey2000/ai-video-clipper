@@ -85,3 +85,18 @@
 - [ ] Windows support
 - [ ] Direct publish to TikTok / Instagram Reels / YouTube Shorts
 - [ ] Natural language clip search ("find where I mention pricing")
+
+## Phase 9 — Smarter clip selection ❌ Not started
+
+- [ ] Semantic block preprocessing — group word-level timestamps into silence-bounded blocks with metadata (filler density, WPM, speaker) before LLM call; reduces token usage 50–70%
+- [ ] Block-ID-based LLM output — LLM returns `start_block_id` / `end_block_id` instead of raw milliseconds; backend resolves precise timestamps from DB, eliminating hallucination
+- [ ] Code-level timestamp validation — clamp LLM output to `[0, durationMs]`, snap to nearest word boundary, cap clip at 90s
+- [ ] FFmpeg audio energy scoring — extract per-second RMS amplitude, compute energy level per block, pass as `Energy: High/Low` signal to LLM
+- [ ] Animated word-highlight captions — Remotion-based karaoke-style captions burned into clips (word pops as it's spoken); biggest visual differentiator
+
+## Out of scope (premature for early stage)
+
+- Face tracking / computer vision scoring — requires Python/ML infra, different stack entirely
+- Hook pattern matching engine — semantic block prompt already handles 80% of this
+- Dynamic hot-zone windowing — matters only for 2h+ recordings, overengineered for MVP
+- Audio pitch / laughter detection — nice signal but high complexity vs. marginal gain

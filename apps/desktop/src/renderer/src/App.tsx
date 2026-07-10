@@ -1,5 +1,11 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
-import type { Project, PipelineProgress, PipelineStage, WhisperModel } from "@video-editor/types"
+import type {
+  Project,
+  PipelineProgress,
+  PipelineStage,
+  WhisperModel,
+  Clip,
+} from "@video-editor/types"
 import { Button } from "@video-editor/ui"
 import { Progress } from "@video-editor/ui"
 import { Spinner } from "@video-editor/ui"
@@ -9,6 +15,7 @@ import { Search, Settings, X, Plus } from "lucide-react"
 import { TranscriptViewer } from "./TranscriptViewer"
 import { ClipReview } from "./ClipReview"
 import { CaptionsPanel } from "./CaptionsPanel"
+import { TrimStrip } from "./TrimStrip"
 
 type View = "empty" | "projects" | "project"
 
@@ -521,6 +528,8 @@ function ProjectView({
     startMs: number
     endMs: number
   } | null>(null)
+  const [selectedClip, setSelectedClip] = useState<Clip | null>(null)
+  const [isPlaying, setIsPlaying] = useState(false)
   const [exportingEpisode, setExportingEpisode] = useState(false)
   const [exportingAllClips, setExportingAllClips] = useState(false)
   const [clipRefreshTrigger, setClipRefreshTrigger] = useState(0)
@@ -537,11 +546,38 @@ function ProjectView({
     })
   }, [])
 
+  useEffect(() => {
+    setSelectedClip(null)
+    setHighlightRange(null)
+    setIsPlaying(false)
+  }, [project.id])
+
+  useEffect(() => {
+    setIsPlaying(false)
+    const vid = videoRef.current
+    if (!vid) return
+    const onPlay = () => setIsPlaying(true)
+    const onPause = () => setIsPlaying(false)
+    vid.addEventListener("play", onPlay)
+    vid.addEventListener("pause", onPause)
+    return () => {
+      vid.removeEventListener("play", onPlay)
+      vid.removeEventListener("pause", onPause)
+    }
+  }, [project.proxyPath])
+
   const seekTo = useCallback((startMs: number, autoPlay = false) => {
     const vid = videoRef.current
     if (!vid) return
     vid.currentTime = startMs / 1000
     if (autoPlay) vid.play().catch(() => {})
+  }, [])
+
+  const handleTogglePlay = useCallback(() => {
+    const vid = videoRef.current
+    if (!vid) return
+    if (vid.paused) vid.play().catch(() => {})
+    else vid.pause()
   }, [])
 
   const handleSeekWord = useCallback(
@@ -553,9 +589,10 @@ function ProjectView({
   )
 
   const handleSelectClip = useCallback(
-    (startMs: number, endMs: number) => {
-      setHighlightRange({ startMs, endMs })
-      seekTo(startMs, false)
+    (clip: Clip) => {
+      setSelectedClip(clip)
+      setHighlightRange({ startMs: clip.startMs, endMs: clip.endMs })
+      seekTo(clip.startMs, false)
     },
     [seekTo],
   )
@@ -743,14 +780,42 @@ function ProjectView({
           </p>
         </div>
       ) : project.proxyPath ? (
-        <div className="aspect-video bg-neutral-900 rounded-xl overflow-hidden">
-          <video
-            ref={videoRef}
-            src={`file://${project.proxyPath}`}
-            className="w-full h-full object-contain"
-            controls
-            playsInline
-          />
+        <div className="space-y-2">
+          <div
+            className="relative aspect-video bg-neutral-900 rounded-xl overflow-hidden group cursor-pointer"
+            onClick={handleTogglePlay}
+          >
+            <video
+              ref={videoRef}
+              src={`file://${project.proxyPath}`}
+              className="w-full h-full object-contain"
+              playsInline
+            />
+            {!isPlaying && (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="w-12 h-12 rounded-full bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                  <svg
+                    className="w-5 h-5 text-white ml-0.5"
+                    fill="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {selectedClip && project.durationMs > 0 && (
+            <TrimStrip
+              clip={selectedClip}
+              durationMs={project.durationMs}
+              onSeek={(ms) => seekTo(ms, false)}
+              onSaved={() => {
+                setClipRefreshTrigger((n) => n + 1)
+              }}
+            />
+          )}
         </div>
       ) : null}
 

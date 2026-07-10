@@ -339,6 +339,16 @@ export function registerIpcHandlers(): void {
     },
   )
 
+  ipcMain.handle(
+    "clip:update-times",
+    async (
+      _event,
+      { clipId, startMs, endMs }: { clipId: string; startMs: number; endMs: number },
+    ) => {
+      db.update(clips).set({ startMs, endMs }).where(eq(clips.id, clipId)).run()
+    },
+  )
+
   ipcMain.handle("ffmpeg:has-subtitles-filter", async () => {
     return hasSubtitlesFilter(resolveFfmpegBinary(getResourcesPath()))
   })
