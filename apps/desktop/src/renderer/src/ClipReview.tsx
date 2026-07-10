@@ -119,7 +119,7 @@ export function ClipReview({
         })
       }
     },
-    [projectId],
+    [projectId, exportSettings],
   )
 
   if (loading) {

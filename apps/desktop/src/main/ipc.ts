@@ -387,7 +387,7 @@ export function registerIpcHandlers(): void {
         let srtPath: string | undefined
         if (burnSubtitles) {
           const clipWords = wordRows
-            .filter((w) => w.startMs >= clip.startMs && w.endMs <= clip.endMs)
+            .filter((w) => w.startMs >= clip.startMs && w.startMs < clip.endMs)
             .map((w) => ({
               ...w,
               startMs: w.startMs - clip.startMs,

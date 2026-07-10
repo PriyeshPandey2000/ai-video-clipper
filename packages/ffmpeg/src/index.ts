@@ -134,6 +134,7 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
       outputPath: opts.outputPath,
       startMs: seg.startMs,
       endMs: seg.endMs,
+      ...(opts.srtPath ? { srtPath: opts.srtPath } : {}),
     })
     return
   }
