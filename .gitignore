@@ -9,3 +9,5 @@ out
 release/
 *.tsbuildinfo
 .env
+resources/ffmpeg/
+resources/whisper/
