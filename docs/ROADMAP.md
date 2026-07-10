@@ -61,18 +61,18 @@
 - [x] Home navigation; fix auto-select re-redirect bug
 - [x] Lucide icons; dark scrollbar styles; cursor-pointer audit
 
-## Phase 6 — Distribution ❌ Not started
+## Phase 6 — Distribution 🔄 In progress
 
-- [ ] App icon + branding (Clipper logo)
+- [x] App icon — Clipper C lettermark (SVG + 1024×1024 PNG), `productName` updated to "Clipper"
+- [x] `scripts/setup.sh` — full dev environment bootstrap (Node, pnpm, FFmpeg bundle, .env template)
 - [ ] Mac DMG build
 - [ ] Code signing + notarization (Apple Developer account required)
 - [ ] Auto-update via `electron-updater`
 - [ ] Onboarding flow (first-run walkthrough: drop video → pick model → transcribe)
-- [ ] `scripts/setup.sh` — full dev environment bootstrap
 
-## Phase 7 — Creator features ❌ Not started
+## Phase 7 — Creator features 🔄 In progress
 
-- [ ] Clip trim UI — adjust AI-suggested clip start/end before export
+- [x] Clip trim UI — drag handles adjust AI-suggested clip start/end, saves to DB, reflects in export
 - [ ] Animated styled captions — bold word-highlight captions burned into clips (CapCut style)
 - [ ] 9:16 vertical reframe — crop/pad clips for TikTok/Reels/Shorts export
 - [ ] Customizable filler word list — add/remove words per project from UI
