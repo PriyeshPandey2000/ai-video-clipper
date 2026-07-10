@@ -74,7 +74,6 @@ export default function App(): React.ReactElement {
   const [showImportDialog, setShowImportDialog] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const selectedProject = projects.find((p) => p.id === selectedId) ?? null
   const progressRef = useRef(pipelineProgress)
   progressRef.current = pipelineProgress
 
@@ -87,11 +86,16 @@ export default function App(): React.ReactElement {
     )
   }, [projects, pipelineProgress])
 
+  const selectedProject = liveProjects.find((p) => p.id === selectedId) ?? null
+
   const loadProjects = useCallback(async () => {
     try {
       const list = await window.api.invoke("project:list")
       setProjects(list)
-      if (list.length > 0 && view === "empty") setView("projects")
+      if (list.length > 0 && view === "empty") {
+        setSelectedId(list[0]!.id)
+        setView("project")
+      }
     } catch {
       console.error("Failed to load projects")
     }

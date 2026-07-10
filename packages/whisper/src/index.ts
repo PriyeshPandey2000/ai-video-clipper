@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 import { join } from "node:path"
 import { existsSync } from "node:fs"
-import { mkdir, writeFile, readFile } from "node:fs/promises"
+import { mkdir, writeFile, readFile, unlink } from "node:fs/promises"
 
 export type {
   WhisperWord,
@@ -177,6 +177,7 @@ export async function transcribe(
       try {
         const raw = await readFile(jsonPath, "utf-8")
         const parsed = JSON.parse(raw) as WhisperCliResult
+        await unlink(jsonPath).catch(() => {})
         resolve(normalizeWhisperResult(parsed))
       } catch {
         reject(
