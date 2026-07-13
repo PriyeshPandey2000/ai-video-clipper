@@ -87,7 +87,9 @@ export default function App(): React.ReactElement {
   const [importProgress, setImportProgress] = useState(0)
   const [importMessage, setImportMessage] = useState("")
   const [importError, setImportError] = useState<string | null>(null)
-  const [selectedModel, setSelectedModel] = useState<WhisperModel>("medium")
+  const [selectedModel, setSelectedModel] = useState<WhisperModel>(
+    () => (localStorage.getItem("whisper-model") as WhisperModel) ?? "medium",
+  )
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [search, setSearch] = useState("")
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -310,7 +312,10 @@ export default function App(): React.ReactElement {
               }
               selectedModel={selectedModel}
               onTranscribe={handleStartPipeline}
-              onModelChange={setSelectedModel}
+              onModelChange={(m) => {
+                setSelectedModel(m)
+                localStorage.setItem("whisper-model", m)
+              }}
             />
           ) : (
             <HomePage
@@ -345,7 +350,10 @@ export default function App(): React.ReactElement {
       {showImportDialog && (
         <ImportDialog
           selectedModel={selectedModel}
-          onModelChange={setSelectedModel}
+          onModelChange={(m) => {
+            setSelectedModel(m)
+            localStorage.setItem("whisper-model", m)
+          }}
           importing={importing}
           importProgress={importProgress}
           importMessage={importMessage}

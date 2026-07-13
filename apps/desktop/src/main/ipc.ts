@@ -203,6 +203,7 @@ export function registerIpcHandlers(): void {
     async (_event, { projectId, model }: { projectId: string; model: WhisperModel }) => {
       const proj = db.select().from(projects).where(eq(projects.id, projectId)).all()[0]
       if (!proj) throw new Error(`Project ${projectId} not found`)
+      if (proj.status === "transcribing" || proj.status === "analyzing") return
 
       db.update(projects)
         .set({ status: "transcribing", updatedAt: now() })
@@ -233,6 +234,11 @@ export function registerIpcHandlers(): void {
         )
 
         sendProgress(projectId, "transcribing", 0.9, "Writing transcript to database")
+
+        db.delete(words).where(eq(words.projectId, projectId)).run()
+        db.delete(segments).where(eq(segments.projectId, projectId)).run()
+        db.delete(clips).where(eq(clips.projectId, projectId)).run()
+        db.delete(aiOutputs).where(eq(aiOutputs.projectId, projectId)).run()
 
         const wordRows = whisperToWords(result.segments, projectId)
         const durationMs = wordRows[wordRows.length - 1]?.endMs ?? 0
@@ -405,7 +411,14 @@ export function registerIpcHandlers(): void {
         : []
 
       const exportedPaths: string[] = []
-      for (const clip of clipRows) {
+      for (let ci = 0; ci < clipRows.length; ci++) {
+        const clip = clipRows[ci]!
+        send("pipeline:progress", {
+          projectId,
+          stage: "analyzing",
+          progress: ci / clipRows.length,
+          message: `Exporting clip ${ci + 1} of ${clipRows.length}…`,
+        })
         const outPath = join(outDir, `${sanitizeName(clip.title)}.mp4`)
 
         let srtPath: string | undefined
