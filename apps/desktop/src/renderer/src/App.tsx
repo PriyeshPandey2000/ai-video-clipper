@@ -201,6 +201,7 @@ export default function App(): React.ReactElement {
     if (!selectedId) return
     try {
       await window.api.invoke("pipeline:start", { projectId: selectedId, model: selectedModel })
+      localStorage.setItem("whisper-model", selectedModel)
       loadProjects()
     } catch (err) {
       console.error("Pipeline failed:", err)
@@ -312,10 +313,7 @@ export default function App(): React.ReactElement {
               }
               selectedModel={selectedModel}
               onTranscribe={handleStartPipeline}
-              onModelChange={(m) => {
-                setSelectedModel(m)
-                localStorage.setItem("whisper-model", m)
-              }}
+              onModelChange={setSelectedModel}
             />
           ) : (
             <HomePage
@@ -350,10 +348,7 @@ export default function App(): React.ReactElement {
       {showImportDialog && (
         <ImportDialog
           selectedModel={selectedModel}
-          onModelChange={(m) => {
-            setSelectedModel(m)
-            localStorage.setItem("whisper-model", m)
-          }}
+          onModelChange={setSelectedModel}
           importing={importing}
           importProgress={importProgress}
           importMessage={importMessage}
