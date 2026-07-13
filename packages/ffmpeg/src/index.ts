@@ -148,20 +148,32 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
     return
   }
 
+  const CROSSFADE_S = 0.05
+
   const filterParts: string[] = []
-  const concatInputs: string[] = []
 
   opts.keepIntervals.forEach((seg, i) => {
     const start = seg.startMs / 1000
     const end = seg.endMs / 1000
     filterParts.push(`[0:v]trim=${start}:${end},setpts=PTS-STARTPTS[v${i}]`)
     filterParts.push(`[0:a]atrim=${start}:${end},asetpts=PTS-STARTPTS[a${i}]`)
-    concatInputs.push(`[v${i}][a${i}]`)
   })
 
   const n = opts.keepIntervals.length
   const finalV = opts.srtPath ? "outvsub" : "outv"
-  filterParts.push(`${concatInputs.join("")}concat=n=${n}:v=1:a=1[outv][outa]`)
+
+  // Video: hard concat (cut is imperceptible for talking-head content)
+  const videoInputs = opts.keepIntervals.map((_, i) => `[v${i}]`).join("")
+  filterParts.push(`${videoInputs}concat=n=${n}:v=1:a=0[outv]`)
+
+  // Audio: chain acrossfade between each adjacent pair to remove splice clicks
+  let prevAudio = "a0"
+  for (let i = 1; i < n; i++) {
+    const outLabel = i === n - 1 ? "outa" : `ac${i}`
+    filterParts.push(`[${prevAudio}][a${i}]acrossfade=d=${CROSSFADE_S}:c1=tri:c2=tri[${outLabel}]`)
+    prevAudio = outLabel
+  }
+
   if (opts.srtPath) {
     filterParts.push(`[outv]subtitles=filename=${escapeFiltergraphPath(opts.srtPath)}[outvsub]`)
   }
