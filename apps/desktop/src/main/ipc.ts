@@ -89,6 +89,36 @@ function buildSrt(wordRows: Array<{ text: string; startMs: number; endMs: number
     .join("\n")
 }
 
+function remapWordsToEpisodeTimeline(
+  wordRows: Array<{ text: string; startMs: number; endMs: number }>,
+  keepIntervals: Array<{ startMs: number; endMs: number }>,
+): Array<{ text: string; startMs: number; endMs: number }> {
+  const intervalOutputStarts: number[] = []
+  let cumulative = 0
+  for (const interval of keepIntervals) {
+    intervalOutputStarts.push(cumulative)
+    cumulative += interval.endMs - interval.startMs
+  }
+
+  const remapped: Array<{ text: string; startMs: number; endMs: number }> = []
+  for (const word of wordRows) {
+    for (let i = 0; i < keepIntervals.length; i++) {
+      const interval = keepIntervals[i]!
+      if (word.startMs >= interval.startMs && word.startMs < interval.endMs) {
+        const offset = intervalOutputStarts[i]!
+        remapped.push({
+          ...word,
+          startMs: word.startMs - interval.startMs + offset,
+          endMs: Math.min(word.endMs, interval.endMs) - interval.startMs + offset,
+        })
+        break
+      }
+    }
+    // words starting in removed segments are dropped
+  }
+  return remapped
+}
+
 function getProjectsDir(): string {
   return join(app.getPath("userData"), "projects")
 }
@@ -479,8 +509,9 @@ export function registerIpcHandlers(): void {
       if (burnSubtitles) {
         const wordRows = db.select().from(words).where(eq(words.projectId, projectId)).all()
         if (wordRows.length > 0) {
+          const remappedWords = remapWordsToEpisodeTimeline(wordRows, keepIntervals)
           srtPath = join(tmpdir(), `episode-${projectId}.srt`)
-          await writeFile(srtPath, buildSrt(wordRows), "utf-8")
+          await writeFile(srtPath, buildSrt(remappedWords), "utf-8")
         }
       }
 

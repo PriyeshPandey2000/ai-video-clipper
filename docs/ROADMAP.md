@@ -77,8 +77,8 @@
 - [x] 9:16 vertical reframe — drag-on-video crop overlay, per-clip position saved to DB, 1080×1920 FFmpeg output
 - [ ] Customizable filler word list — add/remove words per project from UI
 - [ ] Whisper model manager — download/delete models from UI, show disk usage
-- [ ] Audio crossfade at episode splice points (issue #10)
-- [ ] Episode SRT timestamp remapping (issue #7)
+- [x] Audio crossfade at episode splice points (issue #10)
+- [x] Episode SRT timestamp remapping (issue #7)
 
 ## Phase 8 — Distribution + reach ❌ Not started
 

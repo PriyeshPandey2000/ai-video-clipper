@@ -149,19 +149,22 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
   }
 
   const filterParts: string[] = []
-  const concatInputs: string[] = []
 
   opts.keepIntervals.forEach((seg, i) => {
     const start = seg.startMs / 1000
     const end = seg.endMs / 1000
     filterParts.push(`[0:v]trim=${start}:${end},setpts=PTS-STARTPTS[v${i}]`)
     filterParts.push(`[0:a]atrim=${start}:${end},asetpts=PTS-STARTPTS[a${i}]`)
-    concatInputs.push(`[v${i}][a${i}]`)
   })
 
   const n = opts.keepIntervals.length
   const finalV = opts.srtPath ? "outvsub" : "outv"
-  filterParts.push(`${concatInputs.join("")}concat=n=${n}:v=1:a=1[outv][outa]`)
+
+  const videoInputs = opts.keepIntervals.map((_, i) => `[v${i}]`).join("")
+  const audioInputs = opts.keepIntervals.map((_, i) => `[a${i}]`).join("")
+  filterParts.push(`${videoInputs}concat=n=${n}:v=1:a=0[outv]`)
+  filterParts.push(`${audioInputs}concat=n=${n}:v=0:a=1[outa]`)
+
   if (opts.srtPath) {
     filterParts.push(`[outv]subtitles=filename=${escapeFiltergraphPath(opts.srtPath)}[outvsub]`)
   }
