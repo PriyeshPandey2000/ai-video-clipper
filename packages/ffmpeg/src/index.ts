@@ -193,6 +193,28 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
   ])
 }
 
+export async function probeDuration(binaryPath: string, inputPath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(binaryPath, ["-i", inputPath])
+    const stderr: string[] = []
+    proc.stderr.on("data", (d: Buffer) => stderr.push(d.toString()))
+    // FFmpeg exits non-zero when no output is specified — that's expected here
+    proc.on("close", () => {
+      const match = stderr.join("").match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/)
+      if (!match) {
+        reject(new Error("Could not parse duration from FFmpeg output"))
+        return
+      }
+      const ms = Math.round(
+        (parseInt(match[1]!, 10) * 3600 + parseInt(match[2]!, 10) * 60 + parseFloat(match[3]!)) *
+          1000,
+      )
+      resolve(ms)
+    })
+    proc.on("error", reject)
+  })
+}
+
 export async function extractAudio(opts: AudioExtractOptions): Promise<void> {
   await run(opts.binaryPath, [
     "-y",

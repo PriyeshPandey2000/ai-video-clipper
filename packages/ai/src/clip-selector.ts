@@ -59,4 +59,10 @@ export async function selectClips(
     system: SYSTEM_PROMPT,
   })
   return result.clips
+    .map((c) => ({
+      ...c,
+      startMs: Math.max(0, Math.min(c.startMs, videoDurationMs)),
+      endMs: Math.max(0, Math.min(c.endMs, videoDurationMs)),
+    }))
+    .filter((c) => c.endMs > c.startMs)
 }
