@@ -58,6 +58,7 @@ function bootstrapSchema(sqlite: Database.Database): void {
       ai_reason TEXT,
       status TEXT NOT NULL DEFAULT 'suggested',
       platform TEXT,
+      crop_x REAL NOT NULL DEFAULT 0.5,
       created_at INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS segments (
@@ -75,4 +76,11 @@ function bootstrapSchema(sqlite: Database.Database): void {
       created_at INTEGER NOT NULL
     );
   `)
+
+  // Column migrations for existing databases
+  try {
+    sqlite.exec(`ALTER TABLE clips ADD COLUMN crop_x REAL NOT NULL DEFAULT 0.5`)
+  } catch {
+    // column already exists
+  }
 }

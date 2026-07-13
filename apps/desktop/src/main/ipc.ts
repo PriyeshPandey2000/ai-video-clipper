@@ -349,6 +349,13 @@ export function registerIpcHandlers(): void {
     },
   )
 
+  ipcMain.handle(
+    "clip:update-crop-x",
+    async (_event, { clipId, cropX }: { clipId: string; cropX: number }) => {
+      db.update(clips).set({ cropX }).where(eq(clips.id, clipId)).run()
+    },
+  )
+
   ipcMain.handle("ffmpeg:has-subtitles-filter", async () => {
     return hasSubtitlesFilter(resolveFfmpegBinary(getResourcesPath()))
   })
@@ -373,7 +380,14 @@ export function registerIpcHandlers(): void {
         clipIds,
         outputDir,
         burnSubtitles = true,
-      }: { projectId: string; clipIds: string[]; outputDir?: string; burnSubtitles?: boolean },
+        reframe = false,
+      }: {
+        projectId: string
+        clipIds: string[]
+        outputDir?: string
+        burnSubtitles?: boolean
+        reframe?: boolean
+      },
     ) => {
       const db = getDb(join(app.getPath("userData"), "db.sqlite"))
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
@@ -417,6 +431,7 @@ export function registerIpcHandlers(): void {
             startMs: clip.startMs,
             endMs: clip.endMs,
             ...(srtPath ? { srtPath } : {}),
+            ...(reframe ? { reframe: true, cropX: clip.cropX } : {}),
           })
         } finally {
           if (srtPath) await unlink(srtPath).catch(() => {})

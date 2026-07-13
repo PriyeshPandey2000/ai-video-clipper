@@ -16,6 +16,7 @@ import { TranscriptViewer } from "./TranscriptViewer"
 import { ClipReview } from "./ClipReview"
 import { CaptionsPanel } from "./CaptionsPanel"
 import { TrimStrip } from "./TrimStrip"
+import { CropOverlay } from "./CropOverlay"
 
 type View = "empty" | "projects" | "project"
 
@@ -524,6 +525,8 @@ function ProjectView({
   onModelChange,
 }: ProjectViewProps): React.ReactElement {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const videoContainerRef = useRef<HTMLDivElement>(null)
+  const [cropX, setCropX] = useState(0.5)
   const [highlightRange, setHighlightRange] = useState<{
     startMs: number
     endMs: number
@@ -536,6 +539,7 @@ function ProjectView({
   const [exportingSrt, setExportingSrt] = useState(false)
   const [outputDir, setOutputDir] = useState("")
   const [burnSubtitles, setBurnSubtitles] = useState(true)
+  const [reframe, setReframe] = useState(false)
   const [subtitlesSupported, setSubtitlesSupported] = useState<boolean | null>(null)
   const [aiTab, setAiTab] = useState<"clips" | "captions">("clips")
 
@@ -550,7 +554,12 @@ function ProjectView({
     setSelectedClip(null)
     setHighlightRange(null)
     setIsPlaying(false)
+    setCropX(0.5)
   }, [project.id])
+
+  useEffect(() => {
+    setCropX(selectedClip?.cropX ?? 0.5)
+  }, [selectedClip?.id, selectedClip?.cropX])
 
   useEffect(() => {
     setIsPlaying(false)
@@ -597,6 +606,21 @@ function ProjectView({
     [seekTo],
   )
 
+  const handleCropXCommit = useCallback(
+    async (x: number) => {
+      setCropX(x)
+      if (!selectedClip) return
+      setSelectedClip((prev) => (prev ? { ...prev, cropX: x } : null))
+      try {
+        await window.api.invoke("clip:update-crop-x", { clipId: selectedClip.id, cropX: x })
+        setClipRefreshTrigger((n) => n + 1)
+      } catch (err) {
+        console.error("Failed to save crop position:", err)
+      }
+    },
+    [selectedClip],
+  )
+
   const handleExportEpisode = useCallback(async () => {
     setExportingEpisode(true)
     try {
@@ -624,6 +648,7 @@ function ProjectView({
         clipIds: approvedIds,
         ...(outputDir ? { outputDir } : {}),
         burnSubtitles,
+        reframe,
       })
       setClipRefreshTrigger((n) => n + 1)
       if (paths[0]) await window.api.invoke("shell:show-item", { path: paths[0] })
@@ -632,7 +657,7 @@ function ProjectView({
     } finally {
       setExportingAllClips(false)
     }
-  }, [project.id, outputDir, burnSubtitles])
+  }, [project.id, outputDir, burnSubtitles, reframe])
 
   const handleExportSrt = useCallback(async () => {
     setExportingSrt(true)
@@ -738,6 +763,18 @@ function ProjectView({
             <span className="text-xs text-neutral-400">Subtitles</span>
           </label>
 
+          <label className="flex items-center gap-2 select-none cursor-pointer">
+            <div
+              onClick={() => setReframe((v) => !v)}
+              className={`relative w-7 h-4 rounded-full transition-colors cursor-pointer ${reframe ? "bg-violet-600" : "bg-neutral-700"}`}
+            >
+              <div
+                className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${reframe ? "translate-x-3.5" : "translate-x-0.5"}`}
+              />
+            </div>
+            <span className="text-xs text-neutral-400">9:16</span>
+          </label>
+
           <button
             onClick={handlePickFolder}
             className="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-300 transition-colors cursor-pointer"
@@ -782,6 +819,7 @@ function ProjectView({
       ) : project.proxyPath ? (
         <div className="space-y-2">
           <div
+            ref={videoContainerRef}
             className="relative aspect-video bg-neutral-900 rounded-xl overflow-hidden group cursor-pointer"
             onClick={handleTogglePlay}
           >
@@ -791,8 +829,17 @@ function ProjectView({
               className="w-full h-full object-contain"
               playsInline
             />
+            {reframe && selectedClip && (
+              <CropOverlay
+                containerRef={videoContainerRef}
+                videoRef={videoRef}
+                cropX={cropX}
+                onChange={setCropX}
+                onCommit={handleCropXCommit}
+              />
+            )}
             {!isPlaying && (
-              <div className="absolute inset-0 flex items-center justify-center">
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="w-12 h-12 rounded-full bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                   <svg
                     className="w-5 h-5 text-white ml-0.5"
@@ -805,6 +852,12 @@ function ProjectView({
               </div>
             )}
           </div>
+
+          {reframe && !selectedClip && (
+            <p className="text-[11px] text-neutral-500 text-center">
+              Select a clip below to set its 9:16 frame position
+            </p>
+          )}
 
           {selectedClip && project.durationMs > 0 && (
             <TrimStrip
@@ -848,7 +901,7 @@ function ProjectView({
               <ClipReview
                 projectId={project.id}
                 onSelectClip={handleSelectClip}
-                exportSettings={{ outputDir, burnSubtitles }}
+                exportSettings={{ outputDir, burnSubtitles, reframe }}
                 refreshTrigger={clipRefreshTrigger}
               />
             ) : (

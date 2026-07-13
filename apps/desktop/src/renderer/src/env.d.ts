@@ -10,6 +10,8 @@ type InvokeChannels = Pick<
   | "clip:list"
   | "pipeline:start"
   | "clip:update-status"
+  | "clip:update-times"
+  | "clip:update-crop-x"
   | "export:clips"
   | "export:full"
   | "export:srt"
