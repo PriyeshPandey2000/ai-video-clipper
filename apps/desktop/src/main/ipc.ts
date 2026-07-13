@@ -16,6 +16,7 @@ import {
 import {
   generateProxy,
   extractAudio,
+  probeDuration,
   resolveFfmpegBinary,
   exportClip,
   exportEpisode,
@@ -134,8 +135,10 @@ export function registerIpcHandlers(): void {
       sendProgress(projectId, "analyzing", 0.7, "Extracting audio")
       await extractAudio({ binaryPath: ffmpegBin, inputPath: sourcePath, outputPath: audioPath })
 
+      const durationMs = await probeDuration(ffmpegBin, sourcePath)
+
       db.update(projects)
-        .set({ proxyPath, updatedAt: now() })
+        .set({ proxyPath, durationMs, updatedAt: now() })
         .where(eq(projects.id, projectId))
         .run()
 
@@ -235,13 +238,15 @@ export function registerIpcHandlers(): void {
         sendProgress(projectId, "transcribing", 0.9, "Writing transcript to database")
 
         const wordRows = whisperToWords(result.segments, projectId)
-        const durationMs = wordRows[wordRows.length - 1]?.endMs ?? 0
         if (wordRows.length > 0) {
           db.insert(words).values(wordRows).run()
         }
 
+        // Use FFprobe duration (set during import) — more accurate than last whisper word
+        const durationMs = proj.durationMs || (wordRows[wordRows.length - 1]?.endMs ?? 0)
+
         db.update(projects)
-          .set({ status: "analyzing", durationMs, updatedAt: now() })
+          .set({ status: "analyzing", updatedAt: now() })
           .where(eq(projects.id, projectId))
           .run()
 
