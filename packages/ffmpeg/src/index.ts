@@ -9,6 +9,8 @@ export interface ExportOptions {
   startMs: number
   endMs: number
   srtPath?: string
+  reframe?: boolean
+  cropX?: number // 0.0 (left) – 1.0 (right), default 0.5 (center)
 }
 
 export interface ProxyOptions {
@@ -85,7 +87,14 @@ export async function exportClip(opts: ExportOptions): Promise<void> {
     "-b:a",
     "192k",
   ]
-  if (opts.srtPath) {
+  if (opts.reframe) {
+    const cx = opts.cropX ?? 0.5
+    const cropFilter = `crop=ih*9/16:ih:(iw-ih*9/16)*${cx}:0,scale=1080:1920`
+    const vf = opts.srtPath
+      ? `${cropFilter},subtitles=filename=${escapeFiltergraphPath(opts.srtPath)}`
+      : cropFilter
+    args.push("-vf", vf)
+  } else if (opts.srtPath) {
     args.push("-vf", `subtitles=filename=${escapeFiltergraphPath(opts.srtPath)}`)
   }
   args.push(opts.outputPath)

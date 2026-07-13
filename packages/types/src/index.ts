@@ -53,6 +53,7 @@ export interface Clip {
   aiReason: string | null
   status: "suggested" | "approved" | "rejected" | "exported"
   platform: "tiktok" | "reels" | "shorts" | "generic" | null
+  cropX: number
   createdAt: number
 }
 
@@ -98,8 +99,15 @@ export interface IpcChannels {
   "clip:list": { args: { projectId: string }; result: Clip[] }
   "clip:update-status": { args: { clipId: string; status: Clip["status"] }; result: void }
   "clip:update-times": { args: { clipId: string; startMs: number; endMs: number }; result: void }
+  "clip:update-crop-x": { args: { clipId: string; cropX: number }; result: void }
   "export:clips": {
-    args: { projectId: string; clipIds: string[]; outputDir?: string; burnSubtitles?: boolean }
+    args: {
+      projectId: string
+      clipIds: string[]
+      outputDir?: string
+      burnSubtitles?: boolean
+      reframe?: boolean
+    }
     result: string[]
   }
   "export:full": {

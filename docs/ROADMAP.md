@@ -74,7 +74,7 @@
 
 - [x] Clip trim UI — drag handles adjust AI-suggested clip start/end, saves to DB, reflects in export
 - [ ] Animated styled captions — bold word-highlight captions burned into clips (CapCut style)
-- [ ] 9:16 vertical reframe — crop/pad clips for TikTok/Reels/Shorts export
+- [x] 9:16 vertical reframe — drag-on-video crop overlay, per-clip position saved to DB, 1080×1920 FFmpeg output
 - [ ] Customizable filler word list — add/remove words per project from UI
 - [ ] Whisper model manager — download/delete models from UI, show disk usage
 - [ ] Audio crossfade at episode splice points (issue #10)
@@ -93,6 +93,15 @@
 - [ ] Code-level timestamp validation — clamp LLM output to `[0, durationMs]`, snap to nearest word boundary, cap clip at 90s
 - [ ] FFmpeg audio energy scoring — extract per-second RMS amplitude, compute energy level per block, pass as `Energy: High/Low` signal to LLM
 - [ ] Animated word-highlight captions — Remotion-based karaoke-style captions burned into clips (word pops as it's spoken); biggest visual differentiator
+
+## Polish backlog (post-phase completion)
+
+- 9:16 reframe for episode export — needs a single global cropX setting, not per-clip; different UX from clip reframe
+- Crop position indicator on clip cards — small visual showing saved L/C/R position without having to select the clip
+- "Saved" flash feedback after drag-commit on crop overlay
+- Blur background fill for non-16:9 sources — add blurred copy of video as background instead of cropping (Kapwing style)
+- Source aspect ratio detection — warn or skip reframe if source is already portrait/square
+- Trim changes reset clip status from "exported" → "approved" — currently stays "exported" even after re-trimming; re-export button covers this but auto-reset would be cleaner
 
 ## Out of scope (premature for early stage)
 

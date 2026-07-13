@@ -5,6 +5,7 @@ import { Spinner, Badge } from "@video-editor/ui"
 interface ExportSettings {
   outputDir: string
   burnSubtitles: boolean
+  reframe: boolean
 }
 
 interface ClipReviewProps {
@@ -100,6 +101,7 @@ export function ClipReview({
           clipIds: [clipId],
           ...(exportSettings.outputDir ? { outputDir: exportSettings.outputDir } : {}),
           burnSubtitles: exportSettings.burnSubtitles,
+          reframe: exportSettings.reframe,
         })
         setClips((prev) =>
           prev
@@ -223,20 +225,20 @@ export function ClipReview({
                   <span
                     onClick={(e) => {
                       e.stopPropagation()
-                      if (clip.status === "approved" && !isExporting) handleExport(clip.id)
+                      if (!isExporting) handleExport(clip.id)
                     }}
                     className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors cursor-pointer ${
-                      clip.status === "exported"
-                        ? "bg-neutral-700 text-neutral-400 pointer-events-none"
-                        : isExporting
-                          ? "bg-neutral-800 text-neutral-500 pointer-events-none"
+                      isExporting
+                        ? "bg-neutral-800 text-neutral-500 pointer-events-none"
+                        : clip.status === "exported"
+                          ? "bg-neutral-700 text-neutral-400 hover:bg-violet-700 hover:text-white"
                           : "bg-violet-700 text-white hover:bg-violet-600"
                     }`}
                   >
-                    {clip.status === "exported"
-                      ? "Exported"
-                      : isExporting
-                        ? "Exporting..."
+                    {isExporting
+                      ? "Exporting..."
+                      : clip.status === "exported"
+                        ? "Re-export"
                         : "Export"}
                   </span>
                 )}

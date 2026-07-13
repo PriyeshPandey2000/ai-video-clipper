@@ -45,6 +45,7 @@ export const clips = sqliteTable("clips", {
   platform: text("platform", {
     enum: ["tiktok", "reels", "shorts", "generic"],
   }),
+  cropX: real("crop_x").notNull().default(0.5),
   createdAt: integer("created_at").notNull(),
 })
 
