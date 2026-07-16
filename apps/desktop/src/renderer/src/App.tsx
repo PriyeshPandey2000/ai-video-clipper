@@ -608,6 +608,7 @@ function ProjectView({
   const [isPlaying, setIsPlaying] = useState(false)
   const [exportingEpisode, setExportingEpisode] = useState(false)
   const [exportingAllClips, setExportingAllClips] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
   const [clipRefreshTrigger, setClipRefreshTrigger] = useState(0)
   const [exportingSrt, setExportingSrt] = useState(false)
   const [outputDir, setOutputDir] = useState("")
@@ -646,6 +647,7 @@ function ProjectView({
   useEffect(() => {
     let cancelled = false
     setCaptionStyle(DEFAULT_CAPTION_STYLE)
+    setExportError(null)
     window.api
       .invoke("project:load-caption-style", { projectId: project.id })
       .then((saved: CaptionStyle | null) => {
@@ -676,6 +678,9 @@ function ProjectView({
 
   useEffect(() => {
     let cancelled = false
+    setFillerWords([])
+    setAddingFiller(false)
+    setNewFillerWord("")
     window.api
       .invoke("project:get-filler-words", { projectId: project.id })
       .then((words) => {
@@ -760,6 +765,7 @@ function ProjectView({
 
   const handleExportEpisode = useCallback(async () => {
     setExportingEpisode(true)
+    setExportError(null)
     try {
       const outPath = await window.api.invoke("export:full", {
         projectId: project.id,
@@ -769,6 +775,7 @@ function ProjectView({
       if (outPath) await window.api.invoke("shell:show-item", { path: outPath })
     } catch (err) {
       console.error("Export episode failed:", err)
+      setExportError("Export failed. Check that the source file still exists.")
     } finally {
       setExportingEpisode(false)
     }
@@ -776,6 +783,7 @@ function ProjectView({
 
   const handleExportAllClips = useCallback(async () => {
     setExportingAllClips(true)
+    setExportError(null)
     try {
       const allClips = await window.api.invoke("clip:list", { projectId: project.id })
       const approvedIds = allClips.filter((c) => c.status === "approved").map((c) => c.id)
@@ -792,6 +800,7 @@ function ProjectView({
       if (paths[0]) await window.api.invoke("shell:show-item", { path: paths[0] })
     } catch (err) {
       console.error("Export clips failed:", err)
+      setExportError("Export failed. Check that the source file still exists.")
     } finally {
       setExportingAllClips(false)
     }
@@ -868,12 +877,13 @@ function ProjectView({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {exportError && <span className="text-xs text-red-400">{exportError}</span>}
           {project.status === "ready" && (
             <>
               <button
                 onClick={handleExportAllClips}
-                disabled={exportingAllClips}
+                disabled={exportingAllClips || exportingEpisode}
                 title="Export all approved clips as separate video files"
                 className="rounded-md border border-violet-700 bg-violet-900/40 px-3 py-1.5 text-xs font-medium text-violet-300 transition-colors hover:bg-violet-800/60 hover:text-violet-100 disabled:opacity-50 disabled:pointer-events-none cursor-pointer disabled:cursor-default"
               >
@@ -881,7 +891,7 @@ function ProjectView({
               </button>
               <button
                 onClick={handleExportEpisode}
-                disabled={exportingEpisode}
+                disabled={exportingEpisode || exportingAllClips}
                 title="Export full video with fillers and silences removed"
                 className="rounded-md bg-violet-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50 disabled:pointer-events-none cursor-pointer disabled:cursor-default"
               >
@@ -1206,9 +1216,11 @@ function ProjectView({
         </div>
       ) : null}
 
-      {project.status === "ready" && fillerWords.length > 0 && (
+      {project.status === "ready" && (
         <div className="flex items-center gap-2 flex-wrap -mt-2">
-          <span className="text-xs text-neutral-600 shrink-0">remove:</span>
+          {fillerWords.length > 0 && (
+            <span className="text-xs text-neutral-600 shrink-0">remove:</span>
+          )}
           {fillerWords.map((word) => (
             <button
               key={word}

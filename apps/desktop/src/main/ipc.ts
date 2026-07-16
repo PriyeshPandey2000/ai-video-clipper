@@ -456,12 +456,6 @@ export function registerIpcHandlers(): void {
       const exportedPaths: string[] = []
       for (let ci = 0; ci < clipRows.length; ci++) {
         const clip = clipRows[ci]!
-        send("pipeline:progress", {
-          projectId,
-          stage: "analyzing",
-          progress: ci / clipRows.length,
-          message: `Exporting clip ${ci + 1} of ${clipRows.length}…`,
-        })
         const outPath = join(outDir, `${sanitizeName(clip.title)}.mp4`)
 
         const clipWords = burnSubtitles

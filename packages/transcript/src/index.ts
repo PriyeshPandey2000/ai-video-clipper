@@ -7,8 +7,6 @@ export const DEFAULT_FILLER_WORDS = [
   "uhm",
   "hmm",
   "like",
-  "you know",
-  "i mean",
   "basically",
   "literally",
   "actually",
