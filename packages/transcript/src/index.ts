@@ -1,7 +1,7 @@
 import type { Word, Segment, WhisperSegment } from "@video-editor/types"
 import { generateId } from "@video-editor/utils"
 
-export const FILLER_WORDS = new Set([
+export const DEFAULT_FILLER_WORDS = [
   "um",
   "uh",
   "uhm",
@@ -15,7 +15,9 @@ export const FILLER_WORDS = new Set([
   "right",
   "so",
   "yeah",
-])
+]
+
+export const FILLER_WORDS = new Set(DEFAULT_FILLER_WORDS)
 
 const SILENCE_GAP_THRESHOLD_MS = 800
 
@@ -37,9 +39,14 @@ export function whisperToWords(segments: WhisperSegment[], projectId: string): W
   return words
 }
 
-export function detectFillerWords(words: Word[], projectId: string): Segment[] {
+export function detectFillerWords(
+  words: Word[],
+  projectId: string,
+  customWords?: Set<string>,
+): Segment[] {
+  const wordSet = customWords ?? FILLER_WORDS
   return words
-    .filter((w) => FILLER_WORDS.has(w.text.toLowerCase().replace(/[.,!?]$/, "")))
+    .filter((w) => wordSet.has(w.text.toLowerCase().replace(/[.,!?]$/, "")))
     .map((w) => ({
       id: generateId(),
       projectId,

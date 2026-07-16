@@ -12,6 +12,7 @@ export const projects = sqliteTable("projects", {
     .notNull()
     .default("idle"),
   captionStyle: text("caption_style"),
+  fillerWords: text("filler_words"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 })

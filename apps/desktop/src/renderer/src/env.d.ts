@@ -21,6 +21,8 @@ type InvokeChannels = Pick<
   | "project:save-caption-style"
   | "project:load-caption-style"
   | "get-font-url"
+  | "project:get-filler-words"
+  | "project:set-filler-words"
 >
 
 interface ElectronAPI {

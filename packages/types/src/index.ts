@@ -135,6 +135,8 @@ export interface IpcChannels {
   }
   "project:load-caption-style": { args: { projectId: string }; result: CaptionStyle | null }
   "get-font-url": { args: void; result: string }
+  "project:get-filler-words": { args: { projectId: string }; result: string[] }
+  "project:set-filler-words": { args: { projectId: string; fillerList: string[] }; result: void }
   // event channels (main → renderer)
   "pipeline:progress": PipelineProgress
   "pipeline:complete": { projectId: string }

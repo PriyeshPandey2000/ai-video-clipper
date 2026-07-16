@@ -621,6 +621,9 @@ function ProjectView({
   const [previewWords, setPreviewWords] = useState<
     Array<{ text: string; startMs: number; endMs: number }>
   >([])
+  const [fillerWords, setFillerWords] = useState<string[]>([])
+  const [addingFiller, setAddingFiller] = useState(false)
+  const [newFillerWord, setNewFillerWord] = useState("")
 
   useEffect(() => {
     window.api.invoke("ffmpeg:has-subtitles-filter").then((supported) => {
@@ -670,6 +673,19 @@ function ProjectView({
       cancelled = true
     }
   }, [project.id, project.status])
+
+  useEffect(() => {
+    let cancelled = false
+    window.api
+      .invoke("project:get-filler-words", { projectId: project.id })
+      .then((words) => {
+        if (!cancelled) setFillerWords(words)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [project.id])
 
   useEffect(() => {
     setSelectedClip(null)
@@ -813,6 +829,30 @@ function ProjectView({
     },
     [captionStyle, project.id],
   )
+
+  const updateFillerWords = useCallback(
+    (next: string[]) => {
+      setFillerWords(next)
+      window.api
+        .invoke("project:set-filler-words", { projectId: project.id, fillerList: next })
+        .catch(() => {})
+    },
+    [project.id],
+  )
+
+  const handleRemoveFillerWord = useCallback(
+    (word: string) => updateFillerWords(fillerWords.filter((w) => w !== word)),
+    [fillerWords, updateFillerWords],
+  )
+
+  const handleAddFillerWord = useCallback(() => {
+    const word = newFillerWord.trim().toLowerCase()
+    if (word && !fillerWords.includes(word)) {
+      updateFillerWords([...fillerWords, word])
+    }
+    setNewFillerWord("")
+    setAddingFiller(false)
+  }, [newFillerWord, fillerWords, updateFillerWords])
 
   return (
     <div className="flex-1 p-6 space-y-6 overflow-y-auto">
@@ -1166,12 +1206,58 @@ function ProjectView({
         </div>
       ) : null}
 
+      {project.status === "ready" && fillerWords.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap -mt-2">
+          <span className="text-xs text-neutral-600 shrink-0">remove:</span>
+          {fillerWords.map((word) => (
+            <button
+              key={word}
+              onClick={() => handleRemoveFillerWord(word)}
+              title={`Stop removing "${word}"`}
+              className="group flex items-center gap-1 px-2 py-0.5 rounded-full bg-neutral-800 text-neutral-400 text-xs hover:bg-red-950/60 hover:text-red-400 transition-colors cursor-pointer"
+            >
+              {word}
+              <X size={9} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+            </button>
+          ))}
+          {addingFiller ? (
+            <input
+              autoFocus
+              value={newFillerWord}
+              onChange={(e) => setNewFillerWord(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleAddFillerWord()
+                if (e.key === "Escape") {
+                  setAddingFiller(false)
+                  setNewFillerWord("")
+                }
+              }}
+              onBlur={() => {
+                if (!newFillerWord.trim()) {
+                  setAddingFiller(false)
+                } else handleAddFillerWord()
+              }}
+              className="px-2 py-0.5 rounded-full bg-neutral-800 text-neutral-200 text-xs outline-none border border-neutral-600 w-24"
+              placeholder="word…"
+            />
+          ) : (
+            <button
+              onClick={() => setAddingFiller(true)}
+              className="flex items-center gap-0.5 px-2 py-0.5 rounded-full bg-neutral-800/50 text-neutral-600 text-xs hover:text-neutral-400 hover:bg-neutral-800 transition-colors cursor-pointer"
+            >
+              <Plus size={9} /> add
+            </button>
+          )}
+        </div>
+      )}
+
       {project.status === "ready" && (
         <>
           <TranscriptViewer
             projectId={project.id}
             onSeekWord={handleSeekWord}
             highlightRange={highlightRange}
+            fillerWords={fillerWords}
           />
 
           <div>

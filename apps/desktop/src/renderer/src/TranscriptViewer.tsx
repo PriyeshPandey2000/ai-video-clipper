@@ -2,22 +2,6 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import type { Word } from "@video-editor/types"
 import { Spinner } from "@video-editor/ui"
 
-const FILLER_WORDS = new Set([
-  "um",
-  "uh",
-  "uhm",
-  "hmm",
-  "like",
-  "you know",
-  "i mean",
-  "basically",
-  "literally",
-  "actually",
-  "right",
-  "so",
-  "yeah",
-])
-
 const SILENCE_GAP_THRESHOLD_MS = 1000
 const WORDS_PER_PAGE = 500
 
@@ -25,12 +9,14 @@ interface TranscriptViewerProps {
   projectId: string
   onSeekWord: (startMs: number) => void
   highlightRange?: { startMs: number; endMs: number } | null
+  fillerWords: string[]
 }
 
 export function TranscriptViewer({
   projectId,
   onSeekWord,
   highlightRange,
+  fillerWords,
 }: TranscriptViewerProps): React.ReactElement {
   const [words, setWords] = useState<Word[] | null>(null)
   const [loading, setLoading] = useState(true)
@@ -58,9 +44,12 @@ export function TranscriptViewer({
     }
   }, [projectId])
 
-  const isFiller = useCallback((text: string): boolean => {
-    return FILLER_WORDS.has(text.toLowerCase().replace(/[.,!?]$/, ""))
-  }, [])
+  const fillerSet = useMemo(() => new Set(fillerWords), [fillerWords])
+
+  const isFiller = useCallback(
+    (text: string): boolean => fillerSet.has(text.toLowerCase().replace(/[.,!?]$/, "")),
+    [fillerSet],
+  )
 
   const isInRange = useCallback(
     (startMs: number, endMs: number): boolean => {

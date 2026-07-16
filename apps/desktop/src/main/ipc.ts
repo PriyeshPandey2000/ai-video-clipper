@@ -10,6 +10,7 @@ import {
   clips,
   aiOutputs,
   eq,
+  and,
   desc,
   inArray,
 } from "@video-editor/database"
@@ -37,6 +38,7 @@ import {
   detectSilences,
   wordsToPlainText,
   wordsToTimestampedText,
+  DEFAULT_FILLER_WORDS,
 } from "@video-editor/transcript"
 import { createAiClient, selectClips, generateSocialCaptions } from "@video-editor/ai"
 import { buildAssFile } from "@video-editor/captions"
@@ -610,6 +612,40 @@ export function registerIpcHandlers(): void {
   ipcMain.handle("get-font-url", () => {
     return `file://${join(getResourcesPath(), "fonts", "Montserrat-ExtraBold.ttf")}`
   })
+
+  ipcMain.handle(
+    "project:get-filler-words",
+    async (_event, { projectId }: { projectId: string }) => {
+      const db = getDb(join(app.getPath("userData"), "db.sqlite"))
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
+      if (!project?.fillerWords) return DEFAULT_FILLER_WORDS
+      try {
+        return JSON.parse(project.fillerWords) as string[]
+      } catch {
+        return DEFAULT_FILLER_WORDS
+      }
+    },
+  )
+
+  ipcMain.handle(
+    "project:set-filler-words",
+    async (_event, { projectId, fillerList }: { projectId: string; fillerList: string[] }) => {
+      const db = getDb(join(app.getPath("userData"), "db.sqlite"))
+      db.update(projects)
+        .set({ fillerWords: JSON.stringify(fillerList), updatedAt: now() })
+        .where(eq(projects.id, projectId))
+        .run()
+      // Re-detect with new list: wipe filler segments then reinsert
+      const wordRows = db.select().from(words).where(eq(words.projectId, projectId)).all()
+      db.delete(segments)
+        .where(and(eq(segments.projectId, projectId), eq(segments.type, "filler")))
+        .run()
+      const fillerSegs = detectFillerWords(wordRows, projectId, new Set(fillerList))
+      if (fillerSegs.length > 0) {
+        db.insert(segments).values(fillerSegs).run()
+      }
+    },
+  )
 
   ipcMain.handle("shell:show-item", async (_event, { path }: { path: string }) => {
     shell.showItemInFolder(path)
