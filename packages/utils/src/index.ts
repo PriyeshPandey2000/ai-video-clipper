@@ -38,7 +38,7 @@ export function buildCaptionAccentSet(words: Array<{ text: string }>): Set<numbe
     let bestIdx = -1
     let bestLen = 4
     words.slice(i, i + ACCENT_GROUP).forEach((w, j) => {
-      const len = w.text.replace(/[^a-zA-Z]/g, "").length
+      const len = w.text.replace(/\P{L}/gu, "").length
       if (len > bestLen) {
         bestLen = len
         bestIdx = j

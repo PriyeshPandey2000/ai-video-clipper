@@ -641,23 +641,34 @@ function ProjectView({
   }, [])
 
   useEffect(() => {
+    let cancelled = false
+    setCaptionStyle(DEFAULT_CAPTION_STYLE)
     window.api
       .invoke("project:load-caption-style", { projectId: project.id })
       .then((saved: CaptionStyle | null) => {
+        if (cancelled) return
         if (saved) setCaptionStyle(saved)
-        else setCaptionStyle(DEFAULT_CAPTION_STYLE)
       })
       .catch(() => {})
+    return () => {
+      cancelled = true
+    }
   }, [project.id])
 
   useEffect(() => {
     if (project.status !== "ready") return
+    let cancelled = false
+    setPreviewWords([])
     window.api
       .invoke("project:get-words", { projectId: project.id })
-      .then((ws) =>
-        setPreviewWords(ws.map((w) => ({ text: w.text, startMs: w.startMs, endMs: w.endMs }))),
-      )
+      .then((ws) => {
+        if (cancelled) return
+        setPreviewWords(ws.map((w) => ({ text: w.text, startMs: w.startMs, endMs: w.endMs })))
+      })
       .catch(() => {})
+    return () => {
+      cancelled = true
+    }
   }, [project.id, project.status])
 
   useEffect(() => {
@@ -768,7 +779,7 @@ function ProjectView({
     } finally {
       setExportingAllClips(false)
     }
-  }, [project.id, outputDir, burnSubtitles, reframe])
+  }, [project.id, outputDir, burnSubtitles, reframe, captionStyle])
 
   const handleExportSrt = useCallback(async () => {
     setExportingSrt(true)

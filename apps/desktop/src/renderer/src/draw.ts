@@ -9,7 +9,7 @@ export function buildCaptionAccentSet(words: Array<{ text: string }>): Set<numbe
     let bestIdx = -1
     let bestLen = 4
     words.slice(i, i + ACCENT_GROUP).forEach((w, j) => {
-      const len = w.text.replace(/[^a-zA-Z]/g, "").length
+      const len = w.text.replace(/\P{L}/gu, "").length
       if (len > bestLen) {
         bestLen = len
         bestIdx = j
@@ -96,7 +96,7 @@ export function drawCaptionFrame(
   } else {
     // wordpop: thick outline, colored fill
     const textFill = word.isAccent ? style.accentColor : style.textColor
-    ctx.strokeStyle = contrastColor(style.textColor) === "#ffffff" ? "#000000" : "#ffffff"
+    ctx.strokeStyle = contrastColor(textFill)
     ctx.lineWidth = Math.max(1.5, fs * 0.05)
     ctx.lineJoin = "round"
     ctx.strokeText(text, canvasWidth / 2, baselineY)
@@ -163,11 +163,12 @@ export function drawPreviewCard(
     const totalW = measured.reduce((s, { m }) => s + m.width, 0) + gap * (measured.length - 1)
     let x = w / 2 - totalW / 2
     for (const { text, isAccent, m } of measured) {
-      ctx.strokeStyle = "#000000"
+      const fill = isAccent ? accentColor : textColor
+      ctx.strokeStyle = contrastColor(fill)
       ctx.lineWidth = Math.max(1, fontSize * 0.05)
       ctx.lineJoin = "round"
       ctx.strokeText(text, x, baselineY)
-      ctx.fillStyle = isAccent ? accentColor : textColor
+      ctx.fillStyle = fill
       ctx.fillText(text, x, baselineY)
       x += m.width + gap
     }

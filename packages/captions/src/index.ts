@@ -74,11 +74,15 @@ export function buildAssFile(
   const styleBlock = buildStyleBlock(style)
 
   const dialogueLines = wordRows.map((w, i) => {
-    const raw = w.text.trim()
+    const raw = w.text
+      .trim()
+      .replace(/\\/g, "")
+      .replace(/\{/g, "")
+      .replace(/[\r\n]/g, " ")
     const cased = style.allCaps ? raw.toUpperCase() : raw
     // Shrink very long words inline
     const display =
-      cased.replace(/[^a-zA-Z]/g, "").length > 12
+      cased.replace(/\P{L}/gu, "").length > 12
         ? `{\\fs${Math.round(fontSizePx(style.size) * 0.7)}}${cased}`
         : cased
     const styleName = keyIndices.has(i) ? "Accent" : "Default"

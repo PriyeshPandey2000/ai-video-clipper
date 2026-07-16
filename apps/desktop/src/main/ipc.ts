@@ -464,11 +464,11 @@ export function registerIpcHandlers(): void {
 
         const clipWords = burnSubtitles
           ? wordRows
-              .filter((w) => w.startMs >= clip.startMs && w.startMs < clip.endMs)
+              .filter((w) => w.endMs > clip.startMs && w.startMs < clip.endMs)
               .map((w) => ({
                 ...w,
-                startMs: w.startMs - clip.startMs,
-                endMs: w.endMs - clip.startMs,
+                startMs: Math.max(w.startMs, clip.startMs) - clip.startMs,
+                endMs: Math.min(w.endMs, clip.endMs) - clip.startMs,
               }))
           : []
 
