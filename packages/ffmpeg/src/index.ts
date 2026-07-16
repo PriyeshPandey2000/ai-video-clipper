@@ -9,6 +9,8 @@ export interface ExportOptions {
   startMs: number
   endMs: number
   srtPath?: string
+  assPath?: string
+  fontsDir?: string
   reframe?: boolean
   cropX?: number // 0.0 (left) – 1.0 (right), default 0.5 (center)
 }
@@ -87,15 +89,17 @@ export async function exportClip(opts: ExportOptions): Promise<void> {
     "-b:a",
     "192k",
   ]
+  const subtitleFilter = opts.assPath
+    ? `subtitles=filename=${escapeFiltergraphPath(opts.assPath)}${opts.fontsDir ? `:fontsdir=${escapeFiltergraphPath(opts.fontsDir)}` : ""}`
+    : opts.srtPath
+      ? `subtitles=filename=${escapeFiltergraphPath(opts.srtPath)}`
+      : null
   if (opts.reframe) {
     const cx = opts.cropX ?? 0.5
     const cropFilter = `crop=ih*9/16:ih:(iw-ih*9/16)*${cx}:0,scale=1080:1920`
-    const vf = opts.srtPath
-      ? `${cropFilter},subtitles=filename=${escapeFiltergraphPath(opts.srtPath)}`
-      : cropFilter
-    args.push("-vf", vf)
-  } else if (opts.srtPath) {
-    args.push("-vf", `subtitles=filename=${escapeFiltergraphPath(opts.srtPath)}`)
+    args.push("-vf", subtitleFilter ? `${cropFilter},${subtitleFilter}` : cropFilter)
+  } else if (subtitleFilter) {
+    args.push("-vf", subtitleFilter)
   }
   args.push(opts.outputPath)
   await run(opts.binaryPath, args)
@@ -128,12 +132,20 @@ export interface EpisodeExportOptions {
   outputPath: string
   keepIntervals: { startMs: number; endMs: number }[]
   srtPath?: string
+  assPath?: string
+  fontsDir?: string
 }
 
 export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
   if (opts.keepIntervals.length === 0) {
     throw new Error("No keep intervals — nothing to export")
   }
+
+  const subtitleFilter = opts.assPath
+    ? `subtitles=filename=${escapeFiltergraphPath(opts.assPath)}${opts.fontsDir ? `:fontsdir=${escapeFiltergraphPath(opts.fontsDir)}` : ""}`
+    : opts.srtPath
+      ? `subtitles=filename=${escapeFiltergraphPath(opts.srtPath)}`
+      : null
 
   if (opts.keepIntervals.length === 1) {
     const seg = opts.keepIntervals[0]!
@@ -143,7 +155,8 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
       outputPath: opts.outputPath,
       startMs: seg.startMs,
       endMs: seg.endMs,
-      ...(opts.srtPath ? { srtPath: opts.srtPath } : {}),
+      ...(opts.assPath ? { assPath: opts.assPath, fontsDir: opts.fontsDir } : {}),
+      ...(opts.srtPath && !opts.assPath ? { srtPath: opts.srtPath } : {}),
     })
     return
   }
@@ -158,15 +171,15 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
   })
 
   const n = opts.keepIntervals.length
-  const finalV = opts.srtPath ? "outvsub" : "outv"
+  const finalV = subtitleFilter ? "outvsub" : "outv"
 
   const videoInputs = opts.keepIntervals.map((_, i) => `[v${i}]`).join("")
   const audioInputs = opts.keepIntervals.map((_, i) => `[a${i}]`).join("")
   filterParts.push(`${videoInputs}concat=n=${n}:v=1:a=0[outv]`)
   filterParts.push(`${audioInputs}concat=n=${n}:v=0:a=1[outa]`)
 
-  if (opts.srtPath) {
-    filterParts.push(`[outv]subtitles=filename=${escapeFiltergraphPath(opts.srtPath)}[outvsub]`)
+  if (subtitleFilter) {
+    filterParts.push(`[outv]${subtitleFilter}[outvsub]`)
   }
 
   await run(opts.binaryPath, [

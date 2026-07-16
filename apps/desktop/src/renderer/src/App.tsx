@@ -5,6 +5,7 @@ import type {
   PipelineStage,
   WhisperModel,
   Clip,
+  CaptionStyle,
 } from "@video-editor/types"
 import { Button } from "@video-editor/ui"
 import { Progress } from "@video-editor/ui"
@@ -17,6 +18,75 @@ import { ClipReview } from "./ClipReview"
 import { CaptionsPanel } from "./CaptionsPanel"
 import { TrimStrip } from "./TrimStrip"
 import { CropOverlay } from "./CropOverlay"
+import { CaptionCanvas } from "./CaptionCanvas"
+import { drawPreviewCard, type CaptionPreset } from "./draw"
+
+interface PreviewCardProps {
+  preset: CaptionPreset
+  label: string
+  accentColor: string
+  textColor: string
+  selected: boolean
+  fontLoaded: boolean
+  onClick: () => void
+}
+
+function StylePreviewCard({
+  preset,
+  label,
+  accentColor,
+  textColor,
+  selected,
+  fontLoaded,
+  onClick,
+}: PreviewCardProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  const W = 120
+  const H = 64
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = Math.round(W * dpr)
+    canvas.height = Math.round(H * dpr)
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+    ctx.scale(dpr, dpr)
+    if (fontLoaded) {
+      drawPreviewCard(ctx, preset, accentColor, textColor, W, H)
+    }
+  }, [fontLoaded, preset, accentColor, textColor])
+
+  return (
+    <button onClick={onClick} className="flex flex-col items-center gap-1.5 cursor-pointer">
+      <div
+        className={`rounded-lg overflow-hidden border-2 transition-colors ${
+          selected ? "border-violet-500" : "border-neutral-700 hover:border-neutral-500"
+        }`}
+        style={{ background: "#0f0f0f" }}
+      >
+        <canvas ref={canvasRef} style={{ width: W, height: H, display: "block" }} />
+      </div>
+      <span
+        className={`text-[11px] transition-colors ${selected ? "text-white" : "text-neutral-500"}`}
+      >
+        {label}
+      </span>
+    </button>
+  )
+}
+
+const DEFAULT_CAPTION_STYLE: CaptionStyle = {
+  preset: "hormozi",
+  accentColor: "#FFD700",
+  textColor: "#FFFFFF",
+  position: "bottom",
+  size: "M",
+  allCaps: true,
+  showKeywords: true,
+}
 
 type View = "empty" | "projects" | "project"
 
@@ -544,7 +614,13 @@ function ProjectView({
   const [burnSubtitles, setBurnSubtitles] = useState(true)
   const [reframe, setReframe] = useState(false)
   const [subtitlesSupported, setSubtitlesSupported] = useState<boolean | null>(null)
+  const [captionStyle, setCaptionStyle] = useState<CaptionStyle>(DEFAULT_CAPTION_STYLE)
+  const [fontLoaded, setFontLoaded] = useState(false)
+  const [popAmount, setPopAmount] = useState(0.6)
   const [aiTab, setAiTab] = useState<"clips" | "captions">("clips")
+  const [previewWords, setPreviewWords] = useState<
+    Array<{ text: string; startMs: number; endMs: number }>
+  >([])
 
   useEffect(() => {
     window.api.invoke("ffmpeg:has-subtitles-filter").then((supported) => {
@@ -552,6 +628,48 @@ function ProjectView({
       if (!supported) setBurnSubtitles(false)
     })
   }, [])
+
+  useEffect(() => {
+    window.api
+      .invoke("get-font-url")
+      .then((url) => {
+        const face = new FontFace("Montserrat ExtraBold", `url("${url}")`)
+        return face.load().then((loaded) => document.fonts.add(loaded))
+      })
+      .catch(() => {})
+      .finally(() => setFontLoaded(true))
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setCaptionStyle(DEFAULT_CAPTION_STYLE)
+    window.api
+      .invoke("project:load-caption-style", { projectId: project.id })
+      .then((saved: CaptionStyle | null) => {
+        if (cancelled) return
+        if (saved) setCaptionStyle(saved)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [project.id])
+
+  useEffect(() => {
+    if (project.status !== "ready") return
+    let cancelled = false
+    setPreviewWords([])
+    window.api
+      .invoke("project:get-words", { projectId: project.id })
+      .then((ws) => {
+        if (cancelled) return
+        setPreviewWords(ws.map((w) => ({ text: w.text, startMs: w.startMs, endMs: w.endMs })))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [project.id, project.status])
 
   useEffect(() => {
     setSelectedClip(null)
@@ -652,6 +770,7 @@ function ProjectView({
         ...(outputDir ? { outputDir } : {}),
         burnSubtitles,
         reframe,
+        ...(burnSubtitles ? { captionStyle } : {}),
       })
       setClipRefreshTrigger((n) => n + 1)
       if (paths[0]) await window.api.invoke("shell:show-item", { path: paths[0] })
@@ -660,7 +779,7 @@ function ProjectView({
     } finally {
       setExportingAllClips(false)
     }
-  }, [project.id, outputDir, burnSubtitles, reframe])
+  }, [project.id, outputDir, burnSubtitles, reframe, captionStyle])
 
   const handleExportSrt = useCallback(async () => {
     setExportingSrt(true)
@@ -683,6 +802,17 @@ function ProjectView({
     })
     if (picked) setOutputDir(picked)
   }, [outputDir])
+
+  const handleCaptionStyleChange = useCallback(
+    (update: Partial<CaptionStyle>) => {
+      const next = { ...captionStyle, ...update }
+      setCaptionStyle(next)
+      window.api
+        .invoke("project:save-caption-style", { projectId: project.id, captionStyle: next })
+        .catch(() => {})
+    },
+    [captionStyle, project.id],
+  )
 
   return (
     <div className="flex-1 p-6 space-y-6 overflow-y-auto">
@@ -797,6 +927,157 @@ function ProjectView({
         </div>
       )}
 
+      {project.status === "ready" && burnSubtitles && subtitlesSupported !== false && (
+        <div className="flex flex-col gap-3 -mt-2">
+          {/* Row 1: Preset cards */}
+          <div className="flex items-start gap-3">
+            {(
+              [
+                { preset: "hormozi", label: "Bold Box" },
+                { preset: "wordpop", label: "Outline" },
+                { preset: "none", label: "Classic" },
+              ] as const
+            ).map(({ preset, label }) => (
+              <StylePreviewCard
+                key={preset}
+                preset={preset}
+                label={label}
+                accentColor={captionStyle.accentColor}
+                textColor={captionStyle.textColor}
+                selected={captionStyle.preset === preset}
+                fontLoaded={fontLoaded}
+                onClick={() => handleCaptionStyleChange({ preset })}
+              />
+            ))}
+          </div>
+
+          {/* Row 2: Fine controls — only for animated presets */}
+          {captionStyle.preset !== "none" && (
+            <div className="flex items-center gap-2.5 flex-wrap">
+              {/* Size */}
+              {(["S", "M", "L"] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => handleCaptionStyleChange({ size: s })}
+                  className={`text-xs px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                    captionStyle.size === s
+                      ? "bg-violet-700 text-white"
+                      : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
+                  }`}
+                >
+                  {s}
+                </button>
+              ))}
+
+              <span className="text-neutral-700">·</span>
+
+              {/* Position */}
+              {(["bottom", "top"] as const).map((pos) => (
+                <button
+                  key={pos}
+                  onClick={() => handleCaptionStyleChange({ position: pos })}
+                  className={`text-xs px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                    captionStyle.position === pos
+                      ? "bg-violet-700 text-white"
+                      : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
+                  }`}
+                >
+                  {pos === "bottom" ? "↓" : "↑"}
+                </button>
+              ))}
+
+              <span className="text-neutral-700">·</span>
+
+              {/* All-caps */}
+              <button
+                onClick={() => handleCaptionStyleChange({ allCaps: !captionStyle.allCaps })}
+                className={`text-xs px-2 py-0.5 rounded transition-colors cursor-pointer font-bold ${
+                  captionStyle.allCaps
+                    ? "bg-violet-700 text-white"
+                    : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
+                }`}
+                title="ALL CAPS"
+              >
+                Aa
+              </button>
+
+              <span className="text-neutral-700">·</span>
+
+              {/* Pop animation */}
+              <span className="text-xs text-neutral-600">pop</span>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={popAmount}
+                onChange={(e) => setPopAmount(parseFloat(e.target.value))}
+                className="w-16 accent-violet-500 cursor-pointer"
+                title={`Pop intensity: ${Math.round(popAmount * 100)}%`}
+              />
+
+              <span className="text-neutral-700">·</span>
+
+              {/* Highlight keyword color — hormozi only */}
+              {captionStyle.preset === "hormozi" && (
+                <>
+                  <button
+                    onClick={() =>
+                      handleCaptionStyleChange({ showKeywords: !captionStyle.showKeywords })
+                    }
+                    className={`text-xs px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                      captionStyle.showKeywords
+                        ? "bg-violet-700 text-white"
+                        : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
+                    }`}
+                    title="Highlight keywords"
+                  >
+                    highlight
+                  </button>
+                  <div
+                    className={`flex items-center gap-1.5 transition-opacity ${captionStyle.showKeywords ? "opacity-100" : "opacity-30"}`}
+                  >
+                    {["#FFD700", "#FF6B00", "#FF3B7F", "#00D4FF"].map((color) => (
+                      <button
+                        key={color}
+                        onClick={() =>
+                          captionStyle.showKeywords &&
+                          handleCaptionStyleChange({ accentColor: color })
+                        }
+                        title={color}
+                        className={`w-3.5 h-3.5 rounded-full transition-transform ${
+                          captionStyle.accentColor === color && captionStyle.showKeywords
+                            ? "scale-125 ring-1 ring-white cursor-pointer"
+                            : captionStyle.showKeywords
+                              ? "cursor-pointer"
+                              : "cursor-default"
+                        }`}
+                        style={{ backgroundColor: color }}
+                      />
+                    ))}
+                  </div>
+                  <span className="text-neutral-700">·</span>
+                </>
+              )}
+
+              {/* Text color */}
+              <span className="text-xs text-neutral-600">text</span>
+              {["#FFFFFF", "#000000"].map((color) => (
+                <button
+                  key={color}
+                  onClick={() => handleCaptionStyleChange({ textColor: color })}
+                  title={color === "#FFFFFF" ? "White" : "Black"}
+                  className={`w-3.5 h-3.5 rounded-full transition-transform cursor-pointer border border-neutral-600 ${
+                    captionStyle.textColor === color ? "scale-125 ring-1 ring-white" : ""
+                  }`}
+                  style={{ backgroundColor: color }}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {pipelineProgress && (
         <Card className="space-y-2">
           <div className="flex items-center justify-between">
@@ -832,6 +1113,16 @@ function ProjectView({
               className="w-full h-full object-contain"
               playsInline
             />
+            {burnSubtitles && captionStyle.preset !== "none" && previewWords.length > 0 && (
+              <CaptionCanvas
+                videoRef={videoRef}
+                words={previewWords}
+                style={captionStyle}
+                fontLoaded={fontLoaded}
+                popAmount={popAmount}
+              />
+            )}
+
             {reframe && selectedClip && (
               <CropOverlay
                 containerRef={videoContainerRef}
@@ -904,7 +1195,7 @@ function ProjectView({
               <ClipReview
                 projectId={project.id}
                 onSelectClip={handleSelectClip}
-                exportSettings={{ outputDir, burnSubtitles, reframe }}
+                exportSettings={{ outputDir, burnSubtitles, reframe, captionStyle }}
                 refreshTrigger={clipRefreshTrigger}
               />
             ) : (

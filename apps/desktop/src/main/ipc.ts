@@ -39,6 +39,8 @@ import {
   wordsToTimestampedText,
 } from "@video-editor/transcript"
 import { createAiClient, selectClips, generateSocialCaptions } from "@video-editor/ai"
+import { buildAssFile } from "@video-editor/captions"
+import type { CaptionStyle } from "@video-editor/types"
 
 function getResourcesPath(): string {
   return app.isPackaged ? process.resourcesPath : join(__dirname, "../../../../resources")
@@ -422,12 +424,14 @@ export function registerIpcHandlers(): void {
         outputDir,
         burnSubtitles = true,
         reframe = false,
+        captionStyle,
       }: {
         projectId: string
         clipIds: string[]
         outputDir?: string
         burnSubtitles?: boolean
         reframe?: boolean
+        captionStyle?: CaptionStyle
       },
     ) => {
       const db = getDb(join(app.getPath("userData"), "db.sqlite"))
@@ -438,9 +442,11 @@ export function registerIpcHandlers(): void {
         clipIds.length > 0 ? db.select().from(clips).where(inArray(clips.id, clipIds)).all() : []
 
       const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
+      const fontsDir = join(getResourcesPath(), "fonts")
       const outDir = outputDir ?? join(app.getPath("downloads"), sanitizeName(project.name))
       await mkdir(outDir, { recursive: true })
 
+      const useAnimated = burnSubtitles && captionStyle && captionStyle.preset !== "none"
       const wordRows = burnSubtitles
         ? db.select().from(words).where(eq(words.projectId, projectId)).all()
         : []
@@ -456,19 +462,24 @@ export function registerIpcHandlers(): void {
         })
         const outPath = join(outDir, `${sanitizeName(clip.title)}.mp4`)
 
+        const clipWords = burnSubtitles
+          ? wordRows
+              .filter((w) => w.endMs > clip.startMs && w.startMs < clip.endMs)
+              .map((w) => ({
+                ...w,
+                startMs: Math.max(w.startMs, clip.startMs) - clip.startMs,
+                endMs: Math.min(w.endMs, clip.endMs) - clip.startMs,
+              }))
+          : []
+
         let srtPath: string | undefined
-        if (burnSubtitles) {
-          const clipWords = wordRows
-            .filter((w) => w.startMs >= clip.startMs && w.startMs < clip.endMs)
-            .map((w) => ({
-              ...w,
-              startMs: w.startMs - clip.startMs,
-              endMs: w.endMs - clip.startMs,
-            }))
-          if (clipWords.length > 0) {
-            srtPath = join(tmpdir(), `clip-${clip.id}.srt`)
-            await writeFile(srtPath, buildSrt(clipWords), "utf-8")
-          }
+        let assPath: string | undefined
+        if (useAnimated && clipWords.length > 0) {
+          assPath = join(tmpdir(), `clip-${clip.id}.ass`)
+          await writeFile(assPath, buildAssFile(clipWords, captionStyle!), "utf-8")
+        } else if (burnSubtitles && clipWords.length > 0) {
+          srtPath = join(tmpdir(), `clip-${clip.id}.srt`)
+          await writeFile(srtPath, buildSrt(clipWords), "utf-8")
         }
 
         try {
@@ -478,10 +489,12 @@ export function registerIpcHandlers(): void {
             outputPath: outPath,
             startMs: clip.startMs,
             endMs: clip.endMs,
+            ...(assPath ? { assPath, fontsDir } : {}),
             ...(srtPath ? { srtPath } : {}),
             ...(reframe ? { reframe: true, cropX: clip.cropX } : {}),
           })
         } finally {
+          if (assPath) await unlink(assPath).catch(() => {})
           if (srtPath) await unlink(srtPath).catch(() => {})
         }
 
@@ -565,6 +578,38 @@ export function registerIpcHandlers(): void {
       return outPath
     },
   )
+
+  ipcMain.handle(
+    "project:save-caption-style",
+    async (
+      _event,
+      { projectId, captionStyle }: { projectId: string; captionStyle: CaptionStyle },
+    ) => {
+      const db = getDb(join(app.getPath("userData"), "db.sqlite"))
+      db.update(projects)
+        .set({ captionStyle: JSON.stringify(captionStyle), updatedAt: now() })
+        .where(eq(projects.id, projectId))
+        .run()
+    },
+  )
+
+  ipcMain.handle(
+    "project:load-caption-style",
+    async (_event, { projectId }: { projectId: string }) => {
+      const db = getDb(join(app.getPath("userData"), "db.sqlite"))
+      const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
+      if (!project?.captionStyle) return null
+      try {
+        return JSON.parse(project.captionStyle) as CaptionStyle
+      } catch {
+        return null
+      }
+    },
+  )
+
+  ipcMain.handle("get-font-url", () => {
+    return `file://${join(getResourcesPath(), "fonts", "Montserrat-ExtraBold.ttf")}`
+  })
 
   ipcMain.handle("shell:show-item", async (_event, { path }: { path: string }) => {
     shell.showItemInFolder(path)

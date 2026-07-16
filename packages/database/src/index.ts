@@ -83,4 +83,9 @@ function bootstrapSchema(sqlite: Database.Database): void {
   } catch {
     // column already exists
   }
+  try {
+    sqlite.exec(`ALTER TABLE projects ADD COLUMN caption_style TEXT`)
+  } catch {
+    // column already exists
+  }
 }

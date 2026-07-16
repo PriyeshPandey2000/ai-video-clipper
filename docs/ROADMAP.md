@@ -73,7 +73,7 @@
 ## Phase 7 — Creator features 🔄 In progress
 
 - [x] Clip trim UI — drag handles adjust AI-suggested clip start/end, saves to DB, reflects in export
-- [ ] Animated styled captions — bold word-highlight captions burned into clips (CapCut style)
+- [x] Animated styled captions — bold word-highlight captions burned into clips (CapCut style)
 - [x] 9:16 vertical reframe — drag-on-video crop overlay, per-clip position saved to DB, 1080×1920 FFmpeg output
 - [ ] Customizable filler word list — add/remove words per project from UI
 - [ ] Whisper model manager — download/delete models from UI, show disk usage
@@ -92,7 +92,13 @@
 - [ ] Block-ID-based LLM output — LLM returns `start_block_id` / `end_block_id` instead of raw milliseconds; backend resolves precise timestamps from DB, eliminating hallucination
 - [ ] Code-level timestamp validation — clamp LLM output to `[0, durationMs]`, snap to nearest word boundary, cap clip at 90s
 - [ ] FFmpeg audio energy scoring — extract per-second RMS amplitude, compute energy level per block, pass as `Energy: High/Low` signal to LLM
-- [ ] Animated word-highlight captions — Remotion-based karaoke-style captions burned into clips (word pops as it's spoken); biggest visual differentiator
+- [ ] Content type detection — separate LLM call before scoring classifies video as podcast / interview / tutorial / vlog + density (sparse/dense); main prompt tuned per type
+- [ ] Explicit virality criteria in prompt — replace generic "find engaging segments" with ranked signal list: hook moments, emotional peaks, opinion bombs, revelation moments, conflict, quotable one-liners, story peaks, practical value
+- [ ] Hook sentence per clip — LLM returns the single opening line that makes someone stop scrolling; shown on clip card alongside reason
+- [ ] Duration guidance in prompt — 45–90s sweet spot, shorter only for standalone one-liner, longer only when story arc needs full context
+- [ ] Retry on bad LLM JSON — up to 3 attempts with progressively stricter instruction before failing; prevents pipeline crash on malformed output
+- [ ] Dedupe overlapping clips — after scoring, drop any clip that overlaps >50% with a higher-scored one
+- [ ] Long video chunking — transcripts >30 min split into 20-min chunks with 60s overlap, scored per chunk then deduped across chunks
 
 ## Polish backlog (post-phase completion)
 

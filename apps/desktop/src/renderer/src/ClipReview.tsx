@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from "react"
 import type { Clip } from "@video-editor/types"
+import type { CaptionStyle } from "@video-editor/types"
 import { Spinner, Badge } from "@video-editor/ui"
 
 interface ExportSettings {
   outputDir: string
   burnSubtitles: boolean
   reframe: boolean
+  captionStyle?: CaptionStyle
 }
 
 interface ClipReviewProps {
@@ -102,6 +104,9 @@ export function ClipReview({
           ...(exportSettings.outputDir ? { outputDir: exportSettings.outputDir } : {}),
           burnSubtitles: exportSettings.burnSubtitles,
           reframe: exportSettings.reframe,
+          ...(exportSettings.burnSubtitles && exportSettings.captionStyle
+            ? { captionStyle: exportSettings.captionStyle }
+            : {}),
         })
         setClips((prev) =>
           prev
