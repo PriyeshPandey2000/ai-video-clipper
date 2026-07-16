@@ -47,6 +47,9 @@ importers:
       '@video-editor/ai':
         specifier: workspace:*
         version: link:../../packages/ai
+      '@video-editor/captions':
+        specifier: workspace:*
+        version: link:../../packages/captions
       '@video-editor/database':
         specifier: workspace:*
         version: link:../../packages/database
@@ -136,6 +139,19 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
+  packages/captions:
+    dependencies:
+      '@video-editor/utils':
+        specifier: workspace:*
+        version: link:../utils
+    devDependencies:
+      '@video-editor/types':
+        specifier: workspace:*
+        version: link:../types
       typescript:
         specifier: '*'
         version: 5.9.3

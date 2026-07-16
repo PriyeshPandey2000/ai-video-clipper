@@ -13,6 +13,7 @@
     "@electron-toolkit/preload": "^3.0.0",
     "@electron-toolkit/utils": "^3.0.0",
     "@video-editor/ai": "workspace:*",
+    "@video-editor/captions": "workspace:*",
     "@video-editor/database": "workspace:*",
     "@video-editor/export": "workspace:*",
     "@video-editor/ffmpeg": "workspace:*",

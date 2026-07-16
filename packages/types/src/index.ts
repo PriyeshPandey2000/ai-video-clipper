@@ -88,6 +88,16 @@ export interface PipelineProgress {
 // Renderer → main (invoke): { args, result }
 // Main → renderer (on): payload only
 
+export interface CaptionStyle {
+  preset: "hormozi" | "wordpop" | "none"
+  accentColor: string
+  textColor: string
+  position: "bottom" | "top"
+  size: "S" | "M" | "L"
+  allCaps: boolean
+  showKeywords: boolean
+}
+
 export interface IpcChannels {
   // invoke channels
   "project:list": { args: void; result: Project[] }
@@ -107,6 +117,7 @@ export interface IpcChannels {
       outputDir?: string
       burnSubtitles?: boolean
       reframe?: boolean
+      captionStyle?: CaptionStyle
     }
     result: string[]
   }
@@ -118,6 +129,12 @@ export interface IpcChannels {
   "dialog:pick-folder": { args: { defaultPath?: string }; result: string | null }
   "ffmpeg:has-subtitles-filter": { args: void; result: boolean }
   "shell:show-item": { args: { path: string }; result: void }
+  "project:save-caption-style": {
+    args: { projectId: string; captionStyle: CaptionStyle }
+    result: void
+  }
+  "project:load-caption-style": { args: { projectId: string }; result: CaptionStyle | null }
+  "get-font-url": { args: void; result: string }
   // event channels (main → renderer)
   "pipeline:progress": PipelineProgress
   "pipeline:complete": { projectId: string }

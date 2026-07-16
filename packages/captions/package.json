@@ -1,5 +1,5 @@
 {
-  "name": "@video-editor/database",
+  "name": "@video-editor/captions",
   "version": "0.0.1",
   "private": true,
   "main": "./dist/index.js",
@@ -15,19 +15,13 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "lint": "eslint src"
   },
   "dependencies": {
-    "@video-editor/types": "workspace:*",
-    "@video-editor/utils": "workspace:*",
-    "better-sqlite3": "^11.3.0",
-    "drizzle-orm": "^0.33.0"
+    "@video-editor/utils": "workspace:*"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.0",
-    "drizzle-kit": "^0.24.0",
+    "@video-editor/types": "workspace:*",
     "typescript": "*"
   }
 }

@@ -18,6 +18,9 @@ type InvokeChannels = Pick<
   | "dialog:pick-folder"
   | "ffmpeg:has-subtitles-filter"
   | "shell:show-item"
+  | "project:save-caption-style"
+  | "project:load-caption-style"
+  | "get-font-url"
 >
 
 interface ElectronAPI {

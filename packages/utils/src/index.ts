@@ -28,3 +28,23 @@ export function clamp(value: number, min: number, max: number): number {
 export function now(): number {
   return Date.now()
 }
+
+// Longest word (>=5 chars) per GROUP-word window gets accent highlight.
+// Used by both the ASS builder (main process) and Canvas renderer (browser).
+const ACCENT_GROUP = 4
+export function buildCaptionAccentSet(words: Array<{ text: string }>): Set<number> {
+  const accents = new Set<number>()
+  for (let i = 0; i < words.length; i += ACCENT_GROUP) {
+    let bestIdx = -1
+    let bestLen = 4
+    words.slice(i, i + ACCENT_GROUP).forEach((w, j) => {
+      const len = w.text.replace(/[^a-zA-Z]/g, "").length
+      if (len > bestLen) {
+        bestLen = len
+        bestIdx = j
+      }
+    })
+    if (bestIdx >= 0) accents.add(i + bestIdx)
+  }
+  return accents
+}
