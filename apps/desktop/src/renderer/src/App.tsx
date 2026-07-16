@@ -609,6 +609,7 @@ function ProjectView({
   const [exportingEpisode, setExportingEpisode] = useState(false)
   const [exportingAllClips, setExportingAllClips] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
+  const activeProjectIdRef = useRef(project.id)
   const [clipRefreshTrigger, setClipRefreshTrigger] = useState(0)
   const [exportingSrt, setExportingSrt] = useState(false)
   const [outputDir, setOutputDir] = useState("")
@@ -646,6 +647,7 @@ function ProjectView({
 
   useEffect(() => {
     let cancelled = false
+    activeProjectIdRef.current = project.id
     setCaptionStyle(DEFAULT_CAPTION_STYLE)
     setExportError(null)
     window.api
@@ -764,26 +766,34 @@ function ProjectView({
   )
 
   const handleExportEpisode = useCallback(async () => {
+    const exportProjectId = project.id
     setExportingEpisode(true)
     setExportError(null)
+    let outPath: string | null = null
     try {
-      const outPath = await window.api.invoke("export:full", {
+      outPath = await window.api.invoke("export:full", {
         projectId: project.id,
         ...(outputDir ? { outputDir } : {}),
         burnSubtitles,
       })
-      if (outPath) await window.api.invoke("shell:show-item", { path: outPath })
     } catch (err) {
       console.error("Export episode failed:", err)
-      setExportError("Export failed. Check that the source file still exists.")
+      if (activeProjectIdRef.current === exportProjectId) {
+        setExportError("Export failed. Check that the source file still exists.")
+      }
     } finally {
-      setExportingEpisode(false)
+      if (activeProjectIdRef.current === exportProjectId) {
+        setExportingEpisode(false)
+      }
     }
+    if (outPath) await window.api.invoke("shell:show-item", { path: outPath }).catch(() => {})
   }, [project.id, outputDir, burnSubtitles])
 
   const handleExportAllClips = useCallback(async () => {
+    const exportProjectId = project.id
     setExportingAllClips(true)
     setExportError(null)
+    let firstPath: string | undefined
     try {
       const allClips = await window.api.invoke("clip:list", { projectId: project.id })
       const approvedIds = allClips.filter((c) => c.status === "approved").map((c) => c.id)
@@ -796,14 +806,21 @@ function ProjectView({
         reframe,
         ...(burnSubtitles ? { captionStyle } : {}),
       })
-      setClipRefreshTrigger((n) => n + 1)
-      if (paths[0]) await window.api.invoke("shell:show-item", { path: paths[0] })
+      firstPath = paths[0]
+      if (activeProjectIdRef.current === exportProjectId) {
+        setClipRefreshTrigger((n) => n + 1)
+      }
     } catch (err) {
       console.error("Export clips failed:", err)
-      setExportError("Export failed. Check that the source file still exists.")
+      if (activeProjectIdRef.current === exportProjectId) {
+        setExportError("Export failed. Check that the source file still exists.")
+      }
     } finally {
-      setExportingAllClips(false)
+      if (activeProjectIdRef.current === exportProjectId) {
+        setExportingAllClips(false)
+      }
     }
+    if (firstPath) await window.api.invoke("shell:show-item", { path: firstPath }).catch(() => {})
   }, [project.id, outputDir, burnSubtitles, reframe, captionStyle])
 
   const handleExportSrt = useCallback(async () => {
@@ -878,7 +895,11 @@ function ProjectView({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {exportError && <span className="text-xs text-red-400">{exportError}</span>}
+          {exportError && (
+            <span role="alert" className="text-xs text-red-400">
+              {exportError}
+            </span>
+          )}
           {project.status === "ready" && (
             <>
               <button
