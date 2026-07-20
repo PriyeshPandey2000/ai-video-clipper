@@ -665,4 +665,11 @@ export function registerIpcHandlers(): void {
     const modelsDir = join(app.getPath("userData"), "models")
     await deleteModel(modelsDir, model)
   })
+
+  ipcMain.handle("models:download", async (_event, { model }: { model: WhisperModel }) => {
+    const modelsDir = join(app.getPath("userData"), "models")
+    await downloadModel(modelsDir, model, (progress) => {
+      send("models:download-progress", { model, progress })
+    })
+  })
 }

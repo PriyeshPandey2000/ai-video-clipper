@@ -145,7 +145,9 @@ export interface IpcChannels {
   "project:set-filler-words": { args: { projectId: string; fillerList: string[] }; result: void }
   "models:list": { args: void; result: ModelInfo[] }
   "models:delete": { args: { model: WhisperModel }; result: void }
+  "models:download": { args: { model: WhisperModel }; result: void }
   // event channels (main → renderer)
+  "models:download-progress": { model: WhisperModel; progress: number }
   "pipeline:progress": PipelineProgress
   "pipeline:complete": { projectId: string }
   "pipeline:error": { projectId: string; error: string }
