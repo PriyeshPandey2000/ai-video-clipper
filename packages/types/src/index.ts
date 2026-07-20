@@ -84,6 +84,12 @@ export interface PipelineProgress {
   message?: string
 }
 
+export interface ModelInfo {
+  model: WhisperModel
+  downloaded: boolean
+  sizeOnDisk: number | null
+}
+
 // ─── IPC channel type map ──────────────────────────────────────────────────
 // Renderer → main (invoke): { args, result }
 // Main → renderer (on): payload only
@@ -137,6 +143,8 @@ export interface IpcChannels {
   "get-font-url": { args: void; result: string }
   "project:get-filler-words": { args: { projectId: string }; result: string[] }
   "project:set-filler-words": { args: { projectId: string; fillerList: string[] }; result: void }
+  "models:list": { args: void; result: ModelInfo[] }
+  "models:delete": { args: { model: WhisperModel }; result: void }
   // event channels (main → renderer)
   "pipeline:progress": PipelineProgress
   "pipeline:complete": { projectId: string }

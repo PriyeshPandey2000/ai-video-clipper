@@ -23,6 +23,8 @@ type InvokeChannels = Pick<
   | "get-font-url"
   | "project:get-filler-words"
   | "project:set-filler-words"
+  | "models:list"
+  | "models:delete"
 >
 
 interface ElectronAPI {

@@ -19,6 +19,7 @@ import { CaptionsPanel } from "./CaptionsPanel"
 import { TrimStrip } from "./TrimStrip"
 import { CropOverlay } from "./CropOverlay"
 import { CaptionCanvas } from "./CaptionCanvas"
+import { SettingsPage } from "./SettingsPage"
 import { drawPreviewCard, type CaptionPreset } from "./draw"
 
 interface PreviewCardProps {
@@ -88,7 +89,7 @@ const DEFAULT_CAPTION_STYLE: CaptionStyle = {
   showKeywords: true,
 }
 
-type View = "empty" | "projects" | "project"
+type View = "empty" | "projects" | "project" | "settings"
 
 const VIDEO_EXTS = new Set([
   "mp4",
@@ -162,6 +163,13 @@ export default function App(): React.ReactElement {
   )
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [search, setSearch] = useState("")
+  const [modelStatuses, setModelStatuses] = useState<Record<WhisperModel, boolean>>({
+    tiny: false,
+    base: false,
+    small: false,
+    medium: false,
+    large: false,
+  })
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const progressRef = useRef(pipelineProgress)
@@ -196,6 +204,21 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     loadProjects()
   }, [loadProjects])
+
+  const loadModelStatuses = useCallback(async () => {
+    try {
+      const list = await window.api.invoke("models:list")
+      const statuses = {} as Record<WhisperModel, boolean>
+      for (const m of list) statuses[m.model] = m.downloaded
+      setModelStatuses(statuses)
+    } catch {
+      // non-fatal
+    }
+  }, [])
+
+  useEffect(() => {
+    loadModelStatuses()
+  }, [loadModelStatuses])
 
   useEffect(() => {
     const unsubProgress = window.api.on("pipeline:progress", (data) => {
@@ -367,7 +390,12 @@ export default function App(): React.ReactElement {
           </div>
 
           <div className="border-t border-neutral-800 p-3">
-            <button className="flex items-center gap-2 text-xs text-neutral-500 hover:text-neutral-300 transition-colors cursor-pointer w-full">
+            <button
+              onClick={() => setView("settings")}
+              className={`flex items-center gap-2 text-xs transition-colors cursor-pointer w-full ${
+                view === "settings" ? "text-neutral-200" : "text-neutral-500 hover:text-neutral-300"
+              }`}
+            >
               <Settings size={13} />
               <span>Settings</span>
             </button>
@@ -375,15 +403,22 @@ export default function App(): React.ReactElement {
         </aside>
 
         <main className="flex-1 flex flex-col">
-          {view === "project" && selectedProject ? (
+          {view === "settings" ? (
+            <SettingsPage
+              onBack={() => setView(selectedProject ? "project" : "empty")}
+              onModelsChanged={loadModelStatuses}
+            />
+          ) : view === "project" && selectedProject ? (
             <ProjectView
               project={selectedProject}
               pipelineProgress={
                 pipelineProgress?.projectId === selectedProject.id ? pipelineProgress : null
               }
               selectedModel={selectedModel}
+              modelStatuses={modelStatuses}
               onTranscribe={handleStartPipeline}
               onModelChange={setSelectedModel}
+              onOpenSettings={() => setView("settings")}
             />
           ) : (
             <HomePage
@@ -586,16 +621,20 @@ interface ProjectViewProps {
   project: Project
   pipelineProgress: PipelineProgress | null
   selectedModel: WhisperModel
+  modelStatuses: Record<WhisperModel, boolean>
   onTranscribe: () => void
   onModelChange: (m: WhisperModel) => void
+  onOpenSettings: () => void
 }
 
 function ProjectView({
   project,
   pipelineProgress,
   selectedModel,
+  modelStatuses,
   onTranscribe,
   onModelChange,
+  onOpenSettings,
 }: ProjectViewProps): React.ReactElement {
   const videoRef = useRef<HTMLVideoElement>(null)
   const videoContainerRef = useRef<HTMLDivElement>(null)
@@ -927,13 +966,28 @@ function ProjectView({
                   <button
                     key={m.key}
                     onClick={() => onModelChange(m.key)}
-                    className={`px-2 py-1 font-medium transition-colors cursor-pointer ${
+                    className={`flex items-center gap-1.5 px-2 py-1 font-medium transition-colors cursor-pointer ${
                       selectedModel === m.key
                         ? "bg-violet-600 text-white"
                         : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
                     }`}
-                    title={m.size}
+                    title={
+                      modelStatuses[m.key]
+                        ? `${m.label} · ${m.size} · on disk`
+                        : `${m.label} · ${m.size} · will download`
+                    }
                   >
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                        modelStatuses[m.key]
+                          ? selectedModel === m.key
+                            ? "bg-green-300"
+                            : "bg-green-500"
+                          : selectedModel === m.key
+                            ? "bg-white/40"
+                            : "bg-neutral-600"
+                      }`}
+                    />
                     {m.label}
                   </button>
                 ))}
@@ -941,6 +995,12 @@ function ProjectView({
               <Button size="sm" onClick={onTranscribe}>
                 {project.status === "error" ? "Retry Transcribe" : "Transcribe"}
               </Button>
+              <button
+                onClick={onOpenSettings}
+                className="text-xs text-neutral-600 hover:text-neutral-400 transition-colors cursor-pointer"
+              >
+                Manage models
+              </button>
             </>
           )}
         </div>

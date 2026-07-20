@@ -75,7 +75,7 @@
 - [x] Clip trim UI — drag handles adjust AI-suggested clip start/end, saves to DB, reflects in export
 - [x] Animated styled captions — bold word-highlight captions burned into clips (CapCut style)
 - [x] 9:16 vertical reframe — drag-on-video crop overlay, per-clip position saved to DB, 1080×1920 FFmpeg output
-- [ ] Customizable filler word list — add/remove words per project from UI
+- [x] Customizable filler word list — add/remove words per project from UI
 - [ ] Whisper model manager — download/delete models from UI, show disk usage
 - [x] Audio crossfade at episode splice points (issue #10)
 - [x] Episode SRT timestamp remapping (issue #7)

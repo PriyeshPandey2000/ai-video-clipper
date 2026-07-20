@@ -27,9 +27,11 @@ import {
   downloadModel,
   transcribe as whisperTranscribe,
   isModelDownloaded,
+  getModelSizeOnDisk,
+  deleteModel,
   resolveWhisperBinary,
 } from "@video-editor/whisper"
-import type { WhisperModel } from "@video-editor/types"
+import type { WhisperModel, ModelInfo } from "@video-editor/types"
 import { generateId, now } from "@video-editor/utils"
 import type { PipelineProgress, PipelineStage } from "@video-editor/types"
 import {
@@ -643,5 +645,24 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle("shell:show-item", async (_event, { path }: { path: string }) => {
     shell.showItemInFolder(path)
+  })
+
+  const WHISPER_MODELS: WhisperModel[] = ["tiny", "base", "small", "medium", "large"]
+
+  ipcMain.handle("models:list", async () => {
+    const modelsDir = join(app.getPath("userData"), "models")
+    const results: ModelInfo[] = await Promise.all(
+      WHISPER_MODELS.map(async (model) => {
+        const downloaded = isModelDownloaded(modelsDir, model)
+        const sizeOnDisk = downloaded ? await getModelSizeOnDisk(modelsDir, model) : null
+        return { model, downloaded, sizeOnDisk }
+      }),
+    )
+    return results
+  })
+
+  ipcMain.handle("models:delete", async (_event, { model }: { model: WhisperModel }) => {
+    const modelsDir = join(app.getPath("userData"), "models")
+    await deleteModel(modelsDir, model)
   })
 }
