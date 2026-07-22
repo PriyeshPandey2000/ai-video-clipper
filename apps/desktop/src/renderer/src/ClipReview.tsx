@@ -30,6 +30,12 @@ function scoreColor(score: number | null): "green" | "yellow" | "red" | "neutral
   return "red"
 }
 
+function cropLabel(cropX: number): "L" | "C" | "R" {
+  if (cropX < 0.33) return "L"
+  if (cropX > 0.67) return "R"
+  return "C"
+}
+
 function statusBadgeColor(
   status: Clip["status"],
 ): "violet" | "green" | "yellow" | "red" | "neutral" {
@@ -185,6 +191,7 @@ export function ClipReview({
                     <span className="text-[11px] text-neutral-500 whitespace-nowrap font-mono">
                       {formatDuration(clip.endMs - clip.startMs)}
                     </span>
+                    <Badge color="neutral">{cropLabel(clip.cropX)}</Badge>
                   </div>
 
                   {clip.aiReason && (

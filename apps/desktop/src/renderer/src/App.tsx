@@ -615,6 +615,7 @@ function ProjectView({
   const [outputDir, setOutputDir] = useState("")
   const [burnSubtitles, setBurnSubtitles] = useState(true)
   const [reframe, setReframe] = useState(false)
+  const [reframeWarning, setReframeWarning] = useState<string | null>(null)
   const [subtitlesSupported, setSubtitlesSupported] = useState<boolean | null>(null)
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle>(DEFAULT_CAPTION_STYLE)
   const [fontLoaded, setFontLoaded] = useState(false)
@@ -969,7 +970,22 @@ function ProjectView({
 
           <label className="flex items-center gap-2 select-none cursor-pointer">
             <div
-              onClick={() => setReframe((v) => !v)}
+              onClick={() => {
+                const vid = videoRef.current
+                if (!reframe && vid && vid.videoWidth > 0) {
+                  const ar = vid.videoWidth / vid.videoHeight
+                  if (ar <= 1) {
+                    setReframeWarning("Source is already portrait — reframe not needed")
+                    setTimeout(() => setReframeWarning(null), 3000)
+                    return
+                  }
+                  if (ar < 1.2) {
+                    setReframeWarning("Source is near-square — reframe may crop heavily")
+                    setTimeout(() => setReframeWarning(null), 3000)
+                  }
+                }
+                setReframe((v) => !v)
+              }}
               className={`relative w-7 h-4 rounded-full transition-colors cursor-pointer ${reframe ? "bg-violet-600" : "bg-neutral-700"}`}
             >
               <div
@@ -978,6 +994,7 @@ function ProjectView({
             </div>
             <span className="text-xs text-neutral-400">9:16</span>
           </label>
+          {reframeWarning && <span className="text-xs text-amber-400">{reframeWarning}</span>}
 
           <button
             onClick={handlePickFolder}

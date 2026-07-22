@@ -390,7 +390,12 @@ export function registerIpcHandlers(): void {
       _event,
       { clipId, startMs, endMs }: { clipId: string; startMs: number; endMs: number },
     ) => {
-      db.update(clips).set({ startMs, endMs }).where(eq(clips.id, clipId)).run()
+      const clip = db.select().from(clips).where(eq(clips.id, clipId)).get()
+      const status = clip?.status === "exported" ? "approved" : undefined
+      db.update(clips)
+        .set({ startMs, endMs, ...(status ? { status } : {}) })
+        .where(eq(clips.id, clipId))
+        .run()
     },
   )
 
