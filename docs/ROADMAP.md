@@ -70,13 +70,13 @@
 - [ ] Auto-update via `electron-updater`
 - [ ] Onboarding flow (first-run walkthrough: drop video → pick model → transcribe)
 
-## Phase 7 — Creator features 🔄 In progress
+## Phase 7 — Creator features ✅ Done
 
 - [x] Clip trim UI — drag handles adjust AI-suggested clip start/end, saves to DB, reflects in export
 - [x] Animated styled captions — bold word-highlight captions burned into clips (CapCut style)
 - [x] 9:16 vertical reframe — drag-on-video crop overlay, per-clip position saved to DB, 1080×1920 FFmpeg output
 - [x] Customizable filler word list — add/remove words per project from UI
-- [ ] Whisper model manager — download/delete models from UI, show disk usage
+- [x] Whisper model manager — Settings page with per-model download (live progress), delete, disk usage
 - [x] Audio crossfade at episode splice points (issue #10)
 - [x] Episode SRT timestamp remapping (issue #7)
 
