@@ -48,6 +48,7 @@ export function SettingsPage({ onBack, onModelsChanged }: SettingsPageProps): Re
   const [showApiKey, setShowApiKey] = useState(false)
   const [savingKey, setSavingKey] = useState(false)
   const [keySaved, setKeySaved] = useState(false)
+  const [keyError, setKeyError] = useState<string | null>(null)
 
   const loadModels = useCallback(async () => {
     const list = await window.api.invoke("models:list")
@@ -71,6 +72,7 @@ export function SettingsPage({ onBack, onModelsChanged }: SettingsPageProps): Re
   const handleSaveApiKey = useCallback(async () => {
     if (!apiKeyInput.trim()) return
     setSavingKey(true)
+    setKeyError(null)
     try {
       await window.api.invoke("settings:set-api-key", { groqApiKey: apiKeyInput.trim() })
       const { configured, preview } = await window.api.invoke("settings:get-api-key")
@@ -80,8 +82,8 @@ export function SettingsPage({ onBack, onModelsChanged }: SettingsPageProps): Re
       setShowApiKey(false)
       setKeySaved(true)
       setTimeout(() => setKeySaved(false), 2000)
-    } catch (err) {
-      console.error("Failed to save API key:", err)
+    } catch {
+      setKeyError("Failed to save key. Check app permissions and try again.")
     } finally {
       setSavingKey(false)
     }
@@ -206,6 +208,8 @@ export function SettingsPage({ onBack, onModelsChanged }: SettingsPageProps): Re
                     )}
                   </button>
                 </div>
+
+                {keyError && <p className="text-xs text-red-400 mt-2">{keyError}</p>}
 
                 <p className="text-xs text-neutral-600 mt-2">
                   Get a free key at <span className="text-neutral-400">console.groq.com</span>

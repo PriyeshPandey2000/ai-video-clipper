@@ -721,9 +721,12 @@ export function registerIpcHandlers(): void {
     const configPath = join(app.getPath("userData"), "config.json")
     let config: Record<string, unknown> = {}
     try {
-      config = JSON.parse(await readFile(configPath, "utf-8"))
+      const parsed: unknown = JSON.parse(await readFile(configPath, "utf-8"))
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        config = parsed as Record<string, unknown>
+      }
     } catch {
-      // file doesn't exist yet — start fresh
+      // file doesn't exist yet or is malformed — start fresh
     }
     config.groqApiKey = groqApiKey
     await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8")
