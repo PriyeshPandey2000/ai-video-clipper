@@ -1,7 +1,7 @@
 import { ipcMain, BrowserWindow, app, shell, dialog } from "electron"
 import { join } from "path"
 import { tmpdir } from "os"
-import { copyFile, mkdir, writeFile, unlink } from "fs/promises"
+import { copyFile, mkdir, writeFile, unlink, readFile } from "fs/promises"
 import {
   getDb,
   projects,
@@ -708,5 +708,28 @@ export function registerIpcHandlers(): void {
     await ensureModelDownloaded(modelsDir, model, (progress) => {
       send("models:download-progress", { model, progress })
     })
+  })
+
+  ipcMain.handle("settings:get-api-key", async () => {
+    const key = process.env["GROQ_API_KEY"] ?? ""
+    if (!key) return { configured: false, preview: null }
+    const preview = key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : "****"
+    return { configured: true, preview }
+  })
+
+  ipcMain.handle("settings:set-api-key", async (_event, { groqApiKey }: { groqApiKey: string }) => {
+    const configPath = join(app.getPath("userData"), "config.json")
+    let config: Record<string, unknown> = {}
+    try {
+      const parsed: unknown = JSON.parse(await readFile(configPath, "utf-8"))
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        config = parsed as Record<string, unknown>
+      }
+    } catch {
+      // file doesn't exist yet or is malformed — start fresh
+    }
+    config.groqApiKey = groqApiKey
+    await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8")
+    process.env["GROQ_API_KEY"] = groqApiKey
   })
 }

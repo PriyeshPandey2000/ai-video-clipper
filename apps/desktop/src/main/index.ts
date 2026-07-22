@@ -1,6 +1,6 @@
 import { app, BrowserWindow, shell } from "electron"
 import { join, dirname } from "path"
-import { existsSync } from "fs"
+import { existsSync, readFileSync } from "fs"
 import { closeDb } from "@video-editor/database"
 import { registerIpcHandlers } from "./ipc"
 
@@ -19,6 +19,19 @@ for (const p of envPaths) {
     dotenv.config({ path: p })
     break
   }
+}
+
+// Override with user-saved API key from Settings (takes priority over .env)
+try {
+  const configPath = join(app.getPath("userData"), "config.json")
+  if (existsSync(configPath)) {
+    const config = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>
+    if (typeof config.groqApiKey === "string" && config.groqApiKey) {
+      process.env["GROQ_API_KEY"] = config.groqApiKey
+    }
+  }
+} catch {
+  // ignore — config missing or malformed, fall back to .env
 }
 
 function createWindow(): void {

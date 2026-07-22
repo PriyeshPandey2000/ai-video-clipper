@@ -19,6 +19,11 @@ type InvokeChannels = Pick<
   | "dialog:pick-folder"
   | "ffmpeg:has-subtitles-filter"
   | "shell:show-item"
+  | "models:list"
+  | "models:delete"
+  | "models:download"
+  | "settings:get-api-key"
+  | "settings:set-api-key"
 >
 
 const api = {
