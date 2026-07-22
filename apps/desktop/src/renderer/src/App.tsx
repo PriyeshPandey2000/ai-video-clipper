@@ -229,6 +229,7 @@ export default function App(): React.ReactElement {
         setPipelineProgress(null)
       }
       loadProjects()
+      loadModelStatuses()
     })
     const unsubError = window.api.on("pipeline:error", ({ projectId, error }) => {
       console.error("Pipeline error:", error)
@@ -242,7 +243,7 @@ export default function App(): React.ReactElement {
       unsubComplete()
       unsubError()
     }
-  }, [loadProjects])
+  }, [loadProjects, loadModelStatuses])
 
   const handleFileDrop = useCallback(
     async (filePath: string) => {

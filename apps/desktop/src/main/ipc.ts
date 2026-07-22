@@ -256,7 +256,7 @@ export function registerIpcHandlers(): void {
 
         if (!isModelDownloaded(modelsDir, model)) {
           sendProgress(projectId, "transcribing", 0, `Downloading ${model} model`)
-          await downloadModel(modelsDir, model, (pct) => {
+          await ensureModelDownloaded(modelsDir, model, (pct) => {
             sendProgress(projectId, "transcribing", pct * 0.3, `Downloading ${model} model`)
           })
         }
@@ -647,6 +647,25 @@ export function registerIpcHandlers(): void {
     shell.showItemInFolder(path)
   })
 
+  // Deduplicates concurrent download requests for the same model across both
+  // pipeline:start (implicit) and models:download (explicit) call sites.
+  const inFlightDownloads = new Map<WhisperModel, Promise<void>>()
+
+  function ensureModelDownloaded(
+    modelsDir: string,
+    model: WhisperModel,
+    onProgress?: (progress: number) => void,
+  ): Promise<void> {
+    if (isModelDownloaded(modelsDir, model)) return Promise.resolve()
+    const existing = inFlightDownloads.get(model)
+    if (existing) return existing
+    const promise = downloadModel(modelsDir, model, onProgress).finally(() =>
+      inFlightDownloads.delete(model),
+    )
+    inFlightDownloads.set(model, promise)
+    return promise
+  }
+
   const WHISPER_MODELS: WhisperModel[] = ["tiny", "base", "small", "medium", "large"]
 
   ipcMain.handle("models:list", async () => {
@@ -668,7 +687,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle("models:download", async (_event, { model }: { model: WhisperModel }) => {
     const modelsDir = join(app.getPath("userData"), "models")
-    await downloadModel(modelsDir, model, (progress) => {
+    await ensureModelDownloaded(modelsDir, model, (progress) => {
       send("models:download-progress", { model, progress })
     })
   })
