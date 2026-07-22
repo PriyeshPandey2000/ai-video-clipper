@@ -431,6 +431,7 @@ export function registerIpcHandlers(): void {
         outputDir,
         burnSubtitles = true,
         reframe = false,
+        blurBg = false,
         captionStyle,
       }: {
         projectId: string
@@ -438,6 +439,7 @@ export function registerIpcHandlers(): void {
         outputDir?: string
         burnSubtitles?: boolean
         reframe?: boolean
+        blurBg?: boolean
         captionStyle?: CaptionStyle
       },
     ) => {
@@ -492,7 +494,7 @@ export function registerIpcHandlers(): void {
             endMs: clip.endMs,
             ...(assPath ? { assPath, fontsDir } : {}),
             ...(srtPath ? { srtPath } : {}),
-            ...(reframe ? { reframe: true, cropX: clip.cropX } : {}),
+            ...(reframe ? { reframe: true, cropX: clip.cropX, blurBg } : {}),
           })
         } finally {
           if (assPath) await unlink(assPath).catch(() => {})
@@ -514,7 +516,17 @@ export function registerIpcHandlers(): void {
         projectId,
         outputDir,
         burnSubtitles = true,
-      }: { projectId: string; outputDir?: string; burnSubtitles?: boolean },
+        reframe = false,
+        cropX = 0.5,
+        blurBg = false,
+      }: {
+        projectId: string
+        outputDir?: string
+        burnSubtitles?: boolean
+        reframe?: boolean
+        cropX?: number
+        blurBg?: boolean
+      },
     ) => {
       const db = getDb(join(app.getPath("userData"), "db.sqlite"))
       const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
@@ -554,6 +566,7 @@ export function registerIpcHandlers(): void {
           outputPath: outPath,
           keepIntervals,
           ...(srtPath ? { srtPath } : {}),
+          ...(reframe ? { reframe: true, cropX, blurBg } : {}),
         })
       } finally {
         if (srtPath) await unlink(srtPath).catch(() => {})

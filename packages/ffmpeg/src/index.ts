@@ -13,6 +13,7 @@ export interface ExportOptions {
   fontsDir?: string
   reframe?: boolean
   cropX?: number // 0.0 (left) – 1.0 (right), default 0.5 (center)
+  blurBg?: boolean // fill 9:16 background with blurred source instead of black bars
 }
 
 export interface ProxyOptions {
@@ -94,7 +95,21 @@ export async function exportClip(opts: ExportOptions): Promise<void> {
     : opts.srtPath
       ? `subtitles=filename=${escapeFiltergraphPath(opts.srtPath)}`
       : null
-  if (opts.reframe) {
+
+  if (opts.reframe && opts.blurBg) {
+    const cx = opts.cropX ?? 0.5
+    // Scale-to-fill + center-crop + blur for background; proper 9:16 crop for foreground
+    const bgChain = `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=luma_radius=20:luma_power=2`
+    const fgChain = `crop=ih*9/16:ih:(iw-ih*9/16)*${cx}:0,scale=1080:1920`
+    const finalLabel = subtitleFilter ? "preout" : "out"
+    const filterParts = [
+      `[0:v]${bgChain}[bg]`,
+      `[0:v]${fgChain}[fg]`,
+      `[bg][fg]overlay=0:0[${finalLabel}]`,
+    ]
+    if (subtitleFilter) filterParts.push(`[preout]${subtitleFilter}[out]`)
+    args.push("-filter_complex", filterParts.join(";"), "-map", "[out]", "-map", "0:a?")
+  } else if (opts.reframe) {
     const cx = opts.cropX ?? 0.5
     const cropFilter = `crop=ih*9/16:ih:(iw-ih*9/16)*${cx}:0,scale=1080:1920`
     args.push("-vf", subtitleFilter ? `${cropFilter},${subtitleFilter}` : cropFilter)
@@ -134,6 +149,9 @@ export interface EpisodeExportOptions {
   srtPath?: string
   assPath?: string
   fontsDir?: string
+  reframe?: boolean
+  cropX?: number
+  blurBg?: boolean
 }
 
 export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
@@ -157,16 +175,33 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
       endMs: seg.endMs,
       ...(opts.assPath ? { assPath: opts.assPath, fontsDir: opts.fontsDir } : {}),
       ...(opts.srtPath && !opts.assPath ? { srtPath: opts.srtPath } : {}),
+      ...(opts.reframe ? { reframe: true, cropX: opts.cropX, blurBg: opts.blurBg } : {}),
     })
     return
   }
 
   const filterParts: string[] = []
+  const cx = opts.cropX ?? 0.5
 
   opts.keepIntervals.forEach((seg, i) => {
     const start = seg.startMs / 1000
     const end = seg.endMs / 1000
-    filterParts.push(`[0:v]trim=${start}:${end},setpts=PTS-STARTPTS[v${i}]`)
+    if (opts.reframe && opts.blurBg) {
+      // Per-segment: split raw → blur bg + 9:16 fg → overlay
+      filterParts.push(`[0:v]trim=${start}:${end},setpts=PTS-STARTPTS[vraw${i}]`)
+      filterParts.push(`[vraw${i}]split[vbg${i}][vfg${i}]`)
+      filterParts.push(
+        `[vbg${i}]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=luma_radius=20:luma_power=2[bg${i}]`,
+      )
+      filterParts.push(`[vfg${i}]crop=ih*9/16:ih:(iw-ih*9/16)*${cx}:0,scale=1080:1920[fg${i}]`)
+      filterParts.push(`[bg${i}][fg${i}]overlay=0:0[v${i}]`)
+    } else if (opts.reframe) {
+      filterParts.push(
+        `[0:v]trim=${start}:${end},setpts=PTS-STARTPTS,crop=ih*9/16:ih:(iw-ih*9/16)*${cx}:0,scale=1080:1920[v${i}]`,
+      )
+    } else {
+      filterParts.push(`[0:v]trim=${start}:${end},setpts=PTS-STARTPTS[v${i}]`)
+    }
     filterParts.push(`[0:a]atrim=${start}:${end},asetpts=PTS-STARTPTS[a${i}]`)
   })
 
