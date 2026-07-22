@@ -617,6 +617,7 @@ function ProjectView({
   const [reframe, setReframe] = useState(false)
   const [reframeWarning, setReframeWarning] = useState<string | null>(null)
   const [blurBg, setBlurBg] = useState(false)
+  const [episodeCropX, setEpisodeCropX] = useState(0.5)
   const [subtitlesSupported, setSubtitlesSupported] = useState<boolean | null>(null)
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle>(DEFAULT_CAPTION_STYLE)
   const [fontLoaded, setFontLoaded] = useState(false)
@@ -778,6 +779,7 @@ function ProjectView({
         ...(outputDir ? { outputDir } : {}),
         burnSubtitles,
         reframe,
+        cropX: episodeCropX,
         blurBg,
       })
     } catch (err) {
@@ -791,7 +793,7 @@ function ProjectView({
       }
     }
     if (outPath) await window.api.invoke("shell:show-item", { path: outPath }).catch(() => {})
-  }, [project.id, outputDir, burnSubtitles, reframe, blurBg])
+  }, [project.id, outputDir, burnSubtitles, reframe, episodeCropX, blurBg])
 
   const handleExportAllClips = useCallback(async () => {
     const exportProjectId = project.id
@@ -974,7 +976,7 @@ function ProjectView({
 
           <label className="flex items-center gap-2 select-none cursor-pointer">
             <div
-              onClick={() => {
+              onClick={async () => {
                 const vid = videoRef.current
                 if (!reframe && vid && vid.videoWidth > 0) {
                   const ar = vid.videoWidth / vid.videoHeight
@@ -987,6 +989,10 @@ function ProjectView({
                     setReframeWarning("Source is near-square — reframe may crop heavily")
                     setTimeout(() => setReframeWarning(null), 3000)
                   }
+                  // Pre-fill episode slider from first clip's saved cropX
+                  const allClips = await window.api.invoke("clip:list", { projectId: project.id })
+                  const sorted = [...allClips].sort((a, b) => a.startMs - b.startMs)
+                  if (sorted[0]?.cropX != null) setEpisodeCropX(sorted[0].cropX)
                 }
                 setReframe((v) => !v)
               }}
@@ -1000,17 +1006,33 @@ function ProjectView({
           </label>
           {reframeWarning && <span className="text-xs text-amber-400">{reframeWarning}</span>}
           {reframe && (
-            <label className="flex items-center gap-2 select-none cursor-pointer">
-              <div
-                onClick={() => setBlurBg((v) => !v)}
-                className={`relative w-7 h-4 rounded-full transition-colors cursor-pointer ${blurBg ? "bg-violet-600" : "bg-neutral-700"}`}
-              >
+            <>
+              <label className="flex items-center gap-2 select-none cursor-pointer">
                 <div
-                  className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${blurBg ? "translate-x-3.5" : "translate-x-0.5"}`}
+                  onClick={() => setBlurBg((v) => !v)}
+                  className={`relative w-7 h-4 rounded-full transition-colors cursor-pointer ${blurBg ? "bg-violet-600" : "bg-neutral-700"}`}
+                >
+                  <div
+                    className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${blurBg ? "translate-x-3.5" : "translate-x-0.5"}`}
+                  />
+                </div>
+                <span className="text-xs text-neutral-400">Blur bg</span>
+              </label>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-neutral-600">L</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={episodeCropX}
+                  onChange={(e) => setEpisodeCropX(Number(e.target.value))}
+                  className="w-20 accent-violet-500 cursor-pointer"
+                  title={`Episode framing: ${episodeCropX < 0.33 ? "Left" : episodeCropX > 0.67 ? "Right" : "Center"}`}
                 />
+                <span className="text-[10px] text-neutral-600">R</span>
               </div>
-              <span className="text-xs text-neutral-400">Blur bg</span>
-            </label>
+            </>
           )}
 
           <button
