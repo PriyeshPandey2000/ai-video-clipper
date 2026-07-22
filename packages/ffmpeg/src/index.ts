@@ -97,15 +97,14 @@ export async function exportClip(opts: ExportOptions): Promise<void> {
       : null
 
   if (opts.reframe && opts.blurBg) {
-    const cx = opts.cropX ?? 0.5
-    // Scale-to-fill + center-crop + blur for background; proper 9:16 crop for foreground
     const bgChain = `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=luma_radius=20:luma_power=2`
-    const fgChain = `crop=ih*9/16:ih:(iw-ih*9/16)*${cx}:0,scale=1080:1920`
+    // Fit full frame (no crop) — lets blurred bg show above/below for 16:9 sources
+    const fgChain = `scale=1080:1920:force_original_aspect_ratio=decrease`
     const finalLabel = subtitleFilter ? "preout" : "out"
     const filterParts = [
       `[0:v]${bgChain}[bg]`,
       `[0:v]${fgChain}[fg]`,
-      `[bg][fg]overlay=0:0[${finalLabel}]`,
+      `[bg][fg]overlay=(W-w)/2:(H-h)/2[${finalLabel}]`,
     ]
     if (subtitleFilter) filterParts.push(`[preout]${subtitleFilter}[out]`)
     args.push("-filter_complex", filterParts.join(";"), "-map", "[out]", "-map", "0:a?")
@@ -193,8 +192,8 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
       filterParts.push(
         `[vbg${i}]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=luma_radius=20:luma_power=2[bg${i}]`,
       )
-      filterParts.push(`[vfg${i}]crop=ih*9/16:ih:(iw-ih*9/16)*${cx}:0,scale=1080:1920[fg${i}]`)
-      filterParts.push(`[bg${i}][fg${i}]overlay=0:0[v${i}]`)
+      filterParts.push(`[vfg${i}]scale=1080:1920:force_original_aspect_ratio=decrease[fg${i}]`)
+      filterParts.push(`[bg${i}][fg${i}]overlay=(W-w)/2:(H-h)/2[v${i}]`)
     } else if (opts.reframe) {
       filterParts.push(
         `[0:v]trim=${start}:${end},setpts=PTS-STARTPTS,crop=ih*9/16:ih:(iw-ih*9/16)*${cx}:0,scale=1080:1920[v${i}]`,

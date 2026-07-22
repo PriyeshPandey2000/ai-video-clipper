@@ -980,7 +980,7 @@ function ProjectView({
                 const vid = videoRef.current
                 if (!reframe && vid && vid.videoWidth > 0) {
                   const ar = vid.videoWidth / vid.videoHeight
-                  if (ar <= 1) {
+                  if (ar < 1) {
                     setReframeWarning("Source is already portrait — reframe not needed")
                     setTimeout(() => setReframeWarning(null), 3000)
                     return
@@ -1370,7 +1370,7 @@ function ProjectView({
               <ClipReview
                 projectId={project.id}
                 onSelectClip={handleSelectClip}
-                exportSettings={{ outputDir, burnSubtitles, reframe, captionStyle }}
+                exportSettings={{ outputDir, burnSubtitles, reframe, blurBg, captionStyle }}
                 refreshTrigger={clipRefreshTrigger}
               />
             ) : (

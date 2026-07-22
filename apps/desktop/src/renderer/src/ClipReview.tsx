@@ -7,6 +7,7 @@ interface ExportSettings {
   outputDir: string
   burnSubtitles: boolean
   reframe: boolean
+  blurBg?: boolean
   captionStyle?: CaptionStyle
 }
 
@@ -110,6 +111,7 @@ export function ClipReview({
           ...(exportSettings.outputDir ? { outputDir: exportSettings.outputDir } : {}),
           burnSubtitles: exportSettings.burnSubtitles,
           reframe: exportSettings.reframe,
+          ...(exportSettings.blurBg ? { blurBg: true } : {}),
           ...(exportSettings.burnSubtitles && exportSettings.captionStyle
             ? { captionStyle: exportSettings.captionStyle }
             : {}),
