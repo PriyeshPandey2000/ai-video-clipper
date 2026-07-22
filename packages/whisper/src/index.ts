@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 import { join } from "node:path"
 import { existsSync } from "node:fs"
-import { mkdir, writeFile, readFile, unlink } from "node:fs/promises"
+import { mkdir, writeFile, readFile, unlink, stat } from "node:fs/promises"
 
 export type {
   WhisperWord,
@@ -39,6 +39,14 @@ const MODEL_FILES: Record<WhisperModel, string> = {
   large: "ggml-large-v3.bin",
 }
 
+export const MODEL_DISPLAY_SIZE: Record<WhisperModel, string> = {
+  tiny: "~75 MB",
+  base: "~142 MB",
+  small: "~466 MB",
+  medium: "~1.5 GB",
+  large: "~3.1 GB",
+}
+
 const MODEL_URLS: Record<WhisperModel, string> = {
   tiny: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILES.tiny}`,
   base: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILES.base}`,
@@ -53,6 +61,22 @@ export function modelPath(modelsDir: string, model: WhisperModel): string {
 
 export function isModelDownloaded(modelsDir: string, model: WhisperModel): boolean {
   return existsSync(modelPath(modelsDir, model))
+}
+
+export async function getModelSizeOnDisk(
+  modelsDir: string,
+  model: WhisperModel,
+): Promise<number | null> {
+  try {
+    const s = await stat(modelPath(modelsDir, model))
+    return s.size
+  } catch {
+    return null
+  }
+}
+
+export async function deleteModel(modelsDir: string, model: WhisperModel): Promise<void> {
+  await unlink(modelPath(modelsDir, model))
 }
 
 export async function downloadModel(
