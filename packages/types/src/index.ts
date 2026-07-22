@@ -154,6 +154,8 @@ export interface IpcChannels {
   "models:list": { args: void; result: ModelInfo[] }
   "models:delete": { args: { model: WhisperModel }; result: void }
   "models:download": { args: { model: WhisperModel }; result: void }
+  "settings:get-api-key": { args: void; result: { configured: boolean; preview: string | null } }
+  "settings:set-api-key": { args: { groqApiKey: string }; result: void }
   // event channels (main → renderer)
   "models:download-progress": { model: WhisperModel; progress: number }
   "pipeline:progress": PipelineProgress

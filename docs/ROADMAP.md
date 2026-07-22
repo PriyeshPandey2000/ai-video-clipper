@@ -100,14 +100,14 @@
 - [ ] Dedupe overlapping clips — after scoring, drop any clip that overlaps >50% with a higher-scored one
 - [ ] Long video chunking — transcripts >30 min split into 20-min chunks with 60s overlap, scored per chunk then deduped across chunks
 
-## Polish backlog (post-phase completion)
+## Polish backlog ✅ Done
 
-- 9:16 reframe for episode export — needs a single global cropX setting, not per-clip; different UX from clip reframe
-- Crop position indicator on clip cards — small visual showing saved L/C/R position without having to select the clip
-- "Saved" flash feedback after drag-commit on crop overlay
-- Blur background fill for non-16:9 sources — add blurred copy of video as background instead of cropping (Kapwing style)
-- Source aspect ratio detection — warn or skip reframe if source is already portrait/square
-- Trim changes reset clip status from "exported" → "approved" — currently stays "exported" even after re-trimming; re-export button covers this but auto-reset would be cleaner
+- [x] 9:16 reframe for episode export — global cropX slider, pre-fills from first clip's saved cropX
+- [x] Crop position indicator on clip cards — L/C/R badge derived from cropX
+- [x] "Saved" flash feedback after drag-commit on crop overlay
+- [x] Blur background fill — blurred source as background for 9:16 export (foreground fit-centered, bg visible above/below)
+- [x] Source aspect ratio detection — blocks portrait, warns near-square
+- [x] Trim changes reset clip status from "exported" → "approved"
 
 ## Out of scope (premature for early stage)
 

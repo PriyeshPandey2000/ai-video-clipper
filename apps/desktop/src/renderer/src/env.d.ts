@@ -26,6 +26,8 @@ type InvokeChannels = Pick<
   | "models:list"
   | "models:delete"
   | "models:download"
+  | "settings:get-api-key"
+  | "settings:set-api-key"
 >
 
 interface ElectronAPI {

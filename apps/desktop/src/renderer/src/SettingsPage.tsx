@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react"
 import type { ModelInfo, WhisperModel } from "@video-editor/types"
 import { Spinner } from "@video-editor/ui"
-import { ArrowLeft, Trash2, Download } from "lucide-react"
+import { ArrowLeft, Trash2, Download, Eye, EyeOff, Check } from "lucide-react"
 
 const MODEL_LABELS: Record<WhisperModel, string> = {
   tiny: "Tiny",
@@ -42,6 +42,13 @@ export function SettingsPage({ onBack, onModelsChanged }: SettingsPageProps): Re
     large: 0,
   })
 
+  const [apiKeyInput, setApiKeyInput] = useState("")
+  const [apiKeyConfigured, setApiKeyConfigured] = useState(false)
+  const [apiKeyPreview, setApiKeyPreview] = useState<string | null>(null)
+  const [showApiKey, setShowApiKey] = useState(false)
+  const [savingKey, setSavingKey] = useState(false)
+  const [keySaved, setKeySaved] = useState(false)
+
   const loadModels = useCallback(async () => {
     const list = await window.api.invoke("models:list")
     setModels(list)
@@ -50,6 +57,35 @@ export function SettingsPage({ onBack, onModelsChanged }: SettingsPageProps): Re
   useEffect(() => {
     loadModels().catch(() => {})
   }, [loadModels])
+
+  useEffect(() => {
+    window.api
+      .invoke("settings:get-api-key")
+      .then(({ configured, preview }) => {
+        setApiKeyConfigured(configured)
+        setApiKeyPreview(preview)
+      })
+      .catch(() => {})
+  }, [])
+
+  const handleSaveApiKey = useCallback(async () => {
+    if (!apiKeyInput.trim()) return
+    setSavingKey(true)
+    try {
+      await window.api.invoke("settings:set-api-key", { groqApiKey: apiKeyInput.trim() })
+      const { configured, preview } = await window.api.invoke("settings:get-api-key")
+      setApiKeyConfigured(configured)
+      setApiKeyPreview(preview)
+      setApiKeyInput("")
+      setShowApiKey(false)
+      setKeySaved(true)
+      setTimeout(() => setKeySaved(false), 2000)
+    } catch (err) {
+      console.error("Failed to save API key:", err)
+    } finally {
+      setSavingKey(false)
+    }
+  }, [apiKeyInput])
 
   useEffect(() => {
     return window.api.on("models:download-progress", ({ model, progress }) => {
@@ -108,6 +144,76 @@ export function SettingsPage({ onBack, onModelsChanged }: SettingsPageProps): Re
 
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-6 py-8 space-y-10">
+          {/* API Keys section */}
+          <section>
+            <div className="mb-4">
+              <h2 className="text-sm font-semibold text-neutral-100">API Keys</h2>
+              <p className="text-xs text-neutral-500 mt-0.5">
+                Required for AI clip suggestions and social captions.
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-neutral-800 overflow-hidden">
+              <div className="px-4 py-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${apiKeyConfigured ? "bg-green-500" : "bg-neutral-600"}`}
+                    />
+                    <span className="text-sm font-medium text-neutral-200">Groq API Key</span>
+                    {apiKeyConfigured && apiKeyPreview && (
+                      <span className="text-xs text-neutral-500 font-mono">{apiKeyPreview}</span>
+                    )}
+                  </div>
+                  {!apiKeyConfigured && (
+                    <span className="text-xs text-neutral-600">Not configured</span>
+                  )}
+                  {apiKeyConfigured && <span className="text-xs text-green-500">Configured</span>}
+                </div>
+
+                <div className="flex gap-2 mt-2">
+                  <div className="relative flex-1">
+                    <input
+                      type={showApiKey ? "text" : "password"}
+                      value={apiKeyInput}
+                      onChange={(e) => setApiKeyInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleSaveApiKey()
+                      }}
+                      placeholder={apiKeyConfigured ? "Enter new key to replace…" : "gsk_…"}
+                      className="w-full rounded-md bg-neutral-900 border border-neutral-700 px-3 py-1.5 text-sm text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-violet-500 font-mono pr-8"
+                    />
+                    <button
+                      onClick={() => setShowApiKey((v) => !v)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-600 hover:text-neutral-400 transition-colors cursor-pointer"
+                    >
+                      {showApiKey ? <EyeOff size={13} /> : <Eye size={13} />}
+                    </button>
+                  </div>
+                  <button
+                    onClick={handleSaveApiKey}
+                    disabled={!apiKeyInput.trim() || savingKey}
+                    className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium bg-violet-700 text-white hover:bg-violet-600 disabled:opacity-40 disabled:cursor-default transition-colors cursor-pointer"
+                  >
+                    {savingKey ? (
+                      <Spinner size={12} />
+                    ) : keySaved ? (
+                      <>
+                        <Check size={12} /> Saved
+                      </>
+                    ) : (
+                      "Save"
+                    )}
+                  </button>
+                </div>
+
+                <p className="text-xs text-neutral-600 mt-2">
+                  Get a free key at <span className="text-neutral-400">console.groq.com</span>
+                </p>
+              </div>
+            </div>
+          </section>
+
           {/* Models section */}
           <section>
             <div className="flex items-center justify-between mb-4">
