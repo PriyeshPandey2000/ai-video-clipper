@@ -7,6 +7,7 @@ interface ExportSettings {
   outputDir: string
   burnSubtitles: boolean
   reframe: boolean
+  blurBg?: boolean
   captionStyle?: CaptionStyle
 }
 
@@ -28,6 +29,12 @@ function scoreColor(score: number | null): "green" | "yellow" | "red" | "neutral
   if (score >= 0.7) return "green"
   if (score >= 0.4) return "yellow"
   return "red"
+}
+
+function cropLabel(cropX: number): "L" | "C" | "R" {
+  if (cropX < 0.33) return "L"
+  if (cropX > 0.67) return "R"
+  return "C"
 }
 
 function statusBadgeColor(
@@ -104,6 +111,7 @@ export function ClipReview({
           ...(exportSettings.outputDir ? { outputDir: exportSettings.outputDir } : {}),
           burnSubtitles: exportSettings.burnSubtitles,
           reframe: exportSettings.reframe,
+          ...(exportSettings.blurBg ? { blurBg: true } : {}),
           ...(exportSettings.burnSubtitles && exportSettings.captionStyle
             ? { captionStyle: exportSettings.captionStyle }
             : {}),
@@ -185,6 +193,7 @@ export function ClipReview({
                     <span className="text-[11px] text-neutral-500 whitespace-nowrap font-mono">
                       {formatDuration(clip.endMs - clip.startMs)}
                     </span>
+                    <Badge color="neutral">{cropLabel(clip.cropX)}</Badge>
                   </div>
 
                   {clip.aiReason && (

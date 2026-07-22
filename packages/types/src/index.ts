@@ -123,12 +123,20 @@ export interface IpcChannels {
       outputDir?: string
       burnSubtitles?: boolean
       reframe?: boolean
+      blurBg?: boolean
       captionStyle?: CaptionStyle
     }
     result: string[]
   }
   "export:full": {
-    args: { projectId: string; outputDir?: string; burnSubtitles?: boolean }
+    args: {
+      projectId: string
+      outputDir?: string
+      burnSubtitles?: boolean
+      reframe?: boolean
+      cropX?: number
+      blurBg?: boolean
+    }
     result: string
   }
   "export:srt": { args: { projectId: string; outputDir?: string }; result: string }

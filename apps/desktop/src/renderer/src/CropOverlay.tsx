@@ -1,4 +1,4 @@
-import { useRef, useEffect, type RefObject } from "react"
+import { useRef, useEffect, useState, type RefObject } from "react"
 import { useVideoDisplayRect } from "./useVideoDisplayRect"
 
 // 9:16 crop box width as fraction of 16:9 video width: (9/16) / (16/9) = 81/256
@@ -21,10 +21,12 @@ export function CropOverlay({
 }: CropOverlayProps): React.ReactElement | null {
   const displayRect = useVideoDisplayRect(containerRef, videoRef)
   const dragging = useRef(false)
+  const [saved, setSaved] = useState(false)
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Keep latest values accessible in stable drag handlers
-  const stateRef = useRef({ cropX, onChange, onCommit, displayRect })
-  stateRef.current = { cropX, onChange, onCommit, displayRect }
+  const stateRef = useRef({ cropX, onChange, onCommit, displayRect, setSaved, savedTimerRef })
+  stateRef.current = { cropX, onChange, onCommit, displayRect, setSaved, savedTimerRef }
 
   // Stable drag listeners — registered once
   useEffect(() => {
@@ -48,6 +50,10 @@ export function CropOverlay({
       if (!dragging.current) return
       dragging.current = false
       stateRef.current.onCommit(getCropX(e.clientX))
+      const { setSaved, savedTimerRef } = stateRef.current
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+      setSaved(true)
+      savedTimerRef.current = setTimeout(() => setSaved(false), 1500)
     }
 
     window.addEventListener("mousemove", onMouseMove)
@@ -102,22 +108,23 @@ export function CropOverlay({
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Center drag hint */}
+        {/* Drag hint / saved flash */}
         <div
           style={{
             position: "absolute",
             bottom: 8,
             left: "50%",
             transform: "translateX(-50%)",
-            background: "rgba(0,0,0,0.5)",
+            background: saved ? "rgba(34,197,94,0.85)" : "rgba(0,0,0,0.5)",
             borderRadius: 4,
             padding: "2px 6px",
             pointerEvents: "none",
             whiteSpace: "nowrap",
+            transition: "background 0.15s",
           }}
-          className="text-[10px] text-white/70"
+          className="text-[10px] text-white/90"
         >
-          ← drag →
+          {saved ? "✓ Saved" : "← drag →"}
         </div>
       </div>
     </>
