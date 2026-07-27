@@ -205,6 +205,10 @@ export default function App(): React.ReactElement {
     loadProjects()
   }, [loadProjects])
 
+  useEffect(() => {
+    localStorage.setItem("whisper-model", selectedModel)
+  }, [selectedModel])
+
   const loadModelStatuses = useCallback(async () => {
     try {
       const list = await window.api.invoke("models:list")
@@ -295,7 +299,6 @@ export default function App(): React.ReactElement {
     if (!selectedId) return
     try {
       await window.api.invoke("pipeline:start", { projectId: selectedId, model: selectedModel })
-      localStorage.setItem("whisper-model", selectedModel)
       loadProjects()
     } catch (err) {
       console.error("Pipeline failed:", err)
@@ -1000,7 +1003,7 @@ function ProjectView({
                   </button>
                 ))}
               </div>
-              <Button size="sm" onClick={onTranscribe}>
+              <Button size="sm" onClick={onTranscribe} disabled={!!pipelineProgress}>
                 {project.status === "error" ? "Retry Transcribe" : "Transcribe"}
               </Button>
               <button
