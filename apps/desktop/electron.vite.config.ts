@@ -8,6 +8,7 @@ export default defineConfig({
     plugins: [
       externalizeDepsPlugin({
         exclude: [
+          "dotenv",
           "@video-editor/ai",
           "@video-editor/captions",
           "@video-editor/database",
