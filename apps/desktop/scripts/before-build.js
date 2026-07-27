@@ -1,4 +1,4 @@
-const { execSync } = require("child_process")
+const { execFileSync } = require("child_process")
 const path = require("path")
 const fs = require("fs")
 
@@ -14,14 +14,19 @@ module.exports = async function ({ appDir, electronVersion, arch }) {
     throw new Error(`better-sqlite3 not found at ${sqlite3Dir} — run pnpm install first`)
   }
 
-  const nodeGypBin = path.resolve(appDir, "../../node_modules/.bin/node-gyp")
+  const nodeGypBin = path.resolve(
+    appDir,
+    "../../node_modules/.bin",
+    process.platform === "win32" ? "node-gyp.cmd" : "node-gyp",
+  )
   const isSymlink = fs.lstatSync(sqlite3Dir).isSymbolicLink()
   const sqlite3Real = fs.realpathSync(sqlite3Dir)
 
   // 1. Rebuild better-sqlite3 against Electron headers
   console.log(`Rebuilding better-sqlite3 for Electron ${electronVersion} (${arch})...`)
-  execSync(
-    `"${nodeGypBin}" rebuild --target=${electronVersion} --arch=${arch} --dist-url=https://electronjs.org/headers`,
+  execFileSync(
+    nodeGypBin,
+    ["rebuild", `--target=${electronVersion}`, `--arch=${arch}`, "--dist-url=https://electronjs.org/headers"],
     { cwd: sqlite3Real, stdio: "inherit" },
   )
 
