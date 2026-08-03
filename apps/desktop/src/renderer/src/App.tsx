@@ -1028,7 +1028,7 @@ function ProjectView({
         </div>
       </div>
 
-      {exportProgress && (
+      {exportProgress && (exportingAllClips || exportingEpisode) && (
         <div className="space-y-1.5 px-1">
           <div className="flex items-center justify-between text-xs">
             <span className="text-neutral-300 font-medium">
