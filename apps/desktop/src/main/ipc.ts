@@ -497,6 +497,15 @@ export function registerIpcHandlers(): void {
             ...(assPath ? { assPath, fontsDir } : {}),
             ...(srtPath ? { srtPath } : {}),
             ...(reframe ? { reframe: true, cropX: clip.cropX, blurBg } : {}),
+            onProgress: (progress) =>
+              send("export:progress", {
+                projectId,
+                stage: "clips",
+                clipIndex: ci,
+                clipTotal: clipRows.length,
+                clipId: clip.id,
+                progress,
+              }),
           })
         } finally {
           if (assPath) await unlink(assPath).catch(() => {})
@@ -569,6 +578,14 @@ export function registerIpcHandlers(): void {
           keepIntervals,
           ...(srtPath ? { srtPath } : {}),
           ...(reframe ? { reframe: true, cropX, blurBg } : {}),
+          onProgress: (progress) =>
+            send("export:progress", {
+              projectId,
+              stage: "episode",
+              clipIndex: 0,
+              clipTotal: 1,
+              progress,
+            }),
         })
       } finally {
         if (srtPath) await unlink(srtPath).catch(() => {})

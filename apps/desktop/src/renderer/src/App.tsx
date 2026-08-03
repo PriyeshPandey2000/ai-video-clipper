@@ -6,6 +6,7 @@ import type {
   WhisperModel,
   Clip,
   CaptionStyle,
+  IpcChannels,
 } from "@video-editor/types"
 import { Button } from "@video-editor/ui"
 import { Progress } from "@video-editor/ui"
@@ -672,6 +673,14 @@ function ProjectView({
   const [fillerWords, setFillerWords] = useState<string[]>([])
   const [addingFiller, setAddingFiller] = useState(false)
   const [newFillerWord, setNewFillerWord] = useState("")
+  const [exportProgress, setExportProgress] = useState<IpcChannels["export:progress"] | null>(null)
+
+  useEffect(() => {
+    const unsub = window.api.on("export:progress", (data) => {
+      if (data.projectId === project.id) setExportProgress(data)
+    })
+    return unsub
+  }, [project.id])
 
   useEffect(() => {
     window.api.invoke("ffmpeg:has-subtitles-filter").then((supported) => {
@@ -833,6 +842,7 @@ function ProjectView({
     } finally {
       if (activeProjectIdRef.current === exportProjectId) {
         setExportingEpisode(false)
+        setExportProgress(null)
       }
     }
     if (outPath) await window.api.invoke("shell:show-item", { path: outPath }).catch(() => {})
@@ -868,6 +878,7 @@ function ProjectView({
     } finally {
       if (activeProjectIdRef.current === exportProjectId) {
         setExportingAllClips(false)
+        setExportProgress(null)
       }
     }
     if (firstPath) await window.api.invoke("shell:show-item", { path: firstPath }).catch(() => {})
@@ -1016,6 +1027,20 @@ function ProjectView({
           )}
         </div>
       </div>
+
+      {exportProgress && (
+        <div className="space-y-1.5 px-1">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-neutral-300 font-medium">
+              {exportProgress.stage === "episode"
+                ? "Exporting episode"
+                : `Exporting clip ${exportProgress.clipIndex + 1} of ${exportProgress.clipTotal}`}
+            </span>
+            <span className="text-neutral-500">{Math.round(exportProgress.progress * 100)}%</span>
+          </div>
+          <Progress value={exportProgress.progress} />
+        </div>
+      )}
 
       {project.status === "ready" && (
         <div className="flex items-center gap-4 -mt-2">
