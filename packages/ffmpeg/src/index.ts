@@ -14,6 +14,7 @@ export interface ExportOptions {
   reframe?: boolean
   cropX?: number // 0.0 (left) – 1.0 (right), default 0.5 (center)
   blurBg?: boolean // fill 9:16 background with blurred source instead of black bars
+  onProgress?: (fraction: number) => void
 }
 
 export interface ProxyOptions {
@@ -65,6 +66,46 @@ function run(binaryPath: string, args: string[]): Promise<void> {
       if (code === 0) resolve()
       else reject(new Error(`FFmpeg exited ${code}:\n${stderr.join("")}`))
     })
+    proc.on("error", reject)
+  })
+}
+
+// Uses FFmpeg's -progress pipe:1 to stream machine-readable progress to stdout.
+// out_time_ms is in microseconds despite the name (same as out_time_us).
+function runWithProgress(
+  binaryPath: string,
+  args: string[],
+  totalMs: number,
+  onProgress: (fraction: number) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const allArgs = [...args.slice(0, -1), "-progress", "pipe:1", args[args.length - 1]!]
+    const proc = spawn(binaryPath, allArgs)
+    const stderr: string[] = []
+    let buf = ""
+
+    proc.stdout.on("data", (d: Buffer) => {
+      buf += d.toString()
+      const lines = buf.split("\n")
+      buf = lines.pop() ?? ""
+      for (const line of lines) {
+        const m = line.match(/^out_time_ms=(\d+)/)
+        if (m && totalMs > 0) {
+          onProgress(Math.min(parseInt(m[1]!, 10) / 1000 / totalMs, 1))
+        }
+      }
+    })
+
+    proc.stderr.on("data", (d: Buffer) => stderr.push(d.toString()))
+    proc.on("close", (code) => {
+      if (code === 0) {
+        onProgress(1)
+        resolve()
+      } else {
+        reject(new Error(`FFmpeg exited ${code}:\n${stderr.join("")}`))
+      }
+    })
+    proc.on("error", reject)
   })
 }
 
@@ -116,7 +157,11 @@ export async function exportClip(opts: ExportOptions): Promise<void> {
     args.push("-vf", subtitleFilter)
   }
   args.push(opts.outputPath)
-  await run(opts.binaryPath, args)
+  if (opts.onProgress) {
+    await runWithProgress(opts.binaryPath, args, opts.endMs - opts.startMs, opts.onProgress)
+  } else {
+    await run(opts.binaryPath, args)
+  }
 }
 
 export async function generateProxy(opts: ProxyOptions): Promise<void> {
@@ -151,6 +196,7 @@ export interface EpisodeExportOptions {
   reframe?: boolean
   cropX?: number
   blurBg?: boolean
+  onProgress?: (fraction: number) => void
 }
 
 export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
@@ -175,6 +221,7 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
       ...(opts.assPath ? { assPath: opts.assPath, fontsDir: opts.fontsDir } : {}),
       ...(opts.srtPath && !opts.assPath ? { srtPath: opts.srtPath } : {}),
       ...(opts.reframe ? { reframe: true, cropX: opts.cropX, blurBg: opts.blurBg } : {}),
+      ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
     })
     return
   }
@@ -216,7 +263,7 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
     filterParts.push(`[outv]${subtitleFilter}[outvsub]`)
   }
 
-  await run(opts.binaryPath, [
+  const episodeArgs = [
     "-y",
     "-i",
     opts.inputPath,
@@ -237,7 +284,14 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
     "-b:a",
     "192k",
     opts.outputPath,
-  ])
+  ]
+
+  if (opts.onProgress) {
+    const totalMs = opts.keepIntervals.reduce((sum, iv) => sum + (iv.endMs - iv.startMs), 0)
+    await runWithProgress(opts.binaryPath, episodeArgs, totalMs, opts.onProgress)
+  } else {
+    await run(opts.binaryPath, episodeArgs)
+  }
 }
 
 export async function probeDuration(binaryPath: string, inputPath: string): Promise<number> {

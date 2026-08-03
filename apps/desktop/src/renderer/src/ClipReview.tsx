@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react"
 import type { Clip } from "@video-editor/types"
 import type { CaptionStyle } from "@video-editor/types"
-import { Spinner, Badge } from "@video-editor/ui"
+import { Spinner, Badge, Progress } from "@video-editor/ui"
 
 interface ExportSettings {
   outputDir: string
@@ -62,6 +62,14 @@ export function ClipReview({
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [exportingIds, setExportingIds] = useState<Set<string>>(new Set())
+  const [clipProgress, setClipProgress] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    return window.api.on("export:progress", (data) => {
+      if (data.projectId !== projectId || data.stage !== "clips" || !data.clipId) return
+      setClipProgress((p) => ({ ...p, [data.clipId!]: data.progress }))
+    })
+  }, [projectId])
 
   const loadClips = useCallback(async () => {
     try {
@@ -132,6 +140,11 @@ export function ClipReview({
           next.delete(clipId)
           return next
         })
+        setClipProgress((p) => {
+          const next = { ...p }
+          delete next[clipId]
+          return next
+        })
       }
     },
     [projectId, exportSettings],
@@ -170,6 +183,7 @@ export function ClipReview({
           const isSelected = clip.id === selectedId
           const isExporting = exportingIds.has(clip.id)
           const isExported = clip.status === "exported"
+          const progress = clipProgress[clip.id]
 
           return (
             <div
@@ -257,6 +271,15 @@ export function ClipReview({
                   </span>
                 )}
               </div>
+
+              {isExporting && progress !== undefined && (
+                <div className="mt-2 space-y-1">
+                  <Progress value={progress} />
+                  <p className="text-[10px] text-neutral-500 text-right">
+                    {Math.round(progress * 100)}%
+                  </p>
+                </div>
+              )}
             </div>
           )
         })}

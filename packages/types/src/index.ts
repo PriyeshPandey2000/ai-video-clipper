@@ -161,4 +161,12 @@ export interface IpcChannels {
   "pipeline:progress": PipelineProgress
   "pipeline:complete": { projectId: string }
   "pipeline:error": { projectId: string; error: string }
+  "export:progress": {
+    projectId: string
+    stage: "clips" | "episode"
+    clipIndex: number
+    clipTotal: number
+    clipId?: string
+    progress: number
+  }
 }

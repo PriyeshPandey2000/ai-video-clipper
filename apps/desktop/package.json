@@ -45,7 +45,7 @@
     "appId": "com.clipper.app",
     "productName": "Clipper",
     "icon": "build/icon.png",
-    "beforeBuild": "./apps/desktop/scripts/before-build.js",
+    "beforeBuild": "./scripts/before-build.js",
     "asar": false,
     "directories": {
       "output": "release"
