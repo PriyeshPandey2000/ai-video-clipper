@@ -645,6 +645,7 @@ function ProjectView({
   const videoContainerRef = useRef<HTMLDivElement>(null)
   const blurCanvasRef = useRef<HTMLCanvasElement>(null)
   const blurRafRef = useRef<number | null>(null)
+  const blurCropXRef = useRef(0.5)
   const [cropX, setCropX] = useState(0.5)
   const [previewMode, setPreviewMode] = useState<"wide" | "vertical">("wide")
   const [highlightRange, setHighlightRange] = useState<{
@@ -767,6 +768,9 @@ function ProjectView({
     return unsub
   }, [project.id])
 
+  // Keep ref current so drawFrame always reads latest cropX without restarting the RAF loop
+  blurCropXRef.current = selectedClip ? cropX : episodeCropX
+
   useEffect(() => {
     const active = previewMode === "vertical" && blurBg
     const canvas = blurCanvasRef.current
@@ -814,11 +818,11 @@ function ProjectView({
         ctx.drawImage(video, bgX, 0, bgW, ch)
         ctx.filter = "none"
 
-        // Foreground: letterbox (fit within width, bars above/below)
-        const fgScale = cw / vw
-        const fgH = vh * fgScale
-        const fgY = (ch - fgH) / 2
-        ctx.drawImage(video, 0, fgY, cw, fgH)
+        // Foreground: cover + pan by cropX — matches objectFit:cover + objectPosition:cropX%
+        const fgScale = ch / vh
+        const fgW = vw * fgScale
+        const fgX = -(fgW - cw) * blurCropXRef.current
+        ctx.drawImage(video, fgX, 0, fgW, ch)
       }
 
       ctx.restore()
