@@ -83,7 +83,6 @@ function runWithProgress(
     const proc = spawn(binaryPath, allArgs)
     const stderr: string[] = []
     let buf = ""
-
     proc.stdout.on("data", (d: Buffer) => {
       buf += d.toString()
       const lines = buf.split("\n")
@@ -95,7 +94,6 @@ function runWithProgress(
         }
       }
     })
-
     proc.stderr.on("data", (d: Buffer) => stderr.push(d.toString()))
     proc.on("close", (code) => {
       if (code === 0) {
@@ -285,7 +283,6 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
     "192k",
     opts.outputPath,
   ]
-
   if (opts.onProgress) {
     const totalMs = opts.keepIntervals.reduce((sum, iv) => sum + (iv.endMs - iv.startMs), 0)
     await runWithProgress(opts.binaryPath, episodeArgs, totalMs, opts.onProgress)

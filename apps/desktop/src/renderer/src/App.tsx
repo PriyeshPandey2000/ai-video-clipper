@@ -643,7 +643,10 @@ function ProjectView({
 }: ProjectViewProps): React.ReactElement {
   const videoRef = useRef<HTMLVideoElement>(null)
   const videoContainerRef = useRef<HTMLDivElement>(null)
+  const blurCanvasRef = useRef<HTMLCanvasElement>(null)
+  const blurRafRef = useRef<number | null>(null)
   const [cropX, setCropX] = useState(0.5)
+  const [previewMode, setPreviewMode] = useState<"wide" | "vertical">("wide")
   const [highlightRange, setHighlightRange] = useState<{
     startMs: number
     endMs: number
@@ -652,6 +655,7 @@ function ProjectView({
   const [isPlaying, setIsPlaying] = useState(false)
   const [exportingEpisode, setExportingEpisode] = useState(false)
   const [exportingAllClips, setExportingAllClips] = useState(false)
+  const [exportProgress, setExportProgress] = useState<IpcChannels["export:progress"] | null>(null)
   const [exportError, setExportError] = useState<string | null>(null)
   const activeProjectIdRef = useRef(project.id)
   const [clipRefreshTrigger, setClipRefreshTrigger] = useState(0)
@@ -755,6 +759,81 @@ function ProjectView({
     setIsPlaying(false)
     setCropX(0.5)
   }, [project.id])
+
+  useEffect(() => {
+    const unsub = window.api.on("export:progress", (data) => {
+      if (data.projectId === project.id) setExportProgress(data)
+    })
+    return unsub
+  }, [project.id])
+
+  useEffect(() => {
+    const active = previewMode === "vertical" && blurBg
+    const canvas = blurCanvasRef.current
+    const video = videoRef.current
+    const container = videoContainerRef.current
+
+    if (!active || !canvas || !video || !container) {
+      if (blurRafRef.current !== null) {
+        cancelAnimationFrame(blurRafRef.current)
+        blurRafRef.current = null
+      }
+      return
+    }
+
+    const dpr = window.devicePixelRatio || 1
+
+    function drawFrame(): void {
+      if (!canvas || !video || !container) return
+
+      const cw = container.clientWidth
+      const ch = container.clientHeight
+      const bufW = Math.round(cw * dpr)
+      const bufH = Math.round(ch * dpr)
+
+      if (canvas.width !== bufW || canvas.height !== bufH) {
+        canvas.width = bufW
+        canvas.height = bufH
+      }
+
+      const ctx = canvas.getContext("2d")
+      if (!ctx) return
+
+      ctx.clearRect(0, 0, bufW, bufH)
+      ctx.save()
+      ctx.scale(dpr, dpr)
+
+      const vw = video.videoWidth
+      const vh = video.videoHeight
+      if (vw > 0 && vh > 0) {
+        // Background: scale to fill container height, blur to hide hard edges
+        const bgScale = ch / vh
+        const bgW = vw * bgScale
+        const bgX = (cw - bgW) / 2
+        ctx.filter = "blur(20px)"
+        ctx.drawImage(video, bgX, 0, bgW, ch)
+        ctx.filter = "none"
+
+        // Foreground: letterbox (fit within width, bars above/below)
+        const fgScale = cw / vw
+        const fgH = vh * fgScale
+        const fgY = (ch - fgH) / 2
+        ctx.drawImage(video, 0, fgY, cw, fgH)
+      }
+
+      ctx.restore()
+      blurRafRef.current = requestAnimationFrame(drawFrame)
+    }
+
+    blurRafRef.current = requestAnimationFrame(drawFrame)
+
+    return () => {
+      if (blurRafRef.current !== null) {
+        cancelAnimationFrame(blurRafRef.current)
+        blurRafRef.current = null
+      }
+    }
+  }, [previewMode, blurBg])
 
   useEffect(() => {
     setCropX(selectedClip?.cropX ?? 0.5)
@@ -1029,7 +1108,7 @@ function ProjectView({
       </div>
 
       {exportProgress && (exportingAllClips || exportingEpisode) && (
-        <div className="space-y-1.5 px-1">
+        <div className="space-y-1.5 px-1 -mt-2">
           <div className="flex items-center justify-between text-xs">
             <span className="text-neutral-300 font-medium">
               {exportProgress.stage === "episode"
@@ -1083,7 +1162,9 @@ function ProjectView({
                   const sorted = [...allClips].sort((a, b) => a.startMs - b.startMs)
                   if (sorted[0]?.cropX != null) setEpisodeCropX(sorted[0].cropX)
                 }
-                setReframe((v) => !v)
+                const next = !reframe
+                setReframe(next)
+                setPreviewMode(next ? "vertical" : "wide")
               }}
               className={`relative w-7 h-4 rounded-full transition-colors cursor-pointer ${reframe ? "bg-violet-600" : "bg-neutral-700"}`}
             >
@@ -1091,7 +1172,7 @@ function ProjectView({
                 className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${reframe ? "translate-x-3.5" : "translate-x-0.5"}`}
               />
             </div>
-            <span className="text-xs text-neutral-400">9:16</span>
+            <span className="text-xs text-neutral-400">Reframe to 9:16</span>
           </label>
           {reframeWarning && <span className="text-xs text-amber-400">{reframeWarning}</span>}
           {reframe && (
@@ -1108,6 +1189,7 @@ function ProjectView({
                 <span className="text-xs text-neutral-400">Blur bg</span>
               </label>
               <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-neutral-500">Framing</span>
                 <span className="text-[10px] text-neutral-600">L</span>
                 <input
                   type="range"
@@ -1318,54 +1400,103 @@ function ProjectView({
         </div>
       ) : project.proxyPath ? (
         <div className="space-y-2">
-          <div
-            ref={videoContainerRef}
-            className="relative aspect-video bg-neutral-900 rounded-xl overflow-hidden group cursor-pointer"
-            onClick={handleTogglePlay}
-          >
-            <video
-              ref={videoRef}
-              src={`file://${project.proxyPath}`}
-              className="w-full h-full object-contain"
-              playsInline
-            />
-            {burnSubtitles && captionStyle.preset !== "none" && previewWords.length > 0 && (
-              <CaptionCanvas
-                videoRef={videoRef}
-                words={previewWords}
-                style={captionStyle}
-                fontLoaded={fontLoaded}
-                popAmount={popAmount}
-              />
-            )}
-
-            {reframe && selectedClip && (
-              <CropOverlay
-                containerRef={videoContainerRef}
-                videoRef={videoRef}
-                cropX={cropX}
-                onChange={setCropX}
-                onCommit={handleCropXCommit}
-              />
-            )}
-            {!isPlaying && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div className="w-12 h-12 rounded-full bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                  <svg
-                    className="w-5 h-5 text-white ml-0.5"
-                    fill="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                </div>
-              </div>
-            )}
+          <div className="flex justify-center gap-1">
+            <button
+              onClick={() => setPreviewMode("wide")}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                previewMode === "wide"
+                  ? "bg-neutral-700 text-neutral-100"
+                  : "text-neutral-500 hover:text-neutral-300"
+              }`}
+            >
+              16:9
+            </button>
+            <button
+              onClick={() => setPreviewMode("vertical")}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                previewMode === "vertical"
+                  ? "bg-violet-600 text-white"
+                  : "text-neutral-500 hover:text-neutral-300"
+              }`}
+            >
+              9:16
+            </button>
           </div>
 
-          {reframe && !selectedClip && (
+          <div className="flex justify-center">
+            <div
+              ref={videoContainerRef}
+              className={`relative bg-neutral-900 rounded-xl overflow-hidden group cursor-pointer ${
+                previewMode === "vertical" ? "aspect-[9/16] max-h-[480px]" : "aspect-video w-full"
+              }`}
+              onClick={handleTogglePlay}
+            >
+              <video
+                ref={videoRef}
+                src={`file://${project.proxyPath}`}
+                className="w-full h-full"
+                style={
+                  previewMode === "vertical" && blurBg
+                    ? { visibility: "hidden" }
+                    : previewMode === "vertical"
+                      ? {
+                          objectFit: "cover",
+                          objectPosition: `${(selectedClip ? cropX : episodeCropX) * 100}% 50%`,
+                        }
+                      : { objectFit: "contain" }
+                }
+                playsInline
+              />
+              {previewMode === "vertical" && blurBg && (
+                <canvas
+                  ref={blurCanvasRef}
+                  className="absolute inset-0"
+                  style={{ width: "100%", height: "100%" }}
+                />
+              )}
+              {burnSubtitles && captionStyle.preset !== "none" && previewWords.length > 0 && (
+                <CaptionCanvas
+                  videoRef={videoRef}
+                  words={previewWords}
+                  style={captionStyle}
+                  fontLoaded={fontLoaded}
+                  popAmount={popAmount}
+                />
+              )}
+
+              {reframe && selectedClip && previewMode === "wide" && (
+                <CropOverlay
+                  containerRef={videoContainerRef}
+                  videoRef={videoRef}
+                  cropX={cropX}
+                  onChange={setCropX}
+                  onCommit={handleCropXCommit}
+                />
+              )}
+              {!isPlaying && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="w-12 h-12 rounded-full bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                    <svg
+                      className="w-5 h-5 text-white ml-0.5"
+                      fill="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {reframe && !selectedClip && previewMode === "wide" && (
             <p className="text-[11px] text-neutral-500 text-center">
               Select a clip below to set its 9:16 frame position
+            </p>
+          )}
+          {previewMode === "vertical" && !reframe && (
+            <p className="text-[11px] text-neutral-500 text-center">
+              Enable &ldquo;Reframe to 9:16&rdquo; in export settings to export as vertical
             </p>
           )}
 

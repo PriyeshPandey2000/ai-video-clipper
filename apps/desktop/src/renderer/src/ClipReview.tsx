@@ -64,13 +64,6 @@ export function ClipReview({
   const [exportingIds, setExportingIds] = useState<Set<string>>(new Set())
   const [clipProgress, setClipProgress] = useState<Record<string, number>>({})
 
-  useEffect(() => {
-    return window.api.on("export:progress", (data) => {
-      if (data.projectId !== projectId || data.stage !== "clips" || !data.clipId) return
-      setClipProgress((p) => ({ ...p, [data.clipId!]: data.progress }))
-    })
-  }, [projectId])
-
   const loadClips = useCallback(async () => {
     try {
       const result = await window.api.invoke("clip:list", { projectId })
@@ -85,6 +78,13 @@ export function ClipReview({
   useEffect(() => {
     loadClips()
   }, [loadClips, refreshTrigger])
+
+  useEffect(() => {
+    return window.api.on("export:progress", (data) => {
+      if (data.projectId !== projectId || data.stage !== "clips" || !data.clipId) return
+      setClipProgress((p) => ({ ...p, [data.clipId!]: data.progress }))
+    })
+  }, [projectId])
 
   const handleSelect = useCallback(
     (clip: Clip) => {
@@ -219,6 +219,15 @@ export function ClipReview({
                   <Badge color={statusBadgeColor(clip.status)}>{clip.status}</Badge>
                 )}
               </div>
+
+              {isExporting && progress !== undefined && (
+                <div className="mt-2 space-y-1">
+                  <Progress value={progress} />
+                  <p className="text-[10px] text-neutral-500 text-right">
+                    {Math.round(progress * 100)}%
+                  </p>
+                </div>
+              )}
 
               <div className="flex gap-2 mt-2">
                 <span
