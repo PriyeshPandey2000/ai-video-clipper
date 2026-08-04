@@ -8,12 +8,15 @@ import { registerIpcHandlers } from "./ipc"
 // dotenv searches from process.cwd() by default, which in dev mode
 // is apps/desktop — the .env is at the monorepo root, so we search upward.
 import * as dotenv from "dotenv"
-const envPaths = [
-  join(dirname(app.getAppPath()), ".env"),
-  join(app.getAppPath(), ".env"),
-  join(app.getAppPath(), "../../.env"),
-  join(__dirname, "../../../../.env"),
-]
+const envPaths: string[] = []
+try {
+  envPaths.push(
+    join(dirname(app.getAppPath()), ".env"),
+    join(app.getAppPath(), ".env"),
+    join(app.getAppPath(), "../../.env"),
+  )
+} catch {}
+envPaths.push(join(__dirname, "../../../../.env"))
 for (const p of envPaths) {
   if (existsSync(p)) {
     dotenv.config({ path: p })
