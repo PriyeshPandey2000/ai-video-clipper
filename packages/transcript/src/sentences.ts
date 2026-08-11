@@ -30,7 +30,9 @@ function bestCapBreak(words: Word[], from: number, to: number): number {
   let bestGap = -1
   for (let i = from + MIN_WORDS_BEFORE_CAP_BREAK; i < to; i++) {
     const gap = words[i + 1]!.startMs - words[i]!.endMs
-    if (gap > bestGap) {
+    // `>=` so ties resolve to the LATEST position. With uniform pacing every gap is equal, and
+    // preferring the earliest match would emit a stub sentence right at the minimum.
+    if (gap >= bestGap) {
       bestGap = gap
       bestIndex = i
     }
@@ -84,7 +86,11 @@ export function buildSentences(words: Word[]): Sentence[] {
     }
 
     if (i - firstWordIndex + 1 >= MAX_WORDS_PER_SENTENCE) {
-      flush(bestCapBreak(words, firstWordIndex, i), false)
+      const breakAt = bestCapBreak(words, firstWordIndex, i)
+      flush(breakAt, false)
+      // Rewind so the next sentence is measured from the break, not from `i`. Without this the
+      // following cap fires a stale window later and emits short, arbitrarily-split sentences.
+      i = breakAt
     }
   }
 

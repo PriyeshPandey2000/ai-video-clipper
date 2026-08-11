@@ -144,42 +144,54 @@ export function refineClipBoundaries(
   ) {
     endIdx++
   }
-  const endedOnCompleteThought = completeAt(endIdx)
 
   // D6 — length clamp. Trim from the end so the hook at the start survives.
   while (span(startIdx, endIdx) > maxMs && endIdx > startIdx) endIdx--
   while (span(startIdx, endIdx) < minMs && endIdx < last) endIdx++
-  const tooShort = span(startIdx, endIdx) < minMs
 
   // D1 — snap to real word edges.
-  const firstWord = words[sentences[startIdx]!.firstWordIndex]
-  const lastWord = words[sentences[endIdx]!.lastWordIndex]
-  if (!firstWord || !lastWord) return null
+  const firstWordIndex = sentences[startIdx]!.firstWordIndex
+  const firstWord = words[firstWordIndex]
+  let lastWordIndex = sentences[endIdx]!.lastWordIndex
+  if (!firstWord || !words[lastWordIndex]) return null
+
+  const leadWord = words[firstWordIndex - 1]
+  const leadGap = leadWord ? Math.max(0, firstWord.startMs - leadWord.endMs) : LEAD_IN_MS
+  const startMs = Math.max(0, firstWord.startMs - Math.min(LEAD_IN_MS, Math.floor(leadGap / 2)))
+
+  // A single sentence longer than maxMs is the only way to reach a hard clamp. Pull back to the
+  // last word that fits rather than cutting at an arbitrary millisecond, so the export never
+  // ends mid-word.
+  let truncatedMidSentence = false
+  if (words[lastWordIndex]!.endMs - startMs > maxMs) {
+    const limit = startMs + maxMs
+    while (lastWordIndex > firstWordIndex && words[lastWordIndex]!.endMs > limit) lastWordIndex--
+    truncatedMidSentence = lastWordIndex < sentences[endIdx]!.lastWordIndex
+  }
+
+  const lastWord = words[lastWordIndex]
+  if (!lastWord) return null
 
   // D3 — move the cut into the surrounding pause, never past its midpoint.
-  const prevWord = words[sentences[startIdx]!.firstWordIndex - 1]
-  const nextWord = words[sentences[endIdx]!.lastWordIndex + 1]
-  const leadGap = prevWord ? Math.max(0, firstWord.startMs - prevWord.endMs) : LEAD_IN_MS
-  const tailGap = nextWord ? Math.max(0, nextWord.startMs - lastWord.endMs) : TAIL_MS
-
-  let startMs = Math.max(0, firstWord.startMs - Math.min(LEAD_IN_MS, Math.floor(leadGap / 2)))
+  const trailWord = words[lastWordIndex + 1]
+  const tailGap = trailWord ? Math.max(0, trailWord.startMs - lastWord.endMs) : TAIL_MS
   let endMs = lastWord.endMs + Math.min(TAIL_MS, Math.floor(tailGap / 2))
-
-  // Single sentence longer than maxMs — the only case where a hard ms clamp is reachable.
-  if (endMs - startMs > maxMs) endMs = startMs + maxMs
+  if (endMs - startMs > maxMs) endMs = Math.max(lastWord.endMs, startMs + maxMs)
   if (endMs <= startMs) return null
-  startMs = Math.round(startMs)
-  endMs = Math.round(endMs)
 
+  const durationMs = Math.round(endMs) - Math.round(startMs)
+
+  // Quality metadata is computed from the FINAL boundary. Capturing it before the D6 clamp let a
+  // clip be extended onto an unterminated sentence and still report a complete ending.
   return {
-    startMs,
-    endMs,
-    durationMs: endMs - startMs,
+    startMs: Math.round(startMs),
+    endMs: Math.round(endMs),
+    durationMs,
     startSentenceIndex: startIdx,
     endSentenceIndex: endIdx,
     danglingUnresolved,
-    endedOnCompleteThought,
-    tooShort,
+    endedOnCompleteThought: completeAt(endIdx) && !truncatedMidSentence,
+    tooShort: durationMs < minMs,
   }
 }
 

@@ -9,7 +9,10 @@
 
 ---
 
-## Part 0 — What the code actually does today
+## Part 0 — Pre-Wave 1 baseline
+
+> Snapshot of the code **before** Wave 1 shipped, kept as the starting point the plan reacts to.
+> For what the code does now, see the devlog in Part 7.
 
 | Step       | File                                  | Reality                                                                                          |
 | ---------- | ------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -77,7 +80,7 @@ Tiers: **T1** proven/deterministic/ship now · **T2** strong, real work · **T3*
 | A4  | **Punctuation → sentence units**          | **T1 — Wave 1**                           | Whisper already returns punctuation in segment text; we discard it and keep only words    |
 | A5  | Speaker diarization (pyannote)            | **T2 — Wave 3**                           | Needed for interview clip shapes ("guest says wild thing, host reacts"). Heavy Python dep |
 | A6  | SenseVoice tag track                      | **T2 — Wave 2**                           | ONNX, local, no Python. Emotion + laughter + BGM-flag ("don't clip here, music bed")      |
-| A7  | Default model `small`, not `base`         | **T1 — Wave 1**                           | `base` word times are materially worse                                                    |
+| A7  | Default model `medium`, not `base`        | **T1 — Wave 1**                           | Shipped as `medium`: on a real video `base` produced `226` for `2026` and `EA` for `AI`   |
 
 **A2 implementation trap (verified in `examples/cli/cli.cpp`):** `--dtw` **requires** a preset
 argument — `--dtw` alone hits `requires_value_error()`. Valid presets: `tiny`, `tiny.en`, `base`,
@@ -313,7 +316,7 @@ Not "we predict what goes viral" — nobody can, and users find out.
 
 ## Part 3 — Target pipeline
 
-```
+```text
 Long video
   │
   ├─ [ffmpeg]                audio extract → 16k mono wav
@@ -388,7 +391,7 @@ dropped them. An **ablation, not a labeling job**.
 4. **B1 sentence-level serialization** (A4 punctuation → sentences)
 5. **D1–D4, D6** snapping, backward expansion, pause-aware cuts, ending check, length clamp
 6. **C3 virality rubric** + **C8 relative ranking only**
-7. **A2 `--dtw <preset>`** with `DTW_PRESET` map + **A7 default `small`**
+7. **A2 `--dtw <preset>`** with `DTW_PRESET` map + **A7 default `medium`**
 8. **A3 `--vad -vm`** + silero ggml download reusing `downloadModel`
 9. **E6 two-pass loudnorm -14 LUFS**
 10. **Mechanical eval tier, 3–5 golden videos** — boundary error tracked per commit

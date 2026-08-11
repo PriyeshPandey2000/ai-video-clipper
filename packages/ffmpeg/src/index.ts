@@ -23,6 +23,9 @@ const LUFS_TARGET = -14
 const TRUE_PEAK_TARGET = -1.5
 const LRA_TARGET = 11
 
+/** Upper bound on the measure pass so a stalled ffmpeg can't hang the export forever. */
+const MEASURE_TIMEOUT_MS = 120_000
+
 interface LoudnessStats {
   input_i: string
   input_tp: string
@@ -62,23 +65,51 @@ async function measureLoudness(
   return new Promise((resolve) => {
     const proc = spawn(binaryPath, args)
     let stderr = ""
+    let settled = false
+
+    const finish = (value: LoudnessStats | null): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+
+    // Without this, a stalled ffmpeg leaves the export awaiting forever and the export:clips IPC
+    // handler never returns — a stuck export with no way to recover.
+    const timer = setTimeout(() => {
+      proc.kill("SIGKILL")
+      finish(null)
+    }, MEASURE_TIMEOUT_MS)
+
     proc.stderr.on("data", (d: Buffer) => {
       stderr += d.toString()
     })
-    proc.on("error", () => resolve(null))
-    proc.on("close", () => {
+    proc.on("error", () => finish(null))
+    proc.on("close", (code) => {
+      if (code !== 0) return finish(null)
       // loudnorm prints its JSON block last on stderr.
       const start = stderr.lastIndexOf("{")
       const end = stderr.lastIndexOf("}")
-      if (start === -1 || end <= start) return resolve(null)
+      if (start === -1 || end <= start) return finish(null)
       try {
-        const parsed = JSON.parse(stderr.slice(start, end + 1)) as LoudnessStats
-        resolve(parsed.input_i !== undefined ? parsed : null)
+        const parsed = JSON.parse(stderr.slice(start, end + 1)) as Partial<LoudnessStats>
+        finish(isCompleteStats(parsed) ? parsed : null)
       } catch {
-        resolve(null)
+        finish(null)
       }
     })
   })
+}
+
+/**
+ * `loudnormFilter` interpolates five fields. A missing or non-numeric one yields
+ * `measured_TP=undefined` or a stray `:` that splits the filter options — ffmpeg then rejects
+ * `-af` and the whole export fails, defeating the point of falling back to no normalization.
+ */
+function isCompleteStats(stats: Partial<LoudnessStats>): stats is LoudnessStats {
+  return (["input_i", "input_tp", "input_lra", "input_thresh", "target_offset"] as const).every(
+    (key) => Number.isFinite(Number(stats[key])),
+  )
 }
 
 function loudnormFilter(stats: LoudnessStats): string {

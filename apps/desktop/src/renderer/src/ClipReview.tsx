@@ -172,8 +172,8 @@ export function ClipReview({
             <>
               <p className="text-sm text-neutral-500">No strong moments found</p>
               <p className="text-xs text-neutral-600 mt-1">
-                Every candidate was cut for opening mid-thought, ending unresolved, or being too
-                short. Returning weak clips would waste your time.
+                Nothing in this video met the quality bar. Returning weak clips would waste your
+                time.
               </p>
             </>
           ) : (

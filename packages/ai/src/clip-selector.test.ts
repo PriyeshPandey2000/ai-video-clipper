@@ -210,6 +210,8 @@ describe("hostile input", () => {
       ],
     })
     const { clips } = await selectClips(mockClient(insane), words, sentences)
+    // Assert the count first, or the loop below silently passes if a regression empties `clips`.
+    expect(clips.length).toBeGreaterThan(0)
     for (const c of clips) {
       expect(c.endMs - c.startMs).toBeGreaterThanOrEqual(15_000)
       expect(c.endMs - c.startMs).toBeLessThanOrEqual(90_000)

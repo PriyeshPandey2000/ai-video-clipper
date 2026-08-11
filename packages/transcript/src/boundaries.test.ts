@@ -64,6 +64,30 @@ describe("buildSentences", () => {
   it("returns empty for empty input", () => {
     expect(buildSentences([])).toEqual([])
   })
+
+  it("covers every word exactly once when the cap breaks early", () => {
+    // Regression: after an early cap break the loop did not rewind, so the next 40-word window
+    // was measured from a stale position and emitted short, arbitrarily-split sentences.
+    const phrases: Array<[string, number?]> = []
+    for (let i = 0; i < 11; i++) phrases.push([`alpha${i}`, 100])
+    phrases.push(["comma,", 100])
+    for (let i = 0; i < 60; i++) phrases.push([`beta${i}`, 100])
+    phrases.push(["end."])
+
+    const w = transcript(phrases)
+    const s = buildSentences(w)
+
+    const covered = new Array(w.length).fill(0)
+    for (const sentence of s) {
+      for (let i = sentence.firstWordIndex; i <= sentence.lastWordIndex; i++) covered[i]++
+    }
+    expect(covered.every((c) => c === 1)).toBe(true)
+    expect(s.map((x) => x.text).join(" ")).toBe(w.map((x) => x.text).join(" "))
+
+    // No sentence should be a stub produced by a stale window.
+    const wordCounts = s.map((x) => x.lastWordIndex - x.firstWordIndex + 1)
+    expect(Math.min(...wordCounts.slice(0, -1))).toBeGreaterThan(11)
+  })
 })
 
 describe("startsWithDanglingReference", () => {
@@ -123,6 +147,61 @@ describe("refineClipBoundaries", () => {
 
   it("returns null for empty input", () => {
     expect(refineClipBoundaries([], [], 0, 0)).toBeNull()
+  })
+
+  it("reports the ending of the FINAL boundary, not the pre-clamp one", () => {
+    // Regression: `endedOnCompleteThought` used to be captured before D6 could extend `endIdx`,
+    // so a short complete clip grown onto an unterminated sentence still claimed a clean ending
+    // and passed the quality gate.
+    const w = transcript([
+      ["Short complete thought here.", 800],
+      ["This next part runs on with no terminator at all", 300],
+      ["and keeps going even further without stopping", 300],
+      ["final wrap up sentence."],
+    ])
+    const s = buildSentences(w)
+    const r = refineClipBoundaries(w, s, 0, 0)!
+
+    if (!s[r.endSentenceIndex]!.endsWithTerminator) {
+      expect(r.endedOnCompleteThought).toBe(false)
+      expect(passesQualityGate(r, true).passed).toBe(false)
+    }
+  })
+
+  it("keeps the end on a word edge even when clamping an over-long sentence", () => {
+    // One sentence far longer than MAX_CLIP_MS: the clamp must land on a real word end rather
+    // than an arbitrary millisecond, or the export cuts mid-word.
+    const w: Word[] = []
+    let ms = 0
+    for (let i = 0; i < 39; i++) {
+      w.push({
+        id: `w${i}`,
+        projectId: "p",
+        text: `word${i}`,
+        startMs: ms,
+        endMs: ms + 2000,
+        confidence: 0.9,
+        speakerLabel: null,
+      })
+      ms += 2500
+    }
+    w.push({
+      id: "wend",
+      projectId: "p",
+      text: "end.",
+      startMs: ms,
+      endMs: ms + 2000,
+      confidence: 0.9,
+      speakerLabel: null,
+    })
+
+    const s = buildSentences(w)
+    const r = refineClipBoundaries(w, s, 0, s.length - 1)!
+    expect(r.durationMs).toBeLessThanOrEqual(MAX_CLIP_MS)
+    expect(w.some((word) => word.endMs === r.endMs || word.endMs < r.endMs)).toBe(true)
+    // endMs must not fall strictly inside a word.
+    const straddled = w.some((word) => r.endMs > word.startMs && r.endMs < word.endMs)
+    expect(straddled).toBe(false)
   })
 })
 
