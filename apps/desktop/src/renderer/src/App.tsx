@@ -678,7 +678,6 @@ function ProjectView({
   const [fillerWords, setFillerWords] = useState<string[]>([])
   const [addingFiller, setAddingFiller] = useState(false)
   const [newFillerWord, setNewFillerWord] = useState("")
-  const [exportProgress, setExportProgress] = useState<IpcChannels["export:progress"] | null>(null)
 
   useEffect(() => {
     const unsub = window.api.on("export:progress", (data) => {

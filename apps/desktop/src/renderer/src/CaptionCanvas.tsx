@@ -35,9 +35,13 @@ export function CaptionCanvas({
   popAmountRef.current = popAmount
 
   // Canonical HiDPI canvas setup:
-  // - set explicit CSS width/height so display size is known
-  // - set backing buffer to CSS size × dpr
-  // - call ctx.scale(dpr, dpr) once after each resize (resets with canvas.width change)
+  // - set explicit CSS width/height/top/left so display size and offset match actual media rect
+  // - backing buffer = CSS size × dpr
+  // - ctx.scale(dpr, dpr) once after each resize (resets with canvas.width assignment)
+  //
+  // When objectFit:contain, the video may be letterboxed/pillarboxed — canvas must cover
+  // only the rendered media rect, not the full element (which includes black bars).
+  // When objectFit:cover or video is hidden (blur overlay), media fills the container.
   useEffect(() => {
     const canvas = canvasRef.current
     const video = videoRef.current
@@ -46,24 +50,64 @@ export function CaptionCanvas({
     const dpr = window.devicePixelRatio || 1
 
     const sync = () => {
-      const w = video.clientWidth
-      const h = video.clientHeight
+      const containerW = video.clientWidth
+      const containerH = video.clientHeight
+      const objectFit = video.style.objectFit
+      const hidden = video.style.visibility === "hidden"
+
+      let w: number, h: number, offsetX: number, offsetY: number
+
+      if (hidden || objectFit === "cover") {
+        // Media fills the container — no bars
+        w = containerW
+        h = containerH
+        offsetX = 0
+        offsetY = 0
+      } else {
+        // objectFit:contain — compute actual rendered media rect
+        const vw = video.videoWidth
+        const vh = video.videoHeight
+        if (!vw || !vh) {
+          // Intrinsics not loaded yet — use container, recompute on loadedmetadata
+          w = containerW
+          h = containerH
+          offsetX = 0
+          offsetY = 0
+        } else if (vw / vh > containerW / containerH) {
+          // Letterboxed — black bars top/bottom
+          w = containerW
+          h = containerW / (vw / vh)
+          offsetX = 0
+          offsetY = (containerH - h) / 2
+        } else {
+          // Pillarboxed — black bars left/right
+          h = containerH
+          w = containerH * (vw / vh)
+          offsetX = (containerW - w) / 2
+          offsetY = 0
+        }
+      }
+
       logicalSize.current = { w, h }
-      // Explicit CSS size — don't rely on inset-0 layout computation
+      canvas.style.left = `${offsetX}px`
+      canvas.style.top = `${offsetY}px`
       canvas.style.width = `${w}px`
       canvas.style.height = `${h}px`
-      // Backing buffer at physical resolution
       canvas.width = Math.round(w * dpr)
       canvas.height = Math.round(h * dpr)
-      // Scale once here — this is reset whenever canvas.width is set
       const ctx = canvas.getContext("2d")
       if (ctx) ctx.scale(dpr, dpr)
     }
 
     sync()
+    // Re-sync when container resizes or video intrinsics load
     const obs = new ResizeObserver(sync)
     obs.observe(video)
-    return () => obs.disconnect()
+    video.addEventListener("loadedmetadata", sync)
+    return () => {
+      obs.disconnect()
+      video.removeEventListener("loadedmetadata", sync)
+    }
   }, [videoRef])
 
   // Render loop — uses logical coords (ctx already scaled by resize effect)
@@ -127,11 +171,5 @@ export function CaptionCanvas({
     }
   }, [fontLoaded, words, style, accentSet, videoRef])
 
-  return (
-    <canvas
-      ref={canvasRef}
-      className="absolute top-0 left-0 pointer-events-none"
-      style={{ zIndex: 5 }}
-    />
-  )
+  return <canvas ref={canvasRef} className="absolute pointer-events-none" style={{ zIndex: 5 }} />
 }
