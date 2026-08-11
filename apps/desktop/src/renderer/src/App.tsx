@@ -1595,6 +1595,7 @@ function ProjectView({
                 onSelectClip={handleSelectClip}
                 exportSettings={{ outputDir, burnSubtitles, reframe, blurBg, captionStyle }}
                 refreshTrigger={clipRefreshTrigger}
+                analysisComplete={project.status === "ready"}
               />
             ) : (
               <CaptionsPanel projectId={project.id} />

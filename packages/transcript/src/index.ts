@@ -1,6 +1,16 @@
 import type { Word, Segment, WhisperSegment } from "@video-editor/types"
 import { generateId } from "@video-editor/utils"
 
+export { buildSentences, sentencesToPrompt, endsSentence } from "./sentences"
+export {
+  refineClipBoundaries,
+  passesQualityGate,
+  startsWithDanglingReference,
+  MIN_CLIP_MS,
+  MAX_CLIP_MS,
+} from "./boundaries"
+export type { RefinedBoundary, QualityGateResult } from "./boundaries"
+
 export const DEFAULT_FILLER_WORDS = [
   "um",
   "uh",

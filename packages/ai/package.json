@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@ai-sdk/groq": "^4.0.5",
+    "@video-editor/transcript": "workspace:*",
     "@video-editor/types": "workspace:*",
     "ai": "^7.0.16",
     "zod": "^4.4.3"
