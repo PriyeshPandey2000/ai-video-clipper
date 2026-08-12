@@ -41,7 +41,7 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
-        external: ["better-sqlite3", "bindings", "file-uri-to-path"],
+        external: ["better-sqlite3", "bindings", "file-uri-to-path", "onnxruntime-node"],
       },
     },
   },

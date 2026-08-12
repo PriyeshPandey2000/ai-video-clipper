@@ -10,6 +10,8 @@ export {
   MAX_CLIP_MS,
 } from "./boundaries"
 export type { RefinedBoundary, QualityGateResult } from "./boundaries"
+export { segmentTopics } from "./topics"
+export type { TopicSegment } from "./topics"
 
 export const DEFAULT_FILLER_WORDS = [
   "um",

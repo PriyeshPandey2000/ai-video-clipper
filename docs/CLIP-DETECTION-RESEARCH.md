@@ -401,19 +401,27 @@ dropped them. An **ablation, not a labeling job**.
 
 12. **B2** TextTiling + SBERT topic segmentation
 13. **C5** topic-coherent chunking (replaces the Wave 1 stopgap)
-14. **B3–B8, B10** local scoring + **B12** pre-filter
+14. **B7** speech-rate delta + **B8** lexical hook markers + **B10** filler density — injected as
+    prompt metadata (no candidate windows needed; B3 deferred until B12 ships)
 15. **C2** listwise + shuffled passes + Borda, **C7** dedupe
-16. **A6** SenseVoice tag track
-17. **D5** hook-first, **D7** internal jump cuts
-18. Pre-filter recall ablation (Part 4)
+16. **#46** pre-filter recall ablation (LLM-over-100% reference, not a labeling job)
+17. **B12** pre-filter to top ~25% — **only after #46 confirms ≥90% recall**
+18. **B4** audio arousal (RMS/LUFS/F0/centroid) + **B6** pause→burst anchor
+    (B3 candidate windows ship here if B12 ships)
+19. **D7** internal jump cuts
 
 ### Wave 3 — visible polish
 
-19. **E1/E2** active speaker reframe + smoothing
-20. **A5** diarization
-21. **C4** content-type rubrics, **E5** hook overlay
-22. **A1** WhisperX/MFA optional precision mode
-23. Taste eval tier once 15+ golden videos exist
+20. **A6** SenseVoice tag track (emotion + laughter + BGM; ~300 MB, separate inference pass —
+    transcript carries most signal for solo talking-head before this)
+21. **B3** multi-scale candidate windows (only needed to feed B12 at scale)
+22. **B5** laughter / applause (free via A6; deferred with A6)
+23. **D5** hook-first check (minor post-refinement guard)
+24. **E1/E2** active speaker reframe + smoothing
+25. **A5** diarization
+26. **C4** content-type rubrics, **E5** hook overlay
+27. **A1** WhisperX/MFA optional precision mode
+28. Taste eval tier once 15+ golden videos exist
 
 ### Rejected — do not re-litigate
 

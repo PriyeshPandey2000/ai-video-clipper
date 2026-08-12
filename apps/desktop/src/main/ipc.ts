@@ -40,6 +40,7 @@ import {
   detectSilences,
   wordsToPlainText,
   buildSentences,
+  segmentTopics,
   DEFAULT_FILLER_WORDS,
 } from "@video-editor/transcript"
 import { createAiClient, selectClips, generateSocialCaptions } from "@video-editor/ai"
@@ -307,11 +308,16 @@ export function registerIpcHandlers(): void {
 
           const sentences = buildSentences(wordRows)
 
+          sendProgress(projectId, "generating_clips", 0.05, "Segmenting topics")
+          const topics = await segmentTopics(sentences, modelsDir)
+          console.log(`[topics] ${topics.length} segment(s) found`)
+
           sendProgress(projectId, "generating_clips", 0.1, "Analyzing transcript for clips")
           const { clips: clipSuggestions, rejected } = await selectClips(
             client,
             wordRows,
             sentences,
+            topics,
           )
           if (rejected.length > 0) {
             console.log(
