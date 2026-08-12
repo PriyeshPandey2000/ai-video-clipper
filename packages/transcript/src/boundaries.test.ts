@@ -203,6 +203,69 @@ describe("refineClipBoundaries", () => {
     const straddled = w.some((word) => r.endMs > word.startMs && r.endMs < word.endMs)
     expect(straddled).toBe(false)
   })
+
+  it("drops the candidate when not even one word fits the maximum", () => {
+    // Regression: a single word longer than MAX_CLIP_MS used to emit a clip of that word's full
+    // length — a 300s "short" that passed the quality gate untouched.
+    const w: Word[] = [
+      {
+        id: "w0",
+        projectId: "p",
+        text: "Marathon.",
+        startMs: 0,
+        endMs: 300_000,
+        confidence: 0.9,
+        speakerLabel: null,
+      },
+    ]
+    const s = buildSentences(w)
+    expect(refineClipBoundaries(w, s, 0, 0)).toBeNull()
+  })
+
+  it("never exceeds the maximum when growing to reach the minimum", () => {
+    // The minimum-duration loop must not push the range back over MAX_CLIP_MS.
+    const w: Word[] = [
+      {
+        id: "a",
+        projectId: "p",
+        text: "Short.",
+        startMs: 0,
+        endMs: 500,
+        confidence: 0.9,
+        speakerLabel: null,
+      },
+      {
+        id: "b",
+        projectId: "p",
+        text: "Then",
+        startMs: 1500,
+        endMs: 2000,
+        confidence: 0.9,
+        speakerLabel: null,
+      },
+      {
+        id: "c",
+        projectId: "p",
+        text: "long",
+        startMs: 2000,
+        endMs: 200_000,
+        confidence: 0.9,
+        speakerLabel: null,
+      },
+      {
+        id: "d",
+        projectId: "p",
+        text: "run.",
+        startMs: 200_000,
+        endMs: 200_500,
+        confidence: 0.9,
+        speakerLabel: null,
+      },
+    ]
+    const s = buildSentences(w)
+    const r = refineClipBoundaries(w, s, 0, 0)
+    if (r) expect(r.durationMs).toBeLessThanOrEqual(MAX_CLIP_MS)
+  })
 })
 
 describe("passesQualityGate", () => {

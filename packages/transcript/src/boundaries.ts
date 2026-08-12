@@ -147,7 +147,11 @@ export function refineClipBoundaries(
 
   // D6 — length clamp. Trim from the end so the hook at the start survives.
   while (span(startIdx, endIdx) > maxMs && endIdx > startIdx) endIdx--
-  while (span(startIdx, endIdx) < minMs && endIdx < last) endIdx++
+  // The growth loop needs its own maxMs guard, or reaching the minimum can push the range back
+  // over the maximum and leave endSentenceIndex pointing past where the cut actually lands.
+  while (span(startIdx, endIdx) < minMs && endIdx < last && span(startIdx, endIdx + 1) <= maxMs) {
+    endIdx++
+  }
 
   // D1 — snap to real word edges.
   const firstWordIndex = sentences[startIdx]!.firstWordIndex
@@ -166,6 +170,9 @@ export function refineClipBoundaries(
   if (words[lastWordIndex]!.endMs - startMs > maxMs) {
     const limit = startMs + maxMs
     while (lastWordIndex > firstWordIndex && words[lastWordIndex]!.endMs > limit) lastWordIndex--
+    // Not even the first word fits the hard limit — the timestamps are unusable, so drop the
+    // candidate rather than emit a clip that breaks the length contract or cuts mid-word.
+    if (words[lastWordIndex]!.endMs > limit) return null
     truncatedMidSentence = lastWordIndex < sentences[endIdx]!.lastWordIndex
   }
 
@@ -176,7 +183,8 @@ export function refineClipBoundaries(
   const trailWord = words[lastWordIndex + 1]
   const tailGap = trailWord ? Math.max(0, trailWord.startMs - lastWord.endMs) : TAIL_MS
   let endMs = lastWord.endMs + Math.min(TAIL_MS, Math.floor(tailGap / 2))
-  if (endMs - startMs > maxMs) endMs = Math.max(lastWord.endMs, startMs + maxMs)
+  // `lastWord.endMs` is already inside the limit, so this only trims padding, never a word.
+  if (endMs - startMs > maxMs) endMs = startMs + maxMs
   if (endMs <= startMs) return null
 
   const durationMs = Math.round(endMs) - Math.round(startMs)

@@ -108,7 +108,12 @@ async function measureLoudness(
  */
 function isCompleteStats(stats: Partial<LoudnessStats>): stats is LoudnessStats {
   return (["input_i", "input_tp", "input_lra", "input_thresh", "target_offset"] as const).every(
-    (key) => Number.isFinite(Number(stats[key])),
+    (key) => {
+      // Number() coerces null, false and "" to 0, all finite — so check the type and emptiness
+      // first. loudnorm also reports "-inf" for silent audio, which Number() maps to NaN.
+      const value = stats[key]
+      return typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))
+    },
   )
 }
 
