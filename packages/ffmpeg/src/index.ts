@@ -14,7 +14,122 @@ export interface ExportOptions {
   reframe?: boolean
   cropX?: number // 0.0 (left) – 1.0 (right), default 0.5 (center)
   blurBg?: boolean // fill 9:16 background with blurred source instead of black bars
+  normalizeLoudness?: boolean // E6 — two-pass loudnorm to -14 LUFS
   onProgress?: (fraction: number) => void
+}
+
+/** E6 — streaming targets. -14 LUFS is where platforms stop turning content down. */
+const LUFS_TARGET = -14
+const TRUE_PEAK_TARGET = -1.5
+const LRA_TARGET = 11
+
+/** Upper bound on the measure pass so a stalled ffmpeg can't hang the export forever. */
+const MEASURE_TIMEOUT_MS = 120_000
+
+interface LoudnessStats {
+  input_i: string
+  input_tp: string
+  input_lra: string
+  input_thresh: string
+  target_offset: string
+}
+
+/**
+ * Pass 1 of loudnorm. Single-pass loudnorm compresses dynamic range because it can't see the
+ * whole signal; measuring first and feeding the values back keeps the dynamics intact.
+ * Returns null on failure — the caller then skips normalization rather than failing the export.
+ */
+async function measureLoudness(
+  binaryPath: string,
+  inputPath: string,
+  startMs: number,
+  endMs: number,
+): Promise<LoudnessStats | null> {
+  const args = [
+    "-hide_banner",
+    "-nostats",
+    "-ss",
+    String(startMs / 1000),
+    "-i",
+    inputPath,
+    "-t",
+    String((endMs - startMs) / 1000),
+    "-vn",
+    "-af",
+    `loudnorm=I=${LUFS_TARGET}:TP=${TRUE_PEAK_TARGET}:LRA=${LRA_TARGET}:print_format=json`,
+    "-f",
+    "null",
+    "-",
+  ]
+
+  return new Promise((resolve) => {
+    const proc = spawn(binaryPath, args)
+    let stderr = ""
+    let settled = false
+
+    const finish = (value: LoudnessStats | null): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+
+    // Without this, a stalled ffmpeg leaves the export awaiting forever and the export:clips IPC
+    // handler never returns — a stuck export with no way to recover.
+    const timer = setTimeout(() => {
+      proc.kill("SIGKILL")
+      finish(null)
+    }, MEASURE_TIMEOUT_MS)
+
+    proc.stderr.on("data", (d: Buffer) => {
+      stderr += d.toString()
+    })
+    proc.on("error", () => finish(null))
+    proc.on("close", (code) => {
+      if (code !== 0) return finish(null)
+      // loudnorm prints its JSON block last on stderr.
+      const start = stderr.lastIndexOf("{")
+      const end = stderr.lastIndexOf("}")
+      if (start === -1 || end <= start) return finish(null)
+      try {
+        const parsed = JSON.parse(stderr.slice(start, end + 1)) as Partial<LoudnessStats>
+        finish(isCompleteStats(parsed) ? parsed : null)
+      } catch {
+        finish(null)
+      }
+    })
+  })
+}
+
+/**
+ * `loudnormFilter` interpolates five fields. A missing or non-numeric one yields
+ * `measured_TP=undefined` or a stray `:` that splits the filter options — ffmpeg then rejects
+ * `-af` and the whole export fails, defeating the point of falling back to no normalization.
+ */
+function isCompleteStats(stats: Partial<LoudnessStats>): stats is LoudnessStats {
+  return (["input_i", "input_tp", "input_lra", "input_thresh", "target_offset"] as const).every(
+    (key) => {
+      // Number() coerces null, false and "" to 0, all finite — so check the type and emptiness
+      // first. loudnorm also reports "-inf" for silent audio, which Number() maps to NaN.
+      const value = stats[key]
+      return typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))
+    },
+  )
+}
+
+function loudnormFilter(stats: LoudnessStats): string {
+  return [
+    `loudnorm=I=${LUFS_TARGET}`,
+    `TP=${TRUE_PEAK_TARGET}`,
+    `LRA=${LRA_TARGET}`,
+    `measured_I=${stats.input_i}`,
+    `measured_TP=${stats.input_tp}`,
+    `measured_LRA=${stats.input_lra}`,
+    `measured_thresh=${stats.input_thresh}`,
+    `offset=${stats.target_offset}`,
+    "linear=true",
+    "print_format=summary",
+  ].join(":")
 }
 
 export interface ProxyOptions {
@@ -154,6 +269,11 @@ export async function exportClip(opts: ExportOptions): Promise<void> {
   } else if (subtitleFilter) {
     args.push("-vf", subtitleFilter)
   }
+  if (opts.normalizeLoudness) {
+    const stats = await measureLoudness(opts.binaryPath, opts.inputPath, opts.startMs, opts.endMs)
+    if (stats) args.push("-af", loudnormFilter(stats))
+  }
+
   args.push(opts.outputPath)
   if (opts.onProgress) {
     await runWithProgress(opts.binaryPath, args, opts.endMs - opts.startMs, opts.onProgress)

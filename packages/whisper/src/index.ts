@@ -55,8 +55,44 @@ const MODEL_URLS: Record<WhisperModel, string> = {
   large: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILES.large}`,
 }
 
+/**
+ * `--dtw` requires a preset naming the model's alignment heads; passing the flag alone is a
+ * usage error, and an unrecognised preset exits with code 3. Note `large` maps to `large.v3`,
+ * matching the `ggml-large-v3.bin` weights we download — `--dtw large` would fail outright.
+ */
+const DTW_PRESET: Record<WhisperModel, string> = {
+  tiny: "tiny",
+  base: "base",
+  small: "small",
+  medium: "medium",
+  large: "large.v3",
+}
+
+/** Silero VAD, converted to ggml. Gates decoding to speech so Whisper can't hallucinate. */
+const VAD_MODEL_FILE = "ggml-silero-v6.2.0.bin"
+const VAD_MODEL_URL = `https://huggingface.co/ggml-org/whisper-vad/resolve/main/${VAD_MODEL_FILE}`
+
 export function modelPath(modelsDir: string, model: WhisperModel): string {
   return join(modelsDir, MODEL_FILES[model])
+}
+
+export function vadModelPath(modelsDir: string): string {
+  return join(modelsDir, VAD_MODEL_FILE)
+}
+
+/** Same download-on-first-use path as the Whisper weights; failure is non-fatal. */
+export async function downloadVadModel(modelsDir: string): Promise<boolean> {
+  const dest = vadModelPath(modelsDir)
+  if (existsSync(dest)) return true
+  try {
+    await mkdir(modelsDir, { recursive: true })
+    const response = await fetch(VAD_MODEL_URL)
+    if (!response.ok) return false
+    await writeFile(dest, Buffer.from(await response.arrayBuffer()))
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function isModelDownloaded(modelsDir: string, model: WhisperModel): boolean {
@@ -131,12 +167,32 @@ interface WhisperCliResult {
   transcription: WhisperCliSegment[]
 }
 
+/**
+ * whisper.cpp emits BPE subword tokens, not words, and marks a word start with a **leading
+ * space**: `" Hello"`, `" everyone"`, then `","` and `"'s"` continue the token before them.
+ *
+ * Trimming each token and treating it as a word splits "2026" into "22"/"6", "full-stack" into
+ * "full"/"-"/"st"/"ack", and turns every comma into its own record — which then flows into SRT
+ * export, captions, and filler detection. Merging on the leading-space marker is what makes the
+ * `words` table actually word-level. `-sow` keeps segment boundaries on word boundaries, so
+ * merging per segment is safe.
+ */
 function normalizeWhisperResult(raw: WhisperCliResult): WhisperTranscriptionResult {
   const segments: WhisperSegment[] = raw.transcription.map((seg, i) => {
     const words: WhisperWord[] = []
     for (const t of seg.tokens) {
       const text = t.text.trim()
       if (!text || text.startsWith("[") || text.startsWith("<")) continue
+
+      const startsNewWord = /^\s/.test(t.text)
+      const current = words[words.length - 1]
+      if (!startsNewWord && current) {
+        current.word += text
+        current.end = t.offsets.to / 1000
+        current.probability = Math.min(current.probability, t.p)
+        continue
+      }
+
       words.push({
         word: text,
         start: t.offsets.from / 1000,
@@ -159,12 +215,15 @@ function normalizeWhisperResult(raw: WhisperCliResult): WhisperTranscriptionResu
 export async function transcribe(
   config: WhisperConfig,
   audioPath: string,
-  model: WhisperModel = "base",
+  model: WhisperModel = "medium",
   onProgress?: (progress: number) => void,
 ): Promise<WhisperTranscriptionResult> {
   if (!isModelDownloaded(config.modelsDir, model)) {
     await downloadModel(config.modelsDir, model, onProgress)
   }
+
+  // A3 — VAD is best-effort: if the model can't be fetched we transcribe without it.
+  const vadReady = await downloadVadModel(config.modelsDir)
 
   return new Promise((resolve, reject) => {
     const jsonPath = `${audioPath}.json`
@@ -177,7 +236,17 @@ export async function transcribe(
       "-sow",
       "-t",
       "4",
+      // A2 — cross-attention DTW token timestamps, far better than raw token offsets.
+      // `--no-flash-attn` is REQUIRED: flash attention is on by default and whisper.cpp
+      // silently disables DTW when both are set ("dtw_token_timestamps is not supported with
+      // flash_attn - disabling"), so the flag would be a no-op without this.
+      "--no-flash-attn",
+      "--dtw",
+      DTW_PRESET[model],
     ]
+    if (vadReady) {
+      args.push("--vad", "-vm", vadModelPath(config.modelsDir))
+    }
 
     const proc = spawn(config.binaryPath, args)
     const stderr: string[] = []

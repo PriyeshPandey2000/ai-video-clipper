@@ -43,6 +43,17 @@ export interface Word {
   speakerLabel: string | null
 }
 
+export interface Sentence {
+  index: number
+  startMs: number
+  endMs: number
+  text: string
+  firstWordIndex: number
+  lastWordIndex: number
+  /** Ends on `.`/`!`/`?` rather than being split by a pause or the length cap. */
+  endsWithTerminator: boolean
+}
+
 export interface Clip {
   id: string
   projectId: string

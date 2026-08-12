@@ -16,6 +16,8 @@ interface ClipReviewProps {
   onSelectClip: (clip: Clip) => void
   exportSettings: ExportSettings
   refreshTrigger?: number
+  /** True once the pipeline has finished — distinguishes "not run yet" from "found nothing". */
+  analysisComplete?: boolean
 }
 
 function formatDuration(ms: number): string {
@@ -57,6 +59,7 @@ export function ClipReview({
   onSelectClip,
   exportSettings,
   refreshTrigger,
+  analysisComplete,
 }: ClipReviewProps): React.ReactElement | null {
   const [clips, setClips] = useState<Clip[] | null>(null)
   const [loading, setLoading] = useState(true)
@@ -165,10 +168,22 @@ export function ClipReview({
           Suggested Clips
         </h3>
         <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 p-4 text-center">
-          <p className="text-sm text-neutral-500">No clips generated yet</p>
-          <p className="text-xs text-neutral-600 mt-1">
-            AI analysis needs a GROQ_API_KEY in your .env file at the project root.
-          </p>
+          {analysisComplete ? (
+            <>
+              <p className="text-sm text-neutral-500">No strong moments found</p>
+              <p className="text-xs text-neutral-600 mt-1">
+                Nothing in this video met the quality bar. Returning weak clips would waste your
+                time.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-neutral-500">No clips generated yet</p>
+              <p className="text-xs text-neutral-600 mt-1">
+                AI analysis needs a GROQ_API_KEY in your .env file at the project root.
+              </p>
+            </>
+          )}
         </div>
       </div>
     )

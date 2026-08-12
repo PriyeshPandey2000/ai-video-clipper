@@ -39,7 +39,7 @@ import {
   detectFillerWords,
   detectSilences,
   wordsToPlainText,
-  wordsToTimestampedText,
+  buildSentences,
   DEFAULT_FILLER_WORDS,
 } from "@video-editor/transcript"
 import { createAiClient, selectClips, generateSocialCaptions } from "@video-editor/ai"
@@ -284,9 +284,6 @@ export function registerIpcHandlers(): void {
           db.insert(words).values(wordRows).run()
         }
 
-        // Use FFprobe duration (set during import) — more accurate than last whisper word
-        const durationMs = proj.durationMs || (wordRows[wordRows.length - 1]?.endMs ?? 0)
-
         db.update(projects)
           .set({ status: "analyzing", updatedAt: now() })
           .where(eq(projects.id, projectId))
@@ -308,10 +305,20 @@ export function registerIpcHandlers(): void {
         try {
           const client = createAiClient()
 
-          const timestampedText = wordsToTimestampedText(wordRows)
+          const sentences = buildSentences(wordRows)
 
           sendProgress(projectId, "generating_clips", 0.1, "Analyzing transcript for clips")
-          const clipSuggestions = await selectClips(client, timestampedText, durationMs)
+          const { clips: clipSuggestions, rejected } = await selectClips(
+            client,
+            wordRows,
+            sentences,
+          )
+          if (rejected.length > 0) {
+            console.log(
+              `[clips] ${clipSuggestions.length} kept, ${rejected.length} dropped by quality gate:`,
+              rejected.map((r) => `${r.title} (${r.reasons.join(", ")})`).join(" | "),
+            )
+          }
           const clipRows = clipSuggestions.map((c) => ({
             id: generateId(),
             projectId,
@@ -497,6 +504,7 @@ export function registerIpcHandlers(): void {
             ...(assPath ? { assPath, fontsDir } : {}),
             ...(srtPath ? { srtPath } : {}),
             ...(reframe ? { reframe: true, cropX: clip.cropX, blurBg } : {}),
+            normalizeLoudness: true,
             onProgress: (progress) =>
               send("export:progress", {
                 projectId,
