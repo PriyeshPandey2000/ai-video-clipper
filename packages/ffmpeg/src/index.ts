@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process"
 import { join } from "node:path"
 import { existsSync } from "node:fs"
+import { readFile, unlink } from "node:fs/promises"
+import { tmpdir } from "node:os"
 
 export interface ExportOptions {
   binaryPath: string
@@ -15,7 +17,33 @@ export interface ExportOptions {
   cropX?: number // 0.0 (left) – 1.0 (right), default 0.5 (center)
   blurBg?: boolean // fill 9:16 background with blurred source instead of black bars
   normalizeLoudness?: boolean // E6 — two-pass loudnorm to -14 LUFS
+  /** D7 — filler/silence segments to cut out of the clip before encoding. */
+  removeSegments?: { startMs: number; endMs: number }[]
   onProgress?: (fraction: number) => void
+}
+
+/**
+ * Subtracts `remove` intervals from `[startMs, endMs]`, returning the kept intervals in order.
+ * Exported so callers can remap subtitle timestamps against the same intervals.
+ */
+export function subtractSegments(
+  startMs: number,
+  endMs: number,
+  remove: { startMs: number; endMs: number }[],
+): { startMs: number; endMs: number }[] {
+  const sorted = remove
+    .filter((r) => r.startMs < endMs && r.endMs > startMs)
+    .sort((a, b) => a.startMs - b.startMs)
+  const result: { startMs: number; endMs: number }[] = []
+  let cur = startMs
+  for (const r of sorted) {
+    const rs = Math.max(r.startMs, startMs)
+    const re = Math.min(r.endMs, endMs)
+    if (cur < rs) result.push({ startMs: cur, endMs: rs })
+    cur = Math.max(cur, re)
+  }
+  if (cur < endMs) result.push({ startMs: cur, endMs: endMs })
+  return result
 }
 
 /** E6 — streaming targets. -14 LUFS is where platforms stop turning content down. */
@@ -223,6 +251,26 @@ function runWithProgress(
 }
 
 export async function exportClip(opts: ExportOptions): Promise<void> {
+  // D7 — strip filler/silence segments within the clip before encoding.
+  if (opts.removeSegments?.length) {
+    const intervals = subtractSegments(opts.startMs, opts.endMs, opts.removeSegments)
+    if (intervals.length === 0) return
+    if (intervals.length > 1) {
+      return exportEpisode({
+        binaryPath: opts.binaryPath,
+        inputPath: opts.inputPath,
+        outputPath: opts.outputPath,
+        keepIntervals: intervals,
+        ...(opts.assPath ? { assPath: opts.assPath, fontsDir: opts.fontsDir } : {}),
+        ...(opts.srtPath && !opts.assPath ? { srtPath: opts.srtPath } : {}),
+        ...(opts.reframe ? { reframe: true, cropX: opts.cropX, blurBg: opts.blurBg } : {}),
+        ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
+      })
+    }
+    // Single keep interval — tighten bounds and fall through to the normal path.
+    opts = { ...opts, startMs: intervals[0]!.startMs, endMs: intervals[0]!.endMs }
+  }
+
   const startSec = opts.startMs / 1000
   const durationSec = (opts.endMs - opts.startMs) / 1000
   const args = [
@@ -430,6 +478,71 @@ export async function probeDuration(binaryPath: string, inputPath: string): Prom
       resolve(ms)
     })
     proc.on("error", reject)
+  })
+}
+
+const AROUSAL_TIMEOUT_MS = 300_000
+
+/**
+ * B4 — Measures per-second audio RMS (dBFS) for the full file using ffmpeg astats.
+ * Returns one value per second, index-aligned to the recording start (index 0 = second 0).
+ * Returns [] on any failure — arousal signal is always optional.
+ */
+export async function measureArousal(binaryPath: string, inputPath: string): Promise<number[]> {
+  const tmp = join(tmpdir(), `arousal-${Date.now()}.txt`)
+  const args = [
+    "-hide_banner",
+    "-nostats",
+    "-i",
+    inputPath,
+    "-vn",
+    "-ar",
+    "8000",
+    "-ac",
+    "1",
+    "-af",
+    // reset=8000 at 8000 Hz → stats reset every second. Escaped colon in filtergraph.
+    `astats=metadata=1:reset=8000,ametadata=print:file=${escapeFiltergraphPath(tmp)}:key=lavfi.astats.Overall.RMS_level`,
+    "-f",
+    "null",
+    "-",
+  ]
+
+  return new Promise((resolve) => {
+    const proc = spawn(binaryPath, args)
+    let settled = false
+
+    const finish = (ok: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (!ok) {
+        resolve([])
+        return
+      }
+      readFile(tmp, "utf-8")
+        .then((content) => {
+          const vals: number[] = []
+          for (const line of content.split("\n")) {
+            const m = line.match(/RMS_level=(-?(?:inf|\d+\.?\d*))/)
+            if (!m) continue
+            const raw = m[1]!
+            const db = raw.includes("inf") ? -60 : parseFloat(raw)
+            vals.push(isFinite(db) ? db : -60)
+          }
+          resolve(vals)
+        })
+        .catch(() => resolve([]))
+        .finally(() => unlink(tmp).catch(() => {}))
+    }
+
+    const timer = setTimeout(() => {
+      proc.kill("SIGKILL")
+      finish(false)
+    }, AROUSAL_TIMEOUT_MS)
+
+    proc.on("error", () => finish(false))
+    proc.on("close", (code) => finish(code === 0))
   })
 }
 

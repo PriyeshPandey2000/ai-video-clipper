@@ -22,6 +22,8 @@ import {
   exportClip,
   exportEpisode,
   hasSubtitlesFilter,
+  measureArousal,
+  subtractSegments,
 } from "@video-editor/ffmpeg"
 import {
   downloadModel,
@@ -305,6 +307,7 @@ export function registerIpcHandlers(): void {
         // AI content generation — failure here is non-fatal, transcript is still saved
         try {
           const client = createAiClient()
+          const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
 
           const sentences = buildSentences(wordRows)
 
@@ -312,12 +315,18 @@ export function registerIpcHandlers(): void {
           const topics = await segmentTopics(sentences, modelsDir)
           console.log(`[topics] ${topics.length} segment(s) found`)
 
+          sendProgress(projectId, "generating_clips", 0.07, "Measuring audio arousal")
+          const arousalPerSec = await measureArousal(ffmpegBin, audioPath)
+          console.log(`[arousal] ${arousalPerSec.length} seconds measured`)
+
           sendProgress(projectId, "generating_clips", 0.1, "Analyzing transcript for clips")
           const { clips: clipSuggestions, rejected } = await selectClips(
             client,
             wordRows,
             sentences,
             topics,
+            10,
+            arousalPerSec,
           )
           if (rejected.length > 0) {
             console.log(
@@ -475,19 +484,36 @@ export function registerIpcHandlers(): void {
         ? db.select().from(words).where(eq(words.projectId, projectId)).all()
         : []
 
+      // D7 — query segments once; subtractSegments computes keep intervals per clip.
+      const allSegs = db.select().from(segments).where(eq(segments.projectId, projectId)).all()
+
       const exportedPaths: string[] = []
       for (let ci = 0; ci < clipRows.length; ci++) {
         const clip = clipRows[ci]!
         const outPath = join(outDir, `${sanitizeName(clip.title)}.mp4`)
 
+        // Segments that fall inside this clip's range.
+        const clipSegs = allSegs.filter((s) => s.startMs < clip.endMs && s.endMs > clip.startMs)
+        const keepIntervals =
+          clipSegs.length > 0
+            ? subtractSegments(clip.startMs, clip.endMs, clipSegs)
+            : [{ startMs: clip.startMs, endMs: clip.endMs }]
+
+        // Remap subtitle words to the output timeline accounting for removed segments.
         const clipWords = burnSubtitles
-          ? wordRows
-              .filter((w) => w.endMs > clip.startMs && w.startMs < clip.endMs)
-              .map((w) => ({
-                ...w,
-                startMs: Math.max(w.startMs, clip.startMs) - clip.startMs,
-                endMs: Math.min(w.endMs, clip.endMs) - clip.startMs,
-              }))
+          ? (() => {
+              const absolute = wordRows.filter(
+                (w) => w.endMs > clip.startMs && w.startMs < clip.endMs,
+              )
+              if (keepIntervals.length <= 1) {
+                return absolute.map((w) => ({
+                  ...w,
+                  startMs: Math.max(w.startMs, clip.startMs) - clip.startMs,
+                  endMs: Math.min(w.endMs, clip.endMs) - clip.startMs,
+                }))
+              }
+              return remapWordsToEpisodeTimeline(absolute, keepIntervals)
+            })()
           : []
 
         let srtPath: string | undefined
@@ -507,10 +533,13 @@ export function registerIpcHandlers(): void {
             outputPath: outPath,
             startMs: clip.startMs,
             endMs: clip.endMs,
+            ...(clipSegs.length > 0 ? { removeSegments: clipSegs } : {}),
             ...(assPath ? { assPath, fontsDir } : {}),
             ...(srtPath ? { srtPath } : {}),
             ...(reframe ? { reframe: true, cropX: clip.cropX, blurBg } : {}),
-            normalizeLoudness: true,
+            // Loudness normalization is two-pass (single-clip path). When D7 triggers
+            // multi-interval export via exportEpisode, normalization is skipped.
+            normalizeLoudness: keepIntervals.length <= 1,
             onProgress: (progress) =>
               send("export:progress", {
                 projectId,

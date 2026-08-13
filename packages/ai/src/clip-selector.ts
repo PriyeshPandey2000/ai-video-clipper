@@ -57,6 +57,8 @@ Signal tags — use as extra evidence, not hard rules:
   {hook}        — question, number, superlative, reveal, or contrarian framing detected
   {fast}        — speech rate significantly above speaker's rolling baseline (excitement)
   {slow}        — speech rate below baseline (deliberate emphasis or emotional weight)
+  {loud}        — audio energy significantly above speaker's rolling baseline (emotional peak)
+  {burst}       — sentence follows a notable silence (>800ms gap) — strong clip start point
   {filler:high} — >15% filler words (um/uh/like/basically…) — weaker content
 
 Return clips as SENTENCE INDEX RANGES. Never write a timestamp — the numbers in brackets are for
@@ -182,14 +184,21 @@ const FILLER_SET = new Set([
 ])
 const WPS_WINDOW = 5
 
-function buildAnnotatedPrompt(chunk: Sentence[], words: Word[]): string {
+function buildAnnotatedPrompt(
+  chunk: Sentence[],
+  words: Word[],
+  arousalPerSec: number[] = [],
+): string {
   const wpsHistory: number[] = []
+  const rmsHistory: number[] = []
+  let prevEndMs = chunk[0]?.startMs ?? 0
+
   return chunk
     .map((s) => {
       const wordCount = s.lastWordIndex - s.firstWordIndex + 1
       const durSec = Math.max((s.endMs - s.startMs) / 1000, 0.1)
       const wps = wordCount / durSec
-      const baseline =
+      const wpsBaseline =
         wpsHistory.length > 0 ? wpsHistory.reduce((a, b) => a + b, 0) / wpsHistory.length : wps
       wpsHistory.push(wps)
       if (wpsHistory.length > WPS_WINDOW) wpsHistory.shift()
@@ -199,10 +208,35 @@ function buildAnnotatedPrompt(chunk: Sentence[], words: Word[]): string {
         FILLER_SET.has(w.text.toLowerCase().replace(/[.,!?]+$/, "")),
       ).length
 
+      // B4: loud tag from per-second audio RMS
+      let loudTag = ""
+      if (arousalPerSec.length > 0) {
+        const startSec = Math.floor(s.startMs / 1000)
+        const endSec = Math.max(startSec + 1, Math.ceil(s.endMs / 1000))
+        const sentRms = arousalPerSec.slice(startSec, endSec)
+        if (sentRms.length > 0) {
+          const meanRms = sentRms.reduce((a, b) => a + b, 0) / sentRms.length
+          const rmsBaseline =
+            rmsHistory.length > 0
+              ? rmsHistory.reduce((a, b) => a + b, 0) / rmsHistory.length
+              : meanRms
+          rmsHistory.push(meanRms)
+          if (rmsHistory.length > WPS_WINDOW) rmsHistory.shift()
+          if (meanRms > rmsBaseline + 3) loudTag = "loud"
+        }
+      }
+
+      // B6: burst tag — sentence follows a notable silence (>800ms gap)
+      const gapMs = s.startMs - prevEndMs
+      const burstTag = gapMs > 800 ? "burst" : ""
+      prevEndMs = s.endMs
+
       const tags = [
         HOOK_RE.test(s.text) ? "hook" : "",
-        wps > baseline * 1.3 ? "fast" : "",
-        wps < baseline * 0.7 ? "slow" : "",
+        wps > wpsBaseline * 1.3 ? "fast" : "",
+        wps < wpsBaseline * 0.7 ? "slow" : "",
+        loudTag,
+        burstTag,
         wordCount > 0 && fillerCount / wordCount > 0.15 ? "filler:high" : "",
       ].filter(Boolean)
 
@@ -273,13 +307,14 @@ async function selectFromChunk(
   client: AiClient,
   chunk: Sentence[],
   words: Word[],
+  arousalPerSec: number[] = [],
 ): Promise<Candidate[]> {
   const schema = zod.object({ clips: zod.array(CandidateSchema).max(20) })
   const firstIndex = chunk[0]!.index
   const lastIndex = chunk[chunk.length - 1]!.index
   const prompt = `Sentences #${firstIndex} to #${lastIndex}.
 
-${buildAnnotatedPrompt(chunk, words)}
+${buildAnnotatedPrompt(chunk, words, arousalPerSec)}
 
 Select every clip worth posting, best first. Each clip should span roughly ${MIN_CLIP_MS / 1000}–${MAX_CLIP_MS / 1000} seconds of transcript time.
 Only use sentence indices between ${firstIndex} and ${lastIndex}.
@@ -302,13 +337,14 @@ export async function selectClips(
   sentences: Sentence[],
   topics: TopicSegment[] = [],
   maxClips = 10,
+  arousalPerSec: number[] = [],
 ): Promise<ClipSelectionResult> {
   if (sentences.length === 0) return { clips: [], rejected: [] }
 
   const chunks = topicsToChunks(sentences, topics)
   const perChunk: Candidate[][] = []
   for (const chunk of chunks) {
-    perChunk.push(await selectFromChunk(client, chunk, words))
+    perChunk.push(await selectFromChunk(client, chunk, words, arousalPerSec))
   }
 
   const clips: ClipSuggestion[] = []
