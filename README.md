@@ -46,10 +46,13 @@ Think of Clipper as an **assembly line**, not a video editor. A long recording g
 
 ```mermaid
 flowchart LR
-    A["1 · Drop a video"] --> B["2 · Transcribe it (Whisper, local)"]
-    B --> C["3 · AI finds the best moments"]
-    C --> D["4 · Review & approve clips"]
-    D --> E["5 · Export 9:16 shorts"]
+    classDef step fill:#0f4c4c,stroke:#4fd1c5,color:#ecfeff,stroke-width:2px
+    classDef human fill:#5a3d0f,stroke:#e0a72e,color:#fff7ed,stroke-width:2px
+
+    A["1 · Drop a video"]:::step --> B["2 · Transcribe it<br/>(Whisper, local)"]:::step
+    B --> C["3 · AI finds the<br/>best moments"]:::step
+    C --> D["4 · Review & approve"]:::human
+    D --> E["5 · Export 9:16 shorts"]:::step
 ```
 
 1. Drop a video file into the app
@@ -60,31 +63,46 @@ flowchart LR
 
 ## Architecture
 
-The app is a monorepo of small, single-purpose packages — the "stations" on the assembly line. Each one does one job, and the Electron app wires them together.
+The packages are pure, stateless "stations" — no package but `database` ever touches SQLite. One conductor, [`apps/desktop/src/main/ipc.ts`](apps/desktop/src/main/ipc.ts), drives every station in order and persists the result after each one. The UI lives in [`apps/desktop/src/renderer`](apps/desktop/src/renderer) and only ever talks to the conductor over IPC.
 
 ```mermaid
-flowchart LR
-    subgraph stations[one package per station]
-        direction LR
-        FF["ffmpeg — proxy video, extract audio"]
-        WH["whisper — word-level transcript"]
-        TR["transcript — filler words, silences, sentences"]
-        AI["ai — picks & scores the best clips"]
-        EX["export — cuts clips, burns captions"]
-        FF --> WH --> TR --> AI --> EX
-    end
-    DB["database — SQLite, the source of truth"] --- FF
-    DB --- WH
-    DB --- TR
-    DB --- AI
-    DB --- EX
-```
+flowchart TD
+    classDef foundation fill:#2d3748,stroke:#a0aec0,color:#edf2f7,stroke-width:2px
+    classDef engine fill:#0f4c4c,stroke:#4fd1c5,color:#ecfeff,stroke-width:2px
+    classDef orchestrator fill:#5a3d0f,stroke:#e0a72e,color:#fff7ed,stroke-width:2px
+    classDef store fill:#1e3a5f,stroke:#63b3ed,color:#eff6ff,stroke-width:2px
 
-Every station is a folder under [`packages/`](packages/): the UI lives in [`apps/desktop/src/renderer`](apps/desktop/src/renderer), and the assembly line itself lives in [`apps/desktop/src/main/ipc.ts`](apps/desktop/src/main/ipc.ts).
+    Main["apps/desktop/main/ipc.ts<br/>the conductor"]:::orchestrator
+    DB[("database<br/>SQLite — source of truth")]:::store
+
+    subgraph line["packages/ — pure, stateless, one job each"]
+        direction LR
+        FF["ffmpeg<br/>proxy + audio"]:::engine
+        WH["whisper<br/>transcript"]:::engine
+        TR["transcript<br/>filler + silence"]:::engine
+        AI["ai<br/>clip picks"]:::engine
+        CAP["captions<br/>ASS styles"]:::engine
+        EXP["export<br/>cut + burn"]:::engine
+        FF --> WH --> TR --> AI --> CAP --> EXP
+    end
+
+    subgraph shared["shared foundation — no side effects"]
+        direction LR
+        TY["types"]:::foundation
+        UT["utils"]:::foundation
+        UI["ui / player"]:::foundation
+    end
+
+    Main -->|drives every step| FF
+    EXP -->|clip ready| Main
+    Main -->|persists after each step| DB
+    DB -.state read back.-> Main
+    shared -.depended on by.-> line
+```
 
 - Want to improve clip picking? Start at `packages/ai`
 - Fix a transcription quirk? Start at `packages/whisper` or `packages/transcript`
-- Change the export pipeline? Start at `packages/ffmpeg` or `packages/export`
+- Change the export pipeline? Start at `packages/ffmpeg`, `packages/captions`, or `packages/export`
 
 The deep dive — IPC contracts, database schema, dependency rules — is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
