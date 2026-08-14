@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { existsSync } from "node:fs"
 import { readFile, unlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
+import { randomUUID } from "node:crypto"
 
 export interface ExportOptions {
   binaryPath: string
@@ -16,7 +17,9 @@ export interface ExportOptions {
   reframe?: boolean
   cropX?: number // 0.0 (left) – 1.0 (right), default 0.5 (center)
   blurBg?: boolean // fill 9:16 background with blurred source instead of black bars
-  normalizeLoudness?: boolean // E6 — two-pass loudnorm to -14 LUFS
+  // E6 — two-pass loudnorm to -14 LUFS. Ignored when removeSegments spans more than one
+  // keep interval — that path routes through exportEpisode, which doesn't normalize.
+  normalizeLoudness?: boolean
   /** D7 — filler/silence segments to cut out of the clip before encoding. */
   removeSegments?: { startMs: number; endMs: number }[]
   onProgress?: (fraction: number) => void
@@ -250,11 +253,19 @@ function runWithProgress(
   })
 }
 
+/** Thrown by {@link exportClip} when removeSegments consumes the entire clip range. */
+export class EmptyClipError extends Error {
+  constructor() {
+    super("clip has no content left after removing filler/silence segments")
+    this.name = "EmptyClipError"
+  }
+}
+
 export async function exportClip(opts: ExportOptions): Promise<void> {
   // D7 — strip filler/silence segments within the clip before encoding.
   if (opts.removeSegments?.length) {
     const intervals = subtractSegments(opts.startMs, opts.endMs, opts.removeSegments)
-    if (intervals.length === 0) return
+    if (intervals.length === 0) throw new EmptyClipError()
     if (intervals.length > 1) {
       return exportEpisode({
         binaryPath: opts.binaryPath,
@@ -489,7 +500,7 @@ const AROUSAL_TIMEOUT_MS = 300_000
  * Returns [] on any failure — arousal signal is always optional.
  */
 export async function measureArousal(binaryPath: string, inputPath: string): Promise<number[]> {
-  const tmp = join(tmpdir(), `arousal-${Date.now()}.txt`)
+  const tmp = join(tmpdir(), `arousal-${randomUUID()}.txt`)
   const args = [
     "-hide_banner",
     "-nostats",
@@ -501,8 +512,11 @@ export async function measureArousal(binaryPath: string, inputPath: string): Pro
     "-ac",
     "1",
     "-af",
-    // reset=8000 at 8000 Hz → stats reset every second. Escaped colon in filtergraph.
-    `astats=metadata=1:reset=8000,ametadata=print:file=${escapeFiltergraphPath(tmp)}:key=lavfi.astats.Overall.RMS_level`,
+    // asetnsamples buckets audio into exact 1-second (8000-sample) frames; reset=1 resets the
+    // running stats every frame, so astats emits one RMS value per second, not per ~thousands
+    // of frames (reset counts frames, not samples). p=0 drops a trailing zero-padded partial
+    // second instead of reporting a skewed value for it.
+    `asetnsamples=n=8000:p=0,astats=metadata=1:reset=1,ametadata=print:file=${escapeFiltergraphPath(tmp)}:key=lavfi.astats.Overall.RMS_level`,
     "-f",
     "null",
     "-",
@@ -512,12 +526,18 @@ export async function measureArousal(binaryPath: string, inputPath: string): Pro
     const proc = spawn(binaryPath, args)
     let settled = false
 
+    // Drain stdout/stderr so ffmpeg never blocks on a full pipe buffer.
+    proc.stdout.on("data", () => {})
+    proc.stderr.on("data", () => {})
+
     const finish = (ok: boolean): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       if (!ok) {
-        resolve([])
+        unlink(tmp)
+          .catch(() => {})
+          .finally(() => resolve([]))
         return
       }
       readFile(tmp, "utf-8")

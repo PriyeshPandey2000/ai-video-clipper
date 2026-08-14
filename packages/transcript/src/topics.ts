@@ -217,7 +217,8 @@ export async function segmentTopics(
   let extractor: Extractor
   try {
     extractor = await getExtractor(modelsDir)
-  } catch {
+  } catch (err) {
+    console.warn("[topics] SBERT model unavailable, falling back to a single segment:", err)
     return [whole]
   }
 
@@ -228,7 +229,8 @@ export async function segmentTopics(
       { pooling: "mean", normalize: true },
     )
     embs = out.tolist()
-  } catch {
+  } catch (err) {
+    console.warn("[topics] embedding extraction failed, falling back to a single segment:", err)
     return [whole]
   }
 

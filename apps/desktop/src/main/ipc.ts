@@ -24,6 +24,7 @@ import {
   hasSubtitlesFilter,
   measureArousal,
   subtractSegments,
+  EmptyClipError,
 } from "@video-editor/ffmpeg"
 import {
   downloadModel,
@@ -501,19 +502,10 @@ export function registerIpcHandlers(): void {
 
         // Remap subtitle words to the output timeline accounting for removed segments.
         const clipWords = burnSubtitles
-          ? (() => {
-              const absolute = wordRows.filter(
-                (w) => w.endMs > clip.startMs && w.startMs < clip.endMs,
-              )
-              if (keepIntervals.length <= 1) {
-                return absolute.map((w) => ({
-                  ...w,
-                  startMs: Math.max(w.startMs, clip.startMs) - clip.startMs,
-                  endMs: Math.min(w.endMs, clip.endMs) - clip.startMs,
-                }))
-              }
-              return remapWordsToEpisodeTimeline(absolute, keepIntervals)
-            })()
+          ? remapWordsToEpisodeTimeline(
+              wordRows.filter((w) => w.endMs > clip.startMs && w.startMs < clip.endMs),
+              keepIntervals,
+            )
           : []
 
         let srtPath: string | undefined
@@ -550,6 +542,13 @@ export function registerIpcHandlers(): void {
                 progress,
               }),
           })
+        } catch (err) {
+          if (err instanceof EmptyClipError) {
+            // Filler/silence removal consumed the whole clip — nothing to export, leave it
+            // unmarked so it doesn't show up as a broken "exported" path.
+            continue
+          }
+          throw err
         } finally {
           if (assPath) await unlink(assPath).catch(() => {})
           if (srtPath) await unlink(srtPath).catch(() => {})

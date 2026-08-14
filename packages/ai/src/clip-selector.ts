@@ -250,8 +250,9 @@ function buildAnnotatedPrompt(
 // Borda count removes the order-sensitivity of a single listwise call: the same video should
 // produce the same top clips across runs, not a coin flip based on which example appeared first.
 const RERANK_SYSTEM =
-  "Re-rank the given clip candidates for viral short-form video potential. Return a JSON object " +
-  'with a "ranking" array containing every startSentence value in your preferred order, best first.'
+  "Re-rank the given clip candidates for viral short-form video potential. Each candidate is " +
+  'shown with an explicit "id=N" field. Return a JSON object with a "ranking" array containing ' +
+  "every id value — not list positions — in your preferred order, best first."
 
 function shuffle<T>(arr: T[]): T[] {
   const out = [...arr]
@@ -265,14 +266,14 @@ function shuffle<T>(arr: T[]): T[] {
 async function reRankWithBorda(client: AiClient, candidates: Candidate[]): Promise<Candidate[]> {
   if (candidates.length <= 1) return candidates
 
+  // Key on array position, not startSentence — the schema doesn't guarantee unique
+  // startSentence values across candidates.
   const tailRank = candidates.length
-  const pass1Rank = new Map(candidates.map((c, i) => [c.startSentence, i]))
+  const indexed = candidates.map((c, id) => ({ c, id }))
 
-  const shuffled = shuffle(candidates)
+  const shuffled = shuffle(indexed)
   const schema = zod.object({ ranking: zod.array(zod.number().int()) })
-  const prompt = shuffled
-    .map((c, i) => `${i + 1}. #${c.startSentence}–${c.endSentence} "${c.title}" — ${c.reason}`)
-    .join("\n")
+  const prompt = shuffled.map(({ c, id }) => `id=${id} "${c.title}" — ${c.reason}`).join("\n")
 
   let pass2Ranking: number[]
   try {
@@ -287,17 +288,17 @@ async function reRankWithBorda(client: AiClient, candidates: Candidate[]): Promi
   }
 
   // Build pass 2 rank map; unmentioned candidates get tail rank (Borda tail-rank rule).
-  const pass2Rank = new Map(candidates.map((c) => [c.startSentence, tailRank]))
+  const pass2Rank = new Map<number, number>(indexed.map(({ id }) => [id, tailRank]))
   for (let i = 0; i < pass2Ranking.length; i++) {
-    const sent = pass2Ranking[i]
-    if (sent !== undefined && pass2Rank.has(sent)) pass2Rank.set(sent, i)
+    const id = pass2Ranking[i]
+    if (id !== undefined && pass2Rank.has(id)) pass2Rank.set(id, i)
   }
 
-  return candidates
-    .map((c) => ({
+  return indexed
+    .map(({ c, id }) => ({
       c,
-      borda:
-        (pass1Rank.get(c.startSentence) ?? tailRank) + (pass2Rank.get(c.startSentence) ?? tailRank),
+      // pass1 rank is simply the candidate's position in the original (already-ranked) list.
+      borda: id + (pass2Rank.get(id) ?? tailRank),
     }))
     .sort((a, b) => a.borda - b.borda)
     .map(({ c }) => c)
