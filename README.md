@@ -7,7 +7,7 @@ Open-source alternative to OpusClip, Descript & Submagic. Turn long recordings i
 ## What it does
 
 - Transcribes video locally via Whisper (no data leaves your machine)
-- AI detects the best clips with scores and reasons
+- AI detects the best clips with reasons; the app ranks them with display scores
 - Review, trim, and approve clips in a visual editor
 - Export clips as 9:16 vertical video with burned-in subtitles
 - Export full episode with filler words and silences removed
@@ -57,7 +57,7 @@ flowchart LR
 
 1. Drop a video file into the app
 2. Pick a Whisper model and click Transcribe
-3. AI suggests the best clips with scores and reasons — review and approve
+3. AI suggests the best clips with reasons; the app assigns display scores — review and approve
 4. Toggle 9:16 reframe if needed, drag to set crop position
 5. Click Export Clips or Export Episode
 
