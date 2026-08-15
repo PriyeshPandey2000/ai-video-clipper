@@ -168,7 +168,7 @@ function overlapRatio(a: ClipSuggestion, b: ClipSuggestion): number {
 // seeing raw audio. No model needed: speech rate from timestamps, hooks from regex, filler
 // from the existing word set.
 const HOOK_RE =
-  /(?:\?$)|(?:\d)|(?:\b(?:best|worst|biggest|most|least|first|last|only|never|always|ever)\b)|(?:\b(?:nobody|don't tell|secret|hidden|misconception|myth)\b)|(?:\b(?:here.?s why|that.?s why|turns out|here.?s the thing|the truth is)\b)/i
+  /(?:\?$)|(?:\b\d{2,})|(?:\b(?:best|worst|biggest|most|least|first|last|only|never|always|ever)\b)|(?:\b(?:nobody|don't tell|secret|hidden|misconception|myth)\b)|(?:\b(?:here.?s why|that.?s why|turns out|here.?s the thing|the truth is)\b)/i
 const FILLER_SET = new Set([
   "um",
   "uh",
