@@ -136,7 +136,7 @@ Advances clip start up to 2 sentences to find a hook sentence (HOOK_RE). Adds "w
 Detects interview / tutorial / solo from question ratio + keyword heuristics. Appends a type-specific rubric suffix to the LLM system prompt per chunk.
 
 **#46 — Recall ablation** (`scripts/recall-ablation.ts`)
-Sends full unchunked transcript to LLM in one call, compares against pipeline clips by IoU ≥ 50%.
+Sends full unchunked transcript to LLM in one call, compares against pipeline clips using the same overlap metric as production (`intersection / shorter-clip-duration`, ≥ 50%). Requires Node ≥22.13 — see the prerequisite comment at the top of the script; the repo's own `.node-version` (20) is unaffected since this is a standalone tool, not part of the app runtime.
 Run: `GROQ_API_KEY=... pnpm recall-ablation <projectId>`
 
 **B3 — Chunk overlap increase** (`packages/ai/src/clip-selector.ts`, CHUNK_OVERLAP_MS)

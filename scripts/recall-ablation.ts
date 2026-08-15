@@ -3,7 +3,12 @@
 // compares against pipeline clips, and measures what % of pipeline clips are recalled.
 // Gates B12: need ≥90% recall before enabling the pre-filter.
 //
-// Requires Node ≥22 (built-in sqlite) and GROQ_API_KEY env var.
+// Requires Node ≥22.13 (or ≥23.4) and GROQ_API_KEY env var. This is higher than the repo's
+// .node-version (20) — node:sqlite needs 22.5+, --experimental-strip-types needs 22.6+, and
+// 22.6–22.12 additionally requires the now-removed --experimental-sqlite flag. Run this script
+// with a separately-installed newer Node (e.g. `nvm exec 22 -- pnpm recall-ablation ...`); it's
+// a standalone analysis tool, not part of the app's runtime, so the repo-wide Node version is
+// intentionally left at 20 for Electron compatibility.
 //
 // Usage:
 //   node --experimental-strip-types scripts/recall-ablation.ts [projectId]
@@ -73,14 +78,17 @@ const CandidateSchema = z.object({
 
 const ResponseSchema = z.object({ clips: z.array(CandidateSchema).max(50) })
 
+// Matches packages/ai/src/clip-selector.ts overlapRatio exactly — intersection over the SHORTER
+// clip's duration, not IoU. Using a different denominator here would make this script's recall
+// number (which gates the B12 go/no-go decision) measure something the pipeline doesn't.
 function overlapRatio(
   a: { startMs: number; endMs: number },
   b: { startMs: number; endMs: number },
 ): number {
   const inter = Math.min(a.endMs, b.endMs) - Math.max(a.startMs, b.startMs)
   if (inter <= 0) return 0
-  const union = Math.max(a.endMs, b.endMs) - Math.min(a.startMs, b.startMs)
-  return inter / union
+  const shorter = Math.min(a.endMs - a.startMs, b.endMs - b.startMs)
+  return inter / shorter
 }
 
 function formatMs(ms: number): string {
@@ -180,6 +188,14 @@ async function main() {
   const words = wordRows.map(toWord)
   const sentences = buildSentences(words)
   console.log(`Sentences built : ${sentences.length}`)
+
+  if (sentences.length === 0) {
+    console.error(
+      `No sentences built for project "${projectId}" (words present but none formed a sentence).`,
+    )
+    db.close()
+    process.exit(1)
+  }
 
   // Full transcript prompt — all sentences, no chunking
   const firstIdx = sentences[0]!.index

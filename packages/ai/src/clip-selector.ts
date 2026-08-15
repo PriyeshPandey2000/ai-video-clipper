@@ -441,7 +441,7 @@ export async function selectClips(
 
   for (const candidate of ranked) {
     // D5 — try to trim opening forward to a hook sentence before boundary refinement.
-    const { adjustedStart, noHook } = hookFirstAdjust(
+    const { adjustedStart } = hookFirstAdjust(
       sentenceByIndex,
       candidate.startSentence,
       candidate.endSentence,
@@ -458,6 +458,13 @@ export async function selectClips(
       rejected.push({ title: candidate.title, reasons: gate.reasons })
       continue
     }
+
+    // D2's backward expansion can walk the boundary's actual start earlier than adjustedStart
+    // (e.g. the hook sentence itself opens with a dangling reference like "So" or "This"), which
+    // would make a stale noHook computed at adjustedStart lie about what the clip really opens
+    // on. Re-check HOOK_RE against the sentence the clip actually starts on.
+    const finalOpener = sentenceByIndex.get(boundary.startSentenceIndex)
+    const noHook = !finalOpener || !HOOK_RE.test(finalOpener.text)
 
     const suggestion: ClipSuggestion = {
       title: candidate.title,

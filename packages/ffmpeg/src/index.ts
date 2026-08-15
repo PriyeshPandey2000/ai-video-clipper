@@ -256,13 +256,19 @@ function runWithProgress(
 }
 
 function escapeDrawtextText(text: string): string {
-  // Filtergraph level-0 escaping for drawtext text= option value.
-  // Process in order: backslash first, then chars that break option parsing.
+  // Two escaping levels stack here: drawtext's own option-value level (colon, percent) and the
+  // outer filtergraph level (comma, semicolon, brackets — these delimit filters/chains/links and
+  // will otherwise truncate or misparse the whole -vf chain, not just the text). Backslash first,
+  // since every other replacement below introduces literal backslashes that must survive as-is.
   return text
     .replace(/\\/g, "\\\\")
     .replace(/'/g, "’") // RIGHT SINGLE QUOTATION MARK — visually identical, avoids quote-escaping complexity
     .replace(/:/g, "\\:")
     .replace(/%/g, "%%")
+    .replace(/,/g, "\\,")
+    .replace(/;/g, "\\;")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]")
 }
 
 function buildDrawtextFilter(text: string): string {
