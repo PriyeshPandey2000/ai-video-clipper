@@ -31,7 +31,7 @@ const DB_PATH = join(
   "db.sqlite",
 )
 
-// Clip overlap threshold: pipeline clip "recalled" if ref clip overlaps by ≥50% IoU.
+// Clip overlap threshold: pipeline clip "recalled" if ref clip overlaps by ≥50% (see overlapRatio).
 const OVERLAP_THRESHOLD = 0.5
 // B12 gate: need ≥90% recall to safely pre-filter.
 const RECALL_GO_THRESHOLD = 0.9
