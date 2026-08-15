@@ -3,12 +3,12 @@ import type { z } from "zod"
 import { z as zod } from "zod"
 import type { Word, Sentence } from "@video-editor/types"
 import {
-  sentencesToPrompt,
   refineClipBoundaries,
   passesQualityGate,
   MIN_CLIP_MS,
   MAX_CLIP_MS,
 } from "@video-editor/transcript"
+import type { TopicSegment } from "@video-editor/transcript"
 
 export interface ClipSuggestion {
   title: string
@@ -49,8 +49,17 @@ type Candidate = zod.infer<typeof CandidateSchema>
 
 const SYSTEM_PROMPT = `You are a short-form video editor selecting clips from a long transcript.
 
-The transcript is given as numbered sentences:
-#12 [10500-14200] Hello everyone, welcome to today's episode
+The transcript is given as numbered sentences with optional signal tags in {braces}:
+#12 [10500-14200] {hook,fast} Nobody expected this outcome.
+#13 [14200-16000] So then everything changed.
+
+Signal tags — use as extra evidence, not hard rules:
+  {hook}        — question, number, superlative, reveal, or contrarian framing detected
+  {fast}        — speech rate significantly above speaker's rolling baseline (excitement)
+  {slow}        — speech rate below baseline (deliberate emphasis or emotional weight)
+  {loud}        — audio energy significantly above speaker's rolling baseline (emotional peak)
+  {burst}       — sentence follows a notable silence (>800ms gap) — strong clip start point
+  {filler:high} — >15% filler words (um/uh/like/basically…) — weaker content
 
 Return clips as SENTENCE INDEX RANGES. Never write a timestamp — the numbers in brackets are for
 your reference only, and any time value you output is discarded.
@@ -78,16 +87,46 @@ worse than returning nothing.
 Return JSON with a "clips" array. Each item: startSentence, endSentence, title, reason, strong,
 platform ("tiktok" | "reels" | "shorts" | "generic").`
 
-/** Wave 1 stopgap chunking. Replaced by topic-coherent chunking (C5) once B2 lands. */
+// Only chunk long-form content; short videos go to the LLM in one call.
 const CHUNK_THRESHOLD_MS = 30 * 60 * 1000
 const CHUNK_SIZE_MS = 20 * 60 * 1000
 const CHUNK_OVERLAP_MS = 60 * 1000
 
-function chunkSentences(sentences: Sentence[]): Sentence[][] {
+/**
+ * C5: topic-coherent chunking. Groups topic segments from B2 into context-sized calls so
+ * no candidate sits in the "lost-in-the-middle" dead zone of a long context window.
+ *
+ * Falls back to fixed-time chunking when segmentation returned only one segment (either the
+ * content was too uniform or the ONNX model was unavailable).
+ */
+function topicsToChunks(sentences: Sentence[], topics: TopicSegment[]): Sentence[][] {
   if (sentences.length === 0) return []
   const totalMs = sentences[sentences.length - 1]!.endMs - sentences[0]!.startMs
   if (totalMs <= CHUNK_THRESHOLD_MS) return [sentences]
 
+  if (topics.length <= 1) return fixedChunks(sentences)
+
+  const chunks: Sentence[][] = []
+  let current: Sentence[] = []
+  let currentMs = 0
+
+  for (const seg of topics) {
+    const segMs = seg.endMs - seg.startMs
+    if (current.length > 0 && currentMs + segMs > CHUNK_SIZE_MS) {
+      chunks.push(current)
+      current = [...seg.sentences]
+      currentMs = segMs
+    } else {
+      current.push(...seg.sentences)
+      currentMs += segMs
+    }
+  }
+  if (current.length > 0) chunks.push(current)
+  return chunks
+}
+
+/** Fallback for when topic segmentation found no boundaries (uniform content or model unavailable). */
+function fixedChunks(sentences: Sentence[]): Sentence[][] {
   const chunks: Sentence[][] = []
   let cursor = 0
   while (cursor < sentences.length) {
@@ -97,12 +136,9 @@ function chunkSentences(sentences: Sentence[]): Sentence[][] {
     chunks.push(sentences.slice(cursor, Math.max(end, cursor + 1)))
     if (end >= sentences.length) break
 
-    // Step back so the next chunk overlaps — a clip straddling the seam still appears whole once.
     const nextStartMs = sentences[end]!.startMs - CHUNK_OVERLAP_MS
     let next = end
     while (next > cursor + 1 && sentences[next - 1]!.startMs >= nextStartMs) next--
-    // Guard: a single sentence longer than CHUNK_SIZE_MS leaves `end === cursor`, and without
-    // this the cursor never advances and the main process hangs.
     cursor = Math.max(next, cursor + 1)
   }
   return chunks
@@ -128,13 +164,158 @@ function overlapRatio(a: ClipSuggestion, b: ClipSuggestion): number {
   return (end - start) / Math.min(a.endMs - a.startMs, b.endMs - b.startMs)
 }
 
-async function selectFromChunk(client: AiClient, chunk: Sentence[]): Promise<Candidate[]> {
+// B7/B8/B10 — local signals injected as prompt metadata so the LLM can weight them without
+// seeing raw audio. No model needed: speech rate from timestamps, hooks from regex, filler
+// from the existing word set.
+const HOOK_RE =
+  /(?:\?$)|(?:\d)|(?:\b(?:best|worst|biggest|most|least|first|last|only|never|always|ever)\b)|(?:\b(?:nobody|don't tell|secret|hidden|misconception|myth)\b)|(?:\b(?:here.?s why|that.?s why|turns out|here.?s the thing|the truth is)\b)/i
+const FILLER_SET = new Set([
+  "um",
+  "uh",
+  "uhm",
+  "hmm",
+  "like",
+  "basically",
+  "literally",
+  "actually",
+  "right",
+  "so",
+  "yeah",
+])
+const WPS_WINDOW = 5
+
+function buildAnnotatedPrompt(
+  chunk: Sentence[],
+  words: Word[],
+  arousalPerSec: number[] = [],
+): string {
+  const wpsHistory: number[] = []
+  const rmsHistory: number[] = []
+  let prevEndMs = chunk[0]?.startMs ?? 0
+
+  return chunk
+    .map((s) => {
+      const wordCount = s.lastWordIndex - s.firstWordIndex + 1
+      const durSec = Math.max((s.endMs - s.startMs) / 1000, 0.1)
+      const wps = wordCount / durSec
+      const wpsBaseline =
+        wpsHistory.length > 0 ? wpsHistory.reduce((a, b) => a + b, 0) / wpsHistory.length : wps
+      wpsHistory.push(wps)
+      if (wpsHistory.length > WPS_WINDOW) wpsHistory.shift()
+
+      const sentWords = words.slice(s.firstWordIndex, s.lastWordIndex + 1)
+      const fillerCount = sentWords.filter((w) =>
+        FILLER_SET.has(w.text.toLowerCase().replace(/[.,!?]+$/, "")),
+      ).length
+
+      // B4: loud tag from per-second audio RMS
+      let loudTag = ""
+      if (arousalPerSec.length > 0) {
+        const startSec = Math.floor(s.startMs / 1000)
+        const endSec = Math.max(startSec + 1, Math.ceil(s.endMs / 1000))
+        const sentRms = arousalPerSec.slice(startSec, endSec)
+        if (sentRms.length > 0) {
+          const meanRms = sentRms.reduce((a, b) => a + b, 0) / sentRms.length
+          const rmsBaseline =
+            rmsHistory.length > 0
+              ? rmsHistory.reduce((a, b) => a + b, 0) / rmsHistory.length
+              : meanRms
+          rmsHistory.push(meanRms)
+          if (rmsHistory.length > WPS_WINDOW) rmsHistory.shift()
+          if (meanRms > rmsBaseline + 3) loudTag = "loud"
+        }
+      }
+
+      // B6: burst tag — sentence follows a notable silence (>800ms gap)
+      const gapMs = s.startMs - prevEndMs
+      const burstTag = gapMs > 800 ? "burst" : ""
+      prevEndMs = s.endMs
+
+      const tags = [
+        HOOK_RE.test(s.text) ? "hook" : "",
+        wps > wpsBaseline * 1.3 ? "fast" : "",
+        wps < wpsBaseline * 0.7 ? "slow" : "",
+        loudTag,
+        burstTag,
+        wordCount > 0 && fillerCount / wordCount > 0.15 ? "filler:high" : "",
+      ].filter(Boolean)
+
+      const tagStr = tags.length > 0 ? ` {${tags.join(",")}}` : ""
+      return `#${s.index} [${s.startMs}-${s.endMs}]${tagStr} ${s.text}`
+    })
+    .join("\n")
+}
+
+// C2 — listwise ranking stability. Shuffling the list before a second pass and merging with
+// Borda count removes the order-sensitivity of a single listwise call: the same video should
+// produce the same top clips across runs, not a coin flip based on which example appeared first.
+const RERANK_SYSTEM =
+  "Re-rank the given clip candidates for viral short-form video potential. Each candidate is " +
+  'shown with an explicit "id=N" field. Return a JSON object with a "ranking" array containing ' +
+  "every id value — not list positions — in your preferred order, best first."
+
+function shuffle<T>(arr: T[]): T[] {
+  const out = [...arr]
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[out[i], out[j]] = [out[j]!, out[i]!]
+  }
+  return out
+}
+
+async function reRankWithBorda(client: AiClient, candidates: Candidate[]): Promise<Candidate[]> {
+  if (candidates.length <= 1) return candidates
+
+  // Key on array position, not startSentence — the schema doesn't guarantee unique
+  // startSentence values across candidates.
+  const tailRank = candidates.length
+  const indexed = candidates.map((c, id) => ({ c, id }))
+
+  const shuffled = shuffle(indexed)
+  const schema = zod.object({ ranking: zod.array(zod.number().int()) })
+  const prompt = shuffled.map(({ c, id }) => `id=${id} "${c.title}" — ${c.reason}`).join("\n")
+
+  let pass2Ranking: number[]
+  try {
+    const result = await client.generateObject({
+      prompt,
+      schema: schema as unknown as z.ZodType<{ ranking: number[] }>,
+      system: RERANK_SYSTEM,
+    })
+    pass2Ranking = result.ranking
+  } catch {
+    return candidates
+  }
+
+  // Build pass 2 rank map; unmentioned candidates get tail rank (Borda tail-rank rule).
+  const pass2Rank = new Map<number, number>(indexed.map(({ id }) => [id, tailRank]))
+  for (let i = 0; i < pass2Ranking.length; i++) {
+    const id = pass2Ranking[i]
+    if (id !== undefined && pass2Rank.has(id)) pass2Rank.set(id, i)
+  }
+
+  return indexed
+    .map(({ c, id }) => ({
+      c,
+      // pass1 rank is simply the candidate's position in the original (already-ranked) list.
+      borda: id + (pass2Rank.get(id) ?? tailRank),
+    }))
+    .sort((a, b) => a.borda - b.borda)
+    .map(({ c }) => c)
+}
+
+async function selectFromChunk(
+  client: AiClient,
+  chunk: Sentence[],
+  words: Word[],
+  arousalPerSec: number[] = [],
+): Promise<Candidate[]> {
   const schema = zod.object({ clips: zod.array(CandidateSchema).max(20) })
   const firstIndex = chunk[0]!.index
   const lastIndex = chunk[chunk.length - 1]!.index
   const prompt = `Sentences #${firstIndex} to #${lastIndex}.
 
-${sentencesToPrompt(chunk)}
+${buildAnnotatedPrompt(chunk, words, arousalPerSec)}
 
 Select every clip worth posting, best first. Each clip should span roughly ${MIN_CLIP_MS / 1000}–${MAX_CLIP_MS / 1000} seconds of transcript time.
 Only use sentence indices between ${firstIndex} and ${lastIndex}.
@@ -145,21 +326,26 @@ Return fewer clips — or an empty array — rather than padding with weak ones.
     schema: schema as unknown as z.ZodType<{ clips: Candidate[] }>,
     system: SYSTEM_PROMPT,
   })
-  return result.clips.filter((c) => c.startSentence >= firstIndex && c.endSentence <= lastIndex)
+  const generated = result.clips.filter(
+    (c) => c.startSentence >= firstIndex && c.endSentence <= lastIndex,
+  )
+  return reRankWithBorda(client, generated)
 }
 
 export async function selectClips(
   client: AiClient,
   words: Word[],
   sentences: Sentence[],
+  topics: TopicSegment[] = [],
   maxClips = 10,
+  arousalPerSec: number[] = [],
 ): Promise<ClipSelectionResult> {
   if (sentences.length === 0) return { clips: [], rejected: [] }
 
-  const chunks = chunkSentences(sentences)
+  const chunks = topicsToChunks(sentences, topics)
   const perChunk: Candidate[][] = []
   for (const chunk of chunks) {
-    perChunk.push(await selectFromChunk(client, chunk))
+    perChunk.push(await selectFromChunk(client, chunk, words, arousalPerSec))
   }
 
   const clips: ClipSuggestion[] = []

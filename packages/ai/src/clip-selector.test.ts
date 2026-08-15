@@ -52,13 +52,16 @@ function mockClient(handler: Handler, prompts: string[] = []): AiClient {
   }
 }
 
-function range(prompt: string): [number, number] {
-  const m = prompt.match(/Sentences #(\d+) to #(\d+)/)!
+function range(prompt: string): [number, number] | null {
+  const m = prompt.match(/Sentences #(\d+) to #(\d+)/)
+  if (!m) return null
   return [Number(m[1]), Number(m[2])]
 }
 
 const twoPerChunk: Handler = (prompt) => {
-  const [lo, hi] = range(prompt)
+  const r = range(prompt)
+  if (!r) return { ranking: [] } // re-ranking call — return empty so reRankWithBorda falls back
+  const [lo, hi] = r
   return {
     clips: [
       {
@@ -81,13 +84,14 @@ const twoPerChunk: Handler = (prompt) => {
   }
 }
 
-describe("chunking (C5 stopgap)", () => {
+describe("chunking — fixed fallback (no topics)", () => {
   it("splits long transcripts into overlapping chunks covering the whole video", async () => {
     const prompts: string[] = []
     await selectClips(mockClient(twoPerChunk, prompts), words, sentences)
-    const ranges = prompts.map(range)
+    // Filter to generation prompts only — re-ranking prompts have a different format (C2).
+    const ranges = prompts.map(range).filter((r): r is [number, number] => r !== null)
 
-    expect(prompts.length).toBeGreaterThan(1)
+    expect(ranges.length).toBeGreaterThan(1)
     expect(ranges[0]![0]).toBe(0)
     expect(ranges.at(-1)![1]).toBe(sentences.length - 1)
     expect(ranges[1]![0]).toBeLessThan(ranges[0]![1]) // overlap
@@ -130,7 +134,9 @@ describe("output invariants", () => {
 describe("C1 — hallucinated timestamps are structurally impossible", () => {
   it("ignores any millisecond field the model invents", async () => {
     const liar: Handler = (prompt) => {
-      const [lo, hi] = range(prompt)
+      const r = range(prompt)
+      if (!r) return { ranking: [] }
+      const [lo, hi] = r
       return {
         clips: [
           {
@@ -158,7 +164,9 @@ describe("C1 — hallucinated timestamps are structurally impossible", () => {
 describe("B13 — variable clip count", () => {
   it("returns zero clips when nothing is marked strong, with reasons", async () => {
     const weak: Handler = (prompt) => {
-      const [lo, hi] = range(prompt)
+      const r = range(prompt)
+      if (!r) return { ranking: [] }
+      const [lo, hi] = r
       return {
         clips: [
           {
