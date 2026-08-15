@@ -507,16 +507,13 @@ export async function measureArousal(binaryPath: string, inputPath: string): Pro
     "-i",
     inputPath,
     "-vn",
-    "-ar",
-    "8000",
-    "-ac",
-    "1",
     "-af",
-    // asetnsamples buckets audio into exact 1-second (8000-sample) frames; reset=1 resets the
-    // running stats every frame, so astats emits one RMS value per second, not per ~thousands
-    // of frames (reset counts frames, not samples). p=0 drops a trailing zero-padded partial
-    // second instead of reporting a skewed value for it.
-    `asetnsamples=n=8000:p=0,astats=metadata=1:reset=1,ametadata=print:file=${escapeFiltergraphPath(tmp)}:key=lavfi.astats.Overall.RMS_level`,
+    // aresample=8000 normalises sample rate INSIDE the filter chain so asetnsamples=n=8000
+    // always produces exactly one second of audio per frame regardless of the source rate.
+    // (-ar on the output option applies AFTER the filter chain, not before.)
+    // reset=1 resets astats once per frame → one RMS value per second.
+    // p=0 drops a trailing partial second to avoid a skewed final value.
+    `aresample=8000,aformat=channel_layouts=mono,asetnsamples=n=8000:p=0,astats=metadata=1:reset=1,ametadata=print:file=${escapeFiltergraphPath(tmp)}:key=lavfi.astats.Overall.RMS_level`,
     "-f",
     "null",
     "-",
