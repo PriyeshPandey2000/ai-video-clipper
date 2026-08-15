@@ -260,15 +260,22 @@ function escapeDrawtextText(text: string): string {
   // outer filtergraph level (comma, semicolon, brackets — these delimit filters/chains/links and
   // will otherwise truncate or misparse the whole -vf chain, not just the text). Backslash first,
   // since every other replacement below introduces literal backslashes that must survive as-is.
-  return text
-    .replace(/\\/g, "\\\\")
-    .replace(/'/g, "’") // RIGHT SINGLE QUOTATION MARK — visually identical, avoids quote-escaping complexity
-    .replace(/:/g, "\\:")
-    .replace(/%/g, "%%")
-    .replace(/,/g, "\\,")
-    .replace(/;/g, "\\;")
-    .replace(/\[/g, "\\[")
-    .replace(/\]/g, "\\]")
+  return (
+    text
+      .replace(/\\/g, "\\\\")
+      // Deliberately NOT backslash-escaped (`\'`). Verified against the app's bundled ffmpeg binary:
+      // `\'` renders a blank frame (no text at all), `\\'` renders with the apostrophe silently
+      // dropped. FFmpeg's drawtext quote escaping is notoriously inconsistent across its own
+      // documented "levels" — even the official docs recommend `textfile=` instead. Substituting
+      // the lookalike U+2019 is the only one of these that renders correctly.
+      .replace(/'/g, "’")
+      .replace(/:/g, "\\:")
+      .replace(/%/g, "%%")
+      .replace(/,/g, "\\,")
+      .replace(/;/g, "\\;")
+      .replace(/\[/g, "\\[")
+      .replace(/\]/g, "\\]")
+  )
 }
 
 function buildDrawtextFilter(text: string): string {
