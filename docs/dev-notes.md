@@ -147,6 +147,41 @@ lsof -ti:9315 | xargs kill -9 2>/dev/null
 `ar >= 1.2` → proceed.
 Not `ar <= 1` — square (1:1) should warn, not block.
 
+## Packaging (electron-builder)
+
+`apps/desktop/package.json` `build` field configures mac (dmg/zip)/win (nsis)/linux (AppImage) targets.
+
+**`electronVersion` is pinned explicitly** (currently `32.3.3`, must match the installed `electron` devDependency version). The repo's `.npmrc` sets `node-linker=hoisted`, so `electron` lives in the root `node_modules`, not `apps/desktop/node_modules` — electron-builder's version auto-detection can't find it there and fails with "Cannot compute electron version from installed node modules." Pinning sidesteps the lookup entirely. **Bump this value whenever the `electron` devDependency version changes**, or packaging breaks silently until someone hits this error.
+
+### Commands
+
+```bash
+pnpm --filter @video-editor/desktop package:dir    # unpacked app, no signing — validates config, use for local checks
+pnpm --filter @video-editor/desktop package:mac    # dmg + zip
+pnpm --filter @video-editor/desktop package:win    # nsis installer
+pnpm --filter @video-editor/desktop package:linux  # AppImage
+```
+
+### Code signing + notarization (mac)
+
+Not wired up yet — no certificate, no Apple credentials configured anywhere in this repo. Running `package:mac` today produces an **unsigned** app; macOS Gatekeeper will block it on any machine other than the one that built it.
+
+electron-builder handles signing and notarization **automatically** once the right environment variables are present — no custom `afterSign` hook needed, don't write one. It notarizes by default whenever a valid signing identity was used, unless explicitly disabled via `"mac": { "notarize": false }` (not currently set, so once signing works, notarization will trigger automatically too).
+
+Env vars electron-builder reads (set locally in `apps/desktop/.env.local`, or as GitHub Actions repo secrets for CI — never commit these or paste raw values into chat):
+
+| Var                           | Purpose                                                                                                                                                                                |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CSC_LINK`                    | Path to (or base64-encoded) `.p12` Developer ID Application certificate                                                                                                                |
+| `CSC_KEY_PASSWORD`            | Password for the `.p12`                                                                                                                                                                |
+| `APPLE_ID`                    | Apple ID email for the developer account                                                                                                                                               |
+| `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password generated at appleid.apple.com (not the account password) — or use `APPLE_API_KEY`/`APPLE_API_KEY_ID`/`APPLE_API_ISSUER` instead, Apple's newer preferred method |
+| `APPLE_TEAM_ID`               | Apple Developer team ID                                                                                                                                                                |
+
+Windows: `WIN_CSC_LINK` + `WIN_CSC_KEY_PASSWORD`, same idea. Not set up — Windows builds ship unsigned (triggers a SmartScreen warning, not a hard block).
+
+`apps/desktop/build/entitlements.mac.plist` — hardened runtime entitlements. `disable-library-validation` is required because `better-sqlite3` and `onnxruntime-node` are unsigned native binaries loaded at runtime; without it, hardened runtime refuses to load them even on a correctly signed app. `allow-jit`/`allow-unsigned-executable-memory` are required for V8/Node's JIT under hardened runtime. `network.client` for outbound API calls (Groq, model downloads).
+
 ## Wave 3 clip-selection decisions
 
 ### Implemented
