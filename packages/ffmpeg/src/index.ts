@@ -317,6 +317,7 @@ export async function exportClip(opts: ExportOptions): Promise<void> {
         ...(opts.assPath ? { assPath: opts.assPath, fontsDir: opts.fontsDir } : {}),
         ...(opts.srtPath && !opts.assPath ? { srtPath: opts.srtPath } : {}),
         ...(opts.reframe ? { reframe: true, cropX: opts.cropX, blurBg: opts.blurBg } : {}),
+        ...(opts.hookText ? { hookText: opts.hookText } : {}),
         ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
       })
     }
@@ -352,7 +353,6 @@ export async function exportClip(opts: ExportOptions): Promise<void> {
       : null
 
   // E5 — hook text overlay: visible for first 3 s with a 0.5 s fade-out starting at 2.5 s.
-  // Not applied when D7 routes through exportEpisode (multi-interval concat path).
   const drawtextFilter = opts.hookText ? buildDrawtextFilter(opts.hookText) : null
 
   if (opts.reframe && opts.blurBg) {
@@ -427,6 +427,8 @@ export interface EpisodeExportOptions {
   reframe?: boolean
   cropX?: number
   blurBg?: boolean
+  /** E5 — text burned into the first ~3 s of the exported (concatenated) clip with a fade-out. */
+  hookText?: string
   onProgress?: (fraction: number) => void
 }
 
@@ -452,6 +454,7 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
       ...(opts.assPath ? { assPath: opts.assPath, fontsDir: opts.fontsDir } : {}),
       ...(opts.srtPath && !opts.assPath ? { srtPath: opts.srtPath } : {}),
       ...(opts.reframe ? { reframe: true, cropX: opts.cropX, blurBg: opts.blurBg } : {}),
+      ...(opts.hookText ? { hookText: opts.hookText } : {}),
       ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
     })
     return
@@ -483,15 +486,23 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
   })
 
   const n = opts.keepIntervals.length
-  const finalV = subtitleFilter ? "outvsub" : "outv"
 
   const videoInputs = opts.keepIntervals.map((_, i) => `[v${i}]`).join("")
   const audioInputs = opts.keepIntervals.map((_, i) => `[a${i}]`).join("")
   filterParts.push(`${videoInputs}concat=n=${n}:v=1:a=0[outv]`)
   filterParts.push(`${audioInputs}concat=n=${n}:v=0:a=1[outa]`)
 
+  // Each segment already resets to its own PTS=0 via setpts=PTS-STARTPTS before concat, so the
+  // concatenated [outv] stream's own timeline starts at 0 — chaining subtitles then drawtext onto
+  // it keeps both keyed to "seconds into the final exported clip", same as the single-interval path.
+  let finalV = "outv"
   if (subtitleFilter) {
     filterParts.push(`[outv]${subtitleFilter}[outvsub]`)
+    finalV = "outvsub"
+  }
+  if (opts.hookText) {
+    filterParts.push(`[${finalV}]${buildDrawtextFilter(opts.hookText)}[outvhook]`)
+    finalV = "outvhook"
   }
 
   const episodeArgs = [

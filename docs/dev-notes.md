@@ -84,8 +84,23 @@ env -u ELECTRON_RUN_AS_NODE pnpm run dev:e2e &> /tmp/e2e-dev.log &
 **Step 5** — Wait for CDP:
 
 ```bash
-for i in $(seq 1 30); do curl -s http://localhost:9315/json/version > /dev/null 2>&1 && echo "ready" && break; sleep 2; done
+ready=false
+for i in $(seq 1 30); do
+  response=$(curl -fsS --max-time 2 http://localhost:9315/json/version 2>/dev/null)
+  if [ -n "$response" ] && echo "$response" | grep -q "webSocketDebuggerUrl"; then
+    ready=true
+    echo "ready"
+    break
+  fi
+  sleep 2
+done
+if [ "$ready" != true ]; then
+  echo "CDP did not become ready" >&2
+  exit 1
+fi
 ```
+
+`-f` rejects non-2xx responses, `--max-time 2` bounds each attempt so one hung request can't stall the whole loop past the 30-attempt budget, and the `webSocketDebuggerUrl` check confirms the response is actually CDP and not some other process answering on that port.
 
 **Step 6** — Connect via Node:
 
@@ -93,13 +108,20 @@ for i in $(seq 1 30); do curl -s http://localhost:9315/json/version > /dev/null 
 const { chromium } = require("./node_modules/@playwright/test")
 const browser = await chromium.connectOverCDP("http://localhost:9315")
 const ctx = browser.contexts()[0]
+
+// createWindow() fires loadURL()/loadFile() without awaiting it, so the renderer may not have
+// navigated yet even though the CDP port is already open — poll instead of checking once.
 let page
-for (const p of ctx.pages()) {
-  if (p.url().includes("localhost")) {
-    page = p
-    break
+for (let attempt = 0; attempt < 25 && !page; attempt++) {
+  for (const p of ctx.pages()) {
+    if (p.url().includes("localhost")) {
+      page = p
+      break
+    }
   }
+  if (!page) await new Promise((r) => setTimeout(r, 200))
 }
+if (!page) throw new Error("No localhost page found — app may have crashed before loading")
 await page.screenshot({ path: "/tmp/test.png" })
 await browser.close()
 ```
