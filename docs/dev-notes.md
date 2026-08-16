@@ -153,6 +153,10 @@ Not `ar <= 1` — square (1:1) should warn, not block.
 
 **`electronVersion` is pinned explicitly** (currently `32.3.3`, must match the installed `electron` devDependency version). The repo's `.npmrc` sets `node-linker=hoisted`, so `electron` lives in the root `node_modules`, not `apps/desktop/node_modules` — electron-builder's version auto-detection can't find it there and fails with "Cannot compute electron version from installed node modules." Pinning sidesteps the lookup entirely. **Bump this value whenever the `electron` devDependency version changes**, or packaging breaks silently until someone hits this error.
 
+**`before-build.js`** rebuilds `better-sqlite3` against Electron's headers before packaging (electron-builder's own rebuild step crashes on pnpm workspace symlinks, so it's disabled via `return false`). It resolves `better-sqlite3`/`bindings`/`file-uri-to-path` via `require.resolve(..., { paths: [appDir] })` rather than assuming a fixed `node_modules` layout, so it works whether a package is hoisted to the repo root or symlinked locally.
+
+**Needs Python ≤3.11 for the `better-sqlite3` native rebuild.** `node-gyp` 9.x (pulled in transitively) still imports `distutils`, removed from the stdlib in Python 3.12. If your default `python3` is 3.12+ (e.g. a recent Homebrew install), `pnpm package:mac`/`package:dir` fails with `ModuleNotFoundError: No module named 'distutils'`. Point `node-gyp` at an older Python (pyenv, `PYTHON=` env var, etc.) if you hit this locally — CI pins Python 3.11 via `actions/setup-python` for exactly this reason.
+
 ### Commands
 
 ```bash

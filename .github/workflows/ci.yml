@@ -30,6 +30,14 @@ jobs:
 
       - run: pnpm lint
 
+      # node-gyp 9.x (pulled in transitively by electron-builder) still imports Python's
+      # distutils, removed in Python 3.12. The runner's default Homebrew python3 is 3.14 with no
+      # distutils shim, so the better-sqlite3 native rebuild below fails with
+      # "ModuleNotFoundError: No module named 'distutils'" otherwise. Pin 3.11 for node-gyp only.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       # Fetches the bundled ffmpeg binary so the packaging step below has something real to
       # include via extraResources — without this, the check below wouldn't catch a bug in the
       # resources/ wiring itself (e.g. the electronVersion config bug this workflow was added to
