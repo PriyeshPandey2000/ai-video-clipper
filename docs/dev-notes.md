@@ -172,7 +172,7 @@ Not wired up yet — no certificate, no Apple credentials configured anywhere in
 
 electron-builder handles signing and notarization **automatically** once the right environment variables are present — no custom `afterSign` hook needed, don't write one. It notarizes by default whenever a valid signing identity was used, unless explicitly disabled via `"mac": { "notarize": false }` (not currently set, so once signing works, notarization will trigger automatically too).
 
-Env vars electron-builder reads (set locally in `apps/desktop/.env.local`, or as GitHub Actions repo secrets for CI — never commit these or paste raw values into chat):
+Env vars electron-builder reads. **`.env`/`.env.local` are not loaded automatically** — the electron-builder CLI only reads `apps/desktop/electron-builder.env` (gitignored) for local runs, or shell-export them yourself before running `pnpm package:mac`. For CI, set them as GitHub Actions repo secrets. Never commit these or paste raw values into chat:
 
 | Var                           | Purpose                                                                                                                                                                                |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

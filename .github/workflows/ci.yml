@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege — this workflow only reads the repo and runs local scripts, never pushes or
+# writes anything back.
+permissions:
+  contents: read
+
 jobs:
   test:
     # macOS is the actual ship target (dmg/zip build, native modules compiled for mac-arm64) and
@@ -12,6 +17,10 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Without this, the checkout token is left in local git config where any later step —
+          # including third-party pnpm postinstall/prepare scripts — could read and exfiltrate it.
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
 

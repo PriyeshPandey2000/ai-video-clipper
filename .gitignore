@@ -9,5 +9,6 @@ out
 release/
 *.tsbuildinfo
 .env
+electron-builder.env
 resources/ffmpeg/
 resources/whisper/
