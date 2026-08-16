@@ -1,13 +1,19 @@
 {
   "name": "@video-editor/desktop",
   "version": "0.0.1",
+  "description": "AI-assisted clip selection and export for long-form video",
+  "author": "Clipper",
   "private": true,
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "ELECTRON_RUN_AS_NODE= electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "package:mac": "pnpm build && electron-builder --mac",
+    "package:win": "pnpm build && electron-builder --win",
+    "package:linux": "pnpm build && electron-builder --linux",
+    "package:dir": "pnpm build && electron-builder --dir"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.0",
@@ -44,6 +50,7 @@
   "build": {
     "appId": "com.clipper.app",
     "productName": "Clipper",
+    "electronVersion": "32.3.3",
     "icon": "build/icon.png",
     "beforeBuild": "./scripts/before-build.js",
     "asar": false,
