@@ -529,6 +529,7 @@ export function registerIpcHandlers(): void {
             ...(assPath ? { assPath, fontsDir } : {}),
             ...(srtPath ? { srtPath } : {}),
             ...(reframe ? { reframe: true, cropX: clip.cropX, blurBg } : {}),
+            hookText: clip.title,
             // Loudness normalization is two-pass (single-clip path). When D7 triggers
             // multi-interval export via exportEpisode, normalization is skipped.
             normalizeLoudness: keepIntervals.length <= 1,

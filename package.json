@@ -6,6 +6,7 @@
     "node": ">=20.0.0",
     "pnpm": ">=9.0.0"
   },
+  "type": "module",
   "scripts": {
     "dev": "turbo dev",
     "build": "turbo build",
@@ -14,7 +15,8 @@
     "format": "prettier --write \"**/*.{ts,tsx,md,json,css}\" --ignore-path .gitignore",
     "format:check": "prettier --check \"**/*.{ts,tsx,md,json,css}\" --ignore-path .gitignore",
     "prepare": "husky",
-    "test": "vitest run"
+    "test": "vitest run",
+    "recall-ablation": "node --experimental-strip-types scripts/recall-ablation.ts"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

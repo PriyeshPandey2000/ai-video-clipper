@@ -90,7 +90,7 @@ platform ("tiktok" | "reels" | "shorts" | "generic").`
 // Only chunk long-form content; short videos go to the LLM in one call.
 const CHUNK_THRESHOLD_MS = 30 * 60 * 1000
 const CHUNK_SIZE_MS = 20 * 60 * 1000
-const CHUNK_OVERLAP_MS = 60 * 1000
+const CHUNK_OVERLAP_MS = 150 * 1000
 
 /**
  * C5: topic-coherent chunking. Groups topic segments from B2 into context-sized calls so
@@ -162,6 +162,82 @@ function overlapRatio(a: ClipSuggestion, b: ClipSuggestion): number {
   const end = Math.min(a.endMs, b.endMs)
   if (end <= start) return 0
   return (end - start) / Math.min(a.endMs - a.startMs, b.endMs - b.startMs)
+}
+
+// ─── C4 — content-type detection and rubric swap ────────────────────────────
+
+export type ContentType = "interview" | "tutorial" | "solo" | "generic"
+
+/**
+ * Infers content type from the transcript heuristically.
+ * Used to swap the system prompt so the LLM applies the right clip-selection rubric.
+ */
+export function detectContentType(sentences: Sentence[]): ContentType {
+  if (sentences.length === 0) return "generic"
+  const text = sentences.map((s) => s.text).join(" ")
+
+  // Tutorial: step-by-step language dominates
+  if (
+    /\bstep\s*(?:one|two|three|1|2|3)\b|\bhow\s+to\b|\bin\s+this\s+(?:video|tutorial)\b|\bby\s+the\s+end\b/i.test(
+      text,
+    )
+  )
+    return "tutorial"
+
+  // Interview: high question ratio or clear host/guest signals
+  const questions = sentences.filter((s) => s.text.trim().endsWith("?")).length
+  const questionRatio = questions / sentences.length
+  if (
+    questionRatio > 0.12 ||
+    /\bmy\s+guest\b|\bjoined\s+by\b|\bgreat\s+question\b|\btell\s+me\s+about\b/i.test(text)
+  )
+    return "interview"
+
+  return "solo"
+}
+
+const CONTENT_TYPE_SUFFIX: Record<ContentType, string> = {
+  generic: "",
+  solo: "",
+  interview: `
+
+This is an INTERVIEW. Prioritise these clip shapes:
+- Guest says something surprising and the host visibly reacts (pushback, laughter, "really?")
+- Guest shares a personal story with a clear unexpected turn
+- Moment of genuine disagreement or tension between speakers
+- Bold claim the host challenges or the guest doubles down on
+- Rare disclosure: "I've never told anyone this", "what most people don't know"`,
+  tutorial: `
+
+This is a TUTORIAL. Prioritise these clip shapes:
+- One complete actionable step with a clear stated outcome ("do X → get Y")
+- The mistake most people make, followed immediately by the correct approach
+- Before/after or wrong-way/right-way reveal
+- A single rule or mental model that changes how you do something
+HARD RULE: never clip a partial step. A clip that starts or ends mid-instruction fails on its own.`,
+}
+
+// ─── D5 — hook-first check ───────────────────────────────────────────────────
+
+/**
+ * Tries to advance the clip's start sentence to the first sentence with a hook marker.
+ * Trims at most `maxTrim` sentences forward. Returns the original start if no hook is
+ * found within that window — the caller adds a "weak opening" warning.
+ */
+function hookFirstAdjust(
+  sentenceByIndex: Map<number, Sentence>,
+  startSentence: number,
+  endSentence: number,
+  maxTrim = 2,
+): { adjustedStart: number; noHook: boolean } {
+  for (let i = 0; i <= maxTrim; i++) {
+    const idx = startSentence + i
+    // Never trim so far that fewer than 3 sentences remain in the clip.
+    if (idx > endSentence - 2) break
+    const sent = sentenceByIndex.get(idx)
+    if (sent && HOOK_RE.test(sent.text)) return { adjustedStart: idx, noHook: false }
+  }
+  return { adjustedStart: startSentence, noHook: true }
 }
 
 // B7/B8/B10 — local signals injected as prompt metadata so the LLM can weight them without
@@ -309,6 +385,7 @@ async function selectFromChunk(
   chunk: Sentence[],
   words: Word[],
   arousalPerSec: number[] = [],
+  contentType: ContentType = "generic",
 ): Promise<Candidate[]> {
   const schema = zod.object({ clips: zod.array(CandidateSchema).max(20) })
   const firstIndex = chunk[0]!.index
@@ -321,10 +398,13 @@ Select every clip worth posting, best first. Each clip should span roughly ${MIN
 Only use sentence indices between ${firstIndex} and ${lastIndex}.
 Return fewer clips — or an empty array — rather than padding with weak ones.`
 
+  // C4 — append content-type rubric suffix to base system prompt.
+  const system = SYSTEM_PROMPT + (CONTENT_TYPE_SUFFIX[contentType] ?? "")
+
   const result = await client.generateObject({
     prompt,
     schema: schema as unknown as z.ZodType<{ clips: Candidate[] }>,
-    system: SYSTEM_PROMPT,
+    system,
   })
   const generated = result.clips.filter(
     (c) => c.startSentence >= firstIndex && c.endSentence <= lastIndex,
@@ -342,10 +422,17 @@ export async function selectClips(
 ): Promise<ClipSelectionResult> {
   if (sentences.length === 0) return { clips: [], rejected: [] }
 
+  // C4 — detect content type once; each chunk uses the same type-specific rubric.
+  const contentType = detectContentType(sentences)
+  console.log(`[content-type] ${contentType}`)
+
+  // D5 — fast lookup for hook-first check in the candidate loop below.
+  const sentenceByIndex = new Map(sentences.map((s) => [s.index, s]))
+
   const chunks = topicsToChunks(sentences, topics)
   const perChunk: Candidate[][] = []
   for (const chunk of chunks) {
-    perChunk.push(await selectFromChunk(client, chunk, words, arousalPerSec))
+    perChunk.push(await selectFromChunk(client, chunk, words, arousalPerSec, contentType))
   }
 
   const clips: ClipSuggestion[] = []
@@ -353,12 +440,14 @@ export async function selectClips(
   const ranked = interleaveByRank(perChunk)
 
   for (const candidate of ranked) {
-    const boundary = refineClipBoundaries(
-      words,
-      sentences,
+    // D5 — try to trim opening forward to a hook sentence before boundary refinement.
+    const { adjustedStart } = hookFirstAdjust(
+      sentenceByIndex,
       candidate.startSentence,
       candidate.endSentence,
     )
+
+    const boundary = refineClipBoundaries(words, sentences, adjustedStart, candidate.endSentence)
     if (!boundary) {
       rejected.push({ title: candidate.title, reasons: ["invalid sentence range"] })
       continue
@@ -370,6 +459,13 @@ export async function selectClips(
       continue
     }
 
+    // D2's backward expansion can walk the boundary's actual start earlier than adjustedStart
+    // (e.g. the hook sentence itself opens with a dangling reference like "So" or "This"), which
+    // would make a stale noHook computed at adjustedStart lie about what the clip really opens
+    // on. Re-check HOOK_RE against the sentence the clip actually starts on.
+    const finalOpener = sentenceByIndex.get(boundary.startSentenceIndex)
+    const noHook = !finalOpener || !HOOK_RE.test(finalOpener.text)
+
     const suggestion: ClipSuggestion = {
       title: candidate.title,
       startMs: boundary.startMs,
@@ -378,7 +474,7 @@ export async function selectClips(
       score: 0,
       reason: candidate.reason,
       platform: candidate.platform,
-      warnings: gate.warnings,
+      warnings: [...gate.warnings, ...(noHook ? ["weak opening"] : [])],
     }
 
     // Chunk overlap intentionally produces duplicates at the seams; keep the better-ranked one.

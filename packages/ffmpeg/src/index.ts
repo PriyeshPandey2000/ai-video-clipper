@@ -22,6 +22,8 @@ export interface ExportOptions {
   normalizeLoudness?: boolean
   /** D7 — filler/silence segments to cut out of the clip before encoding. */
   removeSegments?: { startMs: number; endMs: number }[]
+  /** E5 — text burned into the first ~3 s of the clip with a fade-out (hook overlay). */
+  hookText?: string
   onProgress?: (fraction: number) => void
 }
 
@@ -253,6 +255,46 @@ function runWithProgress(
   })
 }
 
+function escapeDrawtextText(text: string): string {
+  // Two escaping levels stack here: drawtext's own option-value level (colon, percent) and the
+  // outer filtergraph level (comma, semicolon, brackets — these delimit filters/chains/links and
+  // will otherwise truncate or misparse the whole -vf chain, not just the text). Backslash first,
+  // since every other replacement below introduces literal backslashes that must survive as-is.
+  return (
+    text
+      .replace(/\\/g, "\\\\")
+      // Deliberately NOT backslash-escaped (`\'`). Verified against the app's bundled ffmpeg binary:
+      // `\'` renders a blank frame (no text at all), `\\'` renders with the apostrophe silently
+      // dropped. FFmpeg's drawtext quote escaping is notoriously inconsistent across its own
+      // documented "levels" — even the official docs recommend `textfile=` instead. Substituting
+      // the lookalike U+2019 is the only one of these that renders correctly.
+      .replace(/'/g, "’")
+      .replace(/:/g, "\\:")
+      .replace(/%/g, "%%")
+      .replace(/,/g, "\\,")
+      .replace(/;/g, "\\;")
+      .replace(/\[/g, "\\[")
+      .replace(/\]/g, "\\]")
+  )
+}
+
+function buildDrawtextFilter(text: string): string {
+  const escaped = escapeDrawtextText(text)
+  // Fade: fully visible until 2.5 s, fades to transparent by 3 s.
+  // '...' around the alpha expression protects its commas from filtergraph option parsing.
+  return [
+    `drawtext=text=${escaped}`,
+    `x=(w-text_w)/2`,
+    `y=h*0.06`,
+    `fontsize=52`,
+    `fontcolor=white`,
+    `box=1`,
+    `boxcolor=black@0.45`,
+    `boxborderw=12`,
+    `alpha='if(lt(t,2.5),1,max(0,(3-t)/0.5))'`,
+  ].join(":")
+}
+
 /** Thrown by {@link exportClip} when removeSegments consumes the entire clip range. */
 export class EmptyClipError extends Error {
   constructor() {
@@ -309,24 +351,36 @@ export async function exportClip(opts: ExportOptions): Promise<void> {
       ? `subtitles=filename=${escapeFiltergraphPath(opts.srtPath)}`
       : null
 
+  // E5 — hook text overlay: visible for first 3 s with a 0.5 s fade-out starting at 2.5 s.
+  // Not applied when D7 routes through exportEpisode (multi-interval concat path).
+  const drawtextFilter = opts.hookText ? buildDrawtextFilter(opts.hookText) : null
+
   if (opts.reframe && opts.blurBg) {
     const bgChain = `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=luma_radius=20:luma_power=2`
     // Fit full frame (no crop) — lets blurred bg show above/below for 16:9 sources
     const fgChain = `scale=1080:1920:force_original_aspect_ratio=decrease`
-    const finalLabel = subtitleFilter ? "preout" : "out"
+    // Chain extra filters (subtitle, then drawtext) after the overlay as separate graph nodes.
+    const extraFilters = [subtitleFilter, drawtextFilter].filter((f): f is string => f !== null)
+    const overlayOut = extraFilters.length > 0 ? "f0" : "out"
     const filterParts = [
       `[0:v]${bgChain}[bg]`,
       `[0:v]${fgChain}[fg]`,
-      `[bg][fg]overlay=(W-w)/2:(H-h)/2[${finalLabel}]`,
+      `[bg][fg]overlay=(W-w)/2:(H-h)/2[${overlayOut}]`,
     ]
-    if (subtitleFilter) filterParts.push(`[preout]${subtitleFilter}[out]`)
+    extraFilters.forEach((f, i) => {
+      filterParts.push(`[f${i}]${f}[${i === extraFilters.length - 1 ? "out" : `f${i + 1}`}]`)
+    })
     args.push("-filter_complex", filterParts.join(";"), "-map", "[out]", "-map", "0:a?")
   } else if (opts.reframe) {
     const cx = opts.cropX ?? 0.5
     const cropFilter = `crop=ih*9/16:ih:(iw-ih*9/16)*${cx}:0,scale=1080:1920`
-    args.push("-vf", subtitleFilter ? `${cropFilter},${subtitleFilter}` : cropFilter)
-  } else if (subtitleFilter) {
-    args.push("-vf", subtitleFilter)
+    const vfParts = [cropFilter, subtitleFilter, drawtextFilter].filter(
+      (f): f is string => f !== null,
+    )
+    args.push("-vf", vfParts.join(","))
+  } else if (subtitleFilter || drawtextFilter) {
+    const vfParts = [subtitleFilter, drawtextFilter].filter((f): f is string => f !== null)
+    args.push("-vf", vfParts.join(","))
   }
   if (opts.normalizeLoudness) {
     const stats = await measureLoudness(opts.binaryPath, opts.inputPath, opts.startMs, opts.endMs)
