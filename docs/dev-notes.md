@@ -84,7 +84,19 @@ env -u ELECTRON_RUN_AS_NODE pnpm run dev:e2e &> /tmp/e2e-dev.log &
 **Step 5** — Wait for CDP:
 
 ```bash
-for i in $(seq 1 30); do curl -s http://localhost:9315/json/version > /dev/null 2>&1 && echo "ready" && break; sleep 2; done
+ready=false
+for i in $(seq 1 30); do
+  if curl -s http://localhost:9315/json/version > /dev/null 2>&1; then
+    ready=true
+    echo "ready"
+    break
+  fi
+  sleep 2
+done
+if [ "$ready" != true ]; then
+  echo "CDP did not become ready" >&2
+  exit 1
+fi
 ```
 
 **Step 6** — Connect via Node:
@@ -100,6 +112,7 @@ for (const p of ctx.pages()) {
     break
   }
 }
+if (!page) throw new Error("No localhost page found — app may have crashed before loading")
 await page.screenshot({ path: "/tmp/test.png" })
 await browser.close()
 ```
