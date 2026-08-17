@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege — this workflow only reads the repo and runs local scripts, never pushes or
+# writes anything back.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # macOS is the actual ship target (dmg/zip build, native modules compiled for mac-arm64) and
+    # this repo is public, so macOS runner minutes are free — no reason to validate on Linux only.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Without this, the checkout token is left in local git config where any later step —
+          # including third-party pnpm postinstall/prepare scripts — could read and exfiltrate it.
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+      - run: pnpm lint
+
+      # node-gyp 9.x (pulled in transitively by electron-builder) still imports Python's
+      # distutils, removed in Python 3.12. The runner's default Homebrew python3 is 3.14 with no
+      # distutils shim, so the better-sqlite3 native rebuild below fails with
+      # "ModuleNotFoundError: No module named 'distutils'" otherwise. Pin 3.11 for node-gyp only.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Fetches the bundled ffmpeg binary so the packaging step below has something real to
+      # include via extraResources — without this, the check below wouldn't catch a bug in the
+      # resources/ wiring itself (e.g. the electronVersion config bug this workflow was added to
+      # catch, which only shows up during an actual electron-builder packaging run).
+      - run: bash scripts/setup-ffmpeg.sh
+
+      # Unsigned, --dir mode — validates the full electron-builder config (electronVersion,
+      # entitlements path, extraResources, asarUnpack) without needing any signing credentials.
+      - run: pnpm --filter @video-editor/desktop package:dir
