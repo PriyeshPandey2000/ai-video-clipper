@@ -22,9 +22,13 @@ module.exports = async function ({ appDir, electronVersion, arch, platform }) {
   function copyReal(src, dst) {
     // On a second run (electron-builder can invoke beforeBuild more than once, or a developer
     // re-runs packaging locally), require.resolve below finds the copy this function already
-    // placed at dst instead of the original hoisted source — src and dst become the same path.
-    // Without this guard, rmSync would delete dst right before cpSync tries to read it as src.
-    if (src === dst) return
+    // placed at dst instead of the original hoisted source — src and dst end up identifying the
+    // same directory. Without this guard, rmSync would delete dst right before cpSync tries to
+    // read it as src. Comparing realpathSync(dst) (not dst itself) against src — which is already
+    // canonical, from resolveRealDir's own realpathSync — catches this even when appDir is
+    // reached through a symlink, where dst's lexical path wouldn't string-equal src even though
+    // both resolve to the same place on disk.
+    if (fs.existsSync(dst) && src === fs.realpathSync(dst)) return
     fs.rmSync(dst, { recursive: true, force: true })
     fs.cpSync(src, dst, { recursive: true, dereference: true })
   }
