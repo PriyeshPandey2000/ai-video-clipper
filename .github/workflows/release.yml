@@ -1,0 +1,57 @@
+name: Release (macOS signed build)
+
+# Manual trigger only, for now — this is the first signed+notarized build ever
+# attempted for this app. Once proven working, this can be extended to also
+# trigger on version tags for real releases.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      # node-gyp 9.x needs Python's distutils, removed in 3.12+. See ci.yml for the full
+      # explanation — same fix, needed here too since this job also rebuilds better-sqlite3.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: bash scripts/setup-ffmpeg.sh
+
+      - name: Build signed + notarized dmg/zip
+        run: pnpm --filter @video-editor/desktop package:mac
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # First-run verification, not a real publish yet — lets us download and inspect the
+      # actual signed/notarized artifact from the Actions run before wiring up anything that
+      # ships it further (GitHub Releases, auto-update feed, etc).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clipper-mac
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+          retention-days: 7
