@@ -212,6 +212,35 @@ function normalizeWhisperResult(raw: WhisperCliResult): WhisperTranscriptionResu
   return { segments, language: raw.result.language }
 }
 
+/**
+ * Buffers stderr chunks across `data` events and fires `onProgress` once per complete
+ * "progress = N%" line. Node's stream `data` event has no line-framing guarantee — a single
+ * chunk can contain several lines, or a line can be split across two chunks — so matching
+ * against each raw chunk independently both misses split lines entirely and only reports the
+ * first of several lines that land in the same chunk. Buffering until a full line arrives before
+ * matching handles both cases.
+ */
+export function createProgressParser(
+  onProgress: (progress: number) => void,
+): (chunk: string) => void {
+  let buffer = ""
+  return (chunk: string) => {
+    buffer += chunk
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() ?? "" // last element is the trailing partial line, if any — keep it
+    for (const line of lines) {
+      // Not anchored to a specific function name (e.g. "whisper_full:") — whisper.cpp v1.9.2
+      // actually prints this from `whisper_print_progress_callback:`, which an earlier anchored
+      // regex never matched. Matching on "progress = N%" alone is resilient to whichever
+      // function name printed it, including future whisper.cpp renames.
+      const match = line.match(/progress\s*=\s*(\d+)\s*%/)
+      if (match) {
+        onProgress(parseInt(match[1]!, 10) / 100)
+      }
+    }
+  }
+}
+
 export async function transcribe(
   config: WhisperConfig,
   audioPath: string,
@@ -243,6 +272,10 @@ export async function transcribe(
       "--no-flash-attn",
       "--dtw",
       DTW_PRESET[model],
+      // print_progress defaults to false in whisper-cli — without this flag it never prints a
+      // progress line at all, so onProgress below was never called and the UI sat frozen at
+      // whatever percentage the last stage left it at until the whole process exited.
+      "-pp",
     ]
     if (vadReady) {
       args.push("--vad", "-vm", vadModelPath(config.modelsDir))
@@ -250,16 +283,12 @@ export async function transcribe(
 
     const proc = spawn(config.binaryPath, args)
     const stderr: string[] = []
+    const parseProgress = onProgress ? createProgressParser(onProgress) : null
 
     proc.stderr.on("data", (d: Buffer) => {
       const chunk = d.toString()
       stderr.push(chunk)
-      if (onProgress) {
-        const match = chunk.match(/whisper_full(?:_parallel)?:?\s+progress\s*=\s*(\d+)\s*%/)
-        if (match) {
-          onProgress(parseInt(match[1]!, 10) / 100)
-        }
-      }
+      parseProgress?.(chunk)
     })
 
     proc.on("close", async (code) => {
