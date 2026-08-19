@@ -40,21 +40,36 @@ jobs:
 
       - run: bash scripts/setup-ffmpeg.sh
 
-      - name: Build signed + notarized dmg/zip
+      # Signs but does NOT notarize (mac.notarize:false in package.json) — electron-builder's
+      # built-in auto-notarize blocks until Apple responds, which can take anywhere from minutes
+      # to (per prior experience with this Apple account) potentially days. That's well past
+      # GitHub's 6-hour hosted-runner job cap. Submission is a separate, non-blocking step below.
+      - name: Build + sign dmg/zip
         run: pnpm --filter @video-editor/desktop package:mac
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+
+      # Submits the signed .dmg and returns immediately with a submission ID (--no-wait) — does
+      # not block this job. Check status later, from any machine:
+      #   bash apps/desktop/scripts/notarize-check.sh <id>
+      # (needs APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID exported locally). That same
+      # script staples the ticket once Apple accepts — this job does not staple, since stapling
+      # requires knowing the outcome, which isn't available yet at this point in the job.
+      - name: Submit for notarization (async, does not wait)
+        run: bash scripts/notarize-submit.sh
+        working-directory: apps/desktop
+        env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      # First-run verification, not a real publish yet — lets us download and inspect the
-      # actual signed/notarized artifact from the Actions run before wiring up anything that
-      # ships it further (GitHub Releases, auto-update feed, etc).
+      # Uploads the signed-but-not-yet-stapled dmg/zip. Not the final distributable artifact —
+      # download it after stapling locally (notarize-check.sh handles that once Apple accepts),
+      # or re-run this workflow once stapling is folded in as a separate follow-up step.
       - uses: actions/upload-artifact@v4
         with:
-          name: clipper-mac
+          name: clipper-mac-signed-unstapled
           path: |
             apps/desktop/release/*.dmg
             apps/desktop/release/*.zip

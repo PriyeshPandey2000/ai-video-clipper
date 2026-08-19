@@ -1,7 +1,10 @@
 #!/bin/bash
 # Checks the status of a notarization submission and, once Apple has accepted it, staples the
 # notarization ticket onto both the .app and the .dmg so they work offline (Gatekeeper checks
-# the stapled ticket first, only falling back to an online check if it's missing).
+# the stapled ticket first, only falling back to an online check if it's missing). Both staples
+# succeed because notarize-submit.sh submits the .dmg itself (already codesigned by
+# electron-builder) — Apple's ticket is keyed to the codesigned .app's hash regardless of
+# container, so notarizing the .dmg covers the .app inside it too.
 #
 # Requires APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID exported in your shell.
 #
