@@ -19,17 +19,25 @@ set -eo pipefail
 
 DEST="resources/whisper"
 WHISPER_CPP_TAG="v1.9.2"
+# Fingerprint of how this bundle was built. Bump this (or WHISPER_CPP_TAG) whenever the build
+# config below changes, so a stale bundle from before that change gets rebuilt automatically
+# instead of silently kept. This matters because `--help` alone is NOT proof of a working
+# bundle: it never touches model loading or backend init at all, so the exact segfaulting
+# Homebrew-based (GGML_BACKEND_DL=ON) bundle this from-source migration fixed would ALSO pass
+# `--help` fine — the crash only happened during real transcription compute work. Existence +
+# `--help` was the old, insufficient check.
+BUILD_PROVENANCE="${WHISPER_CPP_TAG}:metal=on,blas=off,native=off,arch=armv8.5-a+dotprod"
 mkdir -p "$DEST"
 
-# Existence alone isn't enough to trust — a run that got killed mid-build/bundle can leave a
-# whisper-cli file present but broken. Run it for real before deciding to skip; if it fails, wipe
-# the stale bundle and rebuild.
+if [ -f "$DEST/whisper-cli" ] \
+  && [ -f "$DEST/.build-provenance" ] \
+  && [ "$(cat "$DEST/.build-provenance")" = "$BUILD_PROVENANCE" ] \
+  && "$DEST/whisper-cli" --help >/dev/null 2>&1; then
+  echo "whisper-cli already present and up to date at $DEST/whisper-cli — skipping."
+  exit 0
+fi
 if [ -f "$DEST/whisper-cli" ]; then
-  if "$DEST/whisper-cli" --help >/dev/null 2>&1; then
-    echo "whisper-cli already present at $DEST/whisper-cli — skipping."
-    exit 0
-  fi
-  echo "Existing $DEST/whisper-cli is present but doesn't run (stale/incomplete build) — rebuilding."
+  echo "Existing $DEST/whisper-cli is stale (provenance mismatch) or doesn't run — rebuilding."
   rm -rf "$DEST"
   mkdir -p "$DEST"
 fi
@@ -83,4 +91,5 @@ if ! "$DEST/whisper-cli" --help >/dev/null 2>&1; then
   echo "✗ whisper-cli failed to run — check dylib bundling" >&2
   exit 1
 fi
+echo -n "$BUILD_PROVENANCE" > "$DEST/.build-provenance"
 echo "✓ whisper-cli runs standalone (dylibs bundled correctly)"
