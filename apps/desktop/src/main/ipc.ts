@@ -50,8 +50,19 @@ import { createAiClient, selectClips, generateSocialCaptions } from "@video-edit
 import { buildAssFile } from "@video-editor/captions"
 import type { CaptionStyle } from "@video-editor/types"
 
+// Both branches must return a path whose direct children are ffmpeg/whisper/fonts. In dev this
+// is the repo's own resources/ folder. In a packaged app, process.resourcesPath is
+// Contents/Resources — but electron-builder's extraResources config here has `to: "resources/"`,
+// which nests everything one level deeper at Contents/Resources/resources/. Missing that extra
+// segment meant every resolveFfmpegBinary/resolveWhisperBinary/font-path call in a packaged
+// build silently fell through to each function's PATH-based fallback, which fails on a
+// GUI-launched app (no Homebrew dirs in its PATH) — this was never caught before because every
+// earlier verification ran the bundled binaries directly via absolute paths, never through this
+// function.
 function getResourcesPath(): string {
-  return app.isPackaged ? process.resourcesPath : join(__dirname, "../../../../resources")
+  return app.isPackaged
+    ? join(process.resourcesPath, "resources")
+    : join(__dirname, "../../../../resources")
 }
 
 function sanitizeName(name: string): string {
