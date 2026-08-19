@@ -1,0 +1,76 @@
+name: Release (macOS signed build)
+
+# Manual trigger only, for now — this is the first signed+notarized build ever
+# attempted for this app. Once proven working, this can be extended to also
+# trigger on version tags for real releases.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # Must run before `pnpm install`: better-sqlite3's own install script is
+      # `prebuild-install || node-gyp rebuild --release` — if no matching prebuilt binary is
+      # found, it falls back to node-gyp during install itself, which needs Python's distutils
+      # (removed in 3.12+, see ci.yml for the full explanation). Usually prebuild-install
+      # succeeds and this fallback never triggers, but a 3.12+ default python3 would fail
+      # install outright if it ever does.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - run: bash scripts/setup-ffmpeg.sh
+
+      # Signs but does NOT notarize (mac.notarize:false in package.json) — electron-builder's
+      # built-in auto-notarize blocks until Apple responds, which can take anywhere from minutes
+      # to (per prior experience with this Apple account) potentially days. That's well past
+      # GitHub's 6-hour hosted-runner job cap. Submission is a separate, non-blocking step below.
+      - name: Build + sign dmg/zip
+        run: pnpm --filter @video-editor/desktop package:mac
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+
+      # Submits the signed .dmg and returns immediately with a submission ID (--no-wait) — does
+      # not block this job. Check status later, from any machine:
+      #   bash apps/desktop/scripts/notarize-check.sh <id>
+      # (needs APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID exported locally). That same
+      # script staples the ticket once Apple accepts — this job does not staple, since stapling
+      # requires knowing the outcome, which isn't available yet at this point in the job.
+      - name: Submit for notarization (async, does not wait)
+        run: bash scripts/notarize-submit.sh
+        working-directory: apps/desktop
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # Uploads the signed-but-not-yet-stapled dmg/zip. Not the final distributable artifact —
+      # download it after stapling locally (notarize-check.sh handles that once Apple accepts),
+      # or re-run this workflow once stapling is folded in as a separate follow-up step.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clipper-mac-signed-unstapled
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+          retention-days: 7
