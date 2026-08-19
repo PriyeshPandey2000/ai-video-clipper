@@ -1,14 +1,20 @@
 name: Release (macOS signed build)
 
-# Manual trigger only, for now. Fully automatic through artifact creation — build, sign, submit,
-# wait for Apple's decision, staple, rebuild the zip — all in one run. Publishing (making a build
-# public) is intentionally NOT automated here: this uploads a workflow artifact for you to
-# download and test locally before deciding whether to actually ship that version.
+# Pushing a version tag (e.g. v0.1.0) triggers a real, permanent release: the tag's version must
+# match apps/desktop/package.json exactly, or the build fails before doing any signing work.
+# workflow_dispatch stays available as a manual/test trigger — those runs upload a temporary
+# (7-day) artifact instead of creating a release, so testing the pipeline never collides with or
+# clutters actual release history.
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
 
+# contents: write (elevated from the read-only default used elsewhere in this repo's workflows)
+# is required for the `gh release create` step below — scoped to this workflow only.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-mac:
@@ -38,6 +44,22 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm build
+
+      # Only relevant for a real tag-triggered release — fails fast, before any of the slow
+      # signing/notarization work below, if whoever pushed the tag forgot to bump package.json
+      # (or bumped it to a different number than the tag says). Skipped for manual test runs,
+      # which don't have a version tag to check against.
+      - name: Verify tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: apps/desktop
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(python3 -c "import json; print(json.load(open('package.json'))['version'])")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME (version $TAG_VERSION) doesn't match apps/desktop/package.json's version ($PKG_VERSION)." >&2
+            echo "Bump package.json to match before tagging, or re-tag with the right version." >&2
+            exit 1
+          fi
 
       - run: bash scripts/setup-ffmpeg.sh
 
@@ -94,9 +116,29 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      # This is now the finished, distributable artifact — signed, notarized, stapled. Download
-      # and test it before deciding to publish that version anywhere.
-      - uses: actions/upload-artifact@v4
+      # Real release: pushing a version tag creates a permanent, DRAFT GitHub Release with the
+      # signed/notarized dmg+zip attached. Drafts aren't visible to the public, only to repo
+      # collaborators — this is still a manual publish gate: download and test the draft's
+      # assets, then publish it yourself when ready (`gh release edit <tag> --draft=false`, or
+      # the "Publish release" button in the GitHub UI). --generate-notes auto-fills release notes
+      # from merged PRs since the previous tag, so this doubles as the changelog.
+      - name: Create draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            apps/desktop/release/*.dmg \
+            apps/desktop/release/*.zip
+
+      # Manual/test runs (workflow_dispatch) don't create a release — a temporary artifact
+      # instead, so testing the pipeline never collides with or clutters real release history.
+      - name: Upload build artifact (test runs only)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
         with:
           name: clipper-mac
           path: |
