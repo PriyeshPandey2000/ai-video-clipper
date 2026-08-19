@@ -63,6 +63,8 @@ jobs:
 
       - run: bash scripts/setup-ffmpeg.sh
 
+      - run: bash scripts/setup-whisper.sh
+
       # Signs but does NOT notarize (mac.notarize:false in package.json) — electron-builder's
       # built-in auto-notarize has no timeout control. We wait for the real Apple response
       # ourselves, below, with an explicit bounded timeout instead.

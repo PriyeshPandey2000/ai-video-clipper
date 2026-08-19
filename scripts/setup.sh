@@ -67,7 +67,15 @@ else
   bash scripts/setup-ffmpeg.sh
 fi
 
-# ── 7. .env check ─────────────────────────────────────────────────────────────
+# ── 7. Whisper bundle ─────────────────────────────────────────────────────────
+step "Whisper bundle"
+# setup-whisper.sh does its own validate-then-skip check (runs the existing binary, not just
+# checks it exists) — always call it rather than duplicating that logic here with a weaker
+# existence-only check.
+bash scripts/setup-whisper.sh
+ok "Bundled whisper-cli ready"
+
+# ── 8. .env check ─────────────────────────────────────────────────────────────
 step ".env file"
 if [ ! -f ".env" ]; then
   warn ".env not found — creating from template"
@@ -85,7 +93,7 @@ else
   fi
 fi
 
-# ── 8. Done ───────────────────────────────────────────────────────────────────
+# ── 9. Done ───────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}─────────────────────────────────────${RESET}"
 echo -e "${GREEN}${BOLD}All done! Start the app:${RESET}"
