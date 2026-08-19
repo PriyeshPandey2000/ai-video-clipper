@@ -22,11 +22,13 @@ export interface AiClient {
   generateObject<T>(params: { prompt: string; schema: z.ZodType<T>; system?: string }): Promise<T>
 }
 
-const DEFAULT_TEXT_MODEL = "llama-3.3-70b-versatile"
+// llama-3.3-70b-versatile was deprecated by Groq — gpt-oss-120b is the current production-tier
+// model (console.groq.com/docs/models, Production Models table).
+const DEFAULT_TEXT_MODEL = "openai/gpt-oss-120b"
 // json_object mode works on all Groq models. The SDK validates against Zod client-side.
 // strict json_schema mode has limited model support and requires additionalProperties:false
 // in every object which the AI SDK doesn't always produce correctly.
-const DEFAULT_STRUCTURED_MODEL = "llama-3.3-70b-versatile"
+const DEFAULT_STRUCTURED_MODEL = "openai/gpt-oss-120b"
 
 const ENV_KEYS: Record<AiProvider, string | undefined> = {
   groq: "GROQ_API_KEY",
