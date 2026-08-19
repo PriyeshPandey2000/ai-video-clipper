@@ -243,6 +243,10 @@ export async function transcribe(
       "--no-flash-attn",
       "--dtw",
       DTW_PRESET[model],
+      // print_progress defaults to false in whisper-cli — without this flag it never prints a
+      // progress line at all, so onProgress below was never called and the UI sat frozen at
+      // whatever percentage the last stage left it at until the whole process exited.
+      "-pp",
     ]
     if (vadReady) {
       args.push("--vad", "-vm", vadModelPath(config.modelsDir))
@@ -255,7 +259,12 @@ export async function transcribe(
       const chunk = d.toString()
       stderr.push(chunk)
       if (onProgress) {
-        const match = chunk.match(/whisper_full(?:_parallel)?:?\s+progress\s*=\s*(\d+)\s*%/)
+        // Not anchored to a specific function name (e.g. "whisper_full:") — whisper.cpp v1.9.2
+        // actually prints this from `whisper_print_progress_callback:`, which the old anchored
+        // regex never matched, silently breaking progress reporting entirely regardless of
+        // whether -pp was even passed. Matching on "progress = N%" alone is resilient to
+        // whichever function name printed it, including future whisper.cpp renames.
+        const match = chunk.match(/progress\s*=\s*(\d+)\s*%/)
         if (match) {
           onProgress(parseInt(match[1]!, 10) / 100)
         }
