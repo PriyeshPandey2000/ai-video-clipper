@@ -1,8 +1,9 @@
 name: Release (macOS signed build)
 
-# Manual trigger only, for now — this is the first signed+notarized build ever
-# attempted for this app. Once proven working, this can be extended to also
-# trigger on version tags for real releases.
+# Manual trigger only, for now. Fully automatic through artifact creation — build, sign, submit,
+# wait for Apple's decision, staple, rebuild the zip — all in one run. Publishing (making a build
+# public) is intentionally NOT automated here: this uploads a workflow artifact for you to
+# download and test locally before deciding whether to actually ship that version.
 on:
   workflow_dispatch:
 
@@ -41,22 +42,15 @@ jobs:
       - run: bash scripts/setup-ffmpeg.sh
 
       # Signs but does NOT notarize (mac.notarize:false in package.json) — electron-builder's
-      # built-in auto-notarize blocks until Apple responds, which can take anywhere from minutes
-      # to (per prior experience with this Apple account) potentially days. That's well past
-      # GitHub's 6-hour hosted-runner job cap. Submission is a separate, non-blocking step below.
+      # built-in auto-notarize has no timeout control. We wait for the real Apple response
+      # ourselves, below, with an explicit bounded timeout instead.
       - name: Build + sign dmg/zip
         run: pnpm --filter @video-editor/desktop package:mac
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
 
-      # Submits the signed .dmg and returns immediately with a submission ID (--no-wait) — does
-      # not block this job. Check status later, from any machine:
-      #   bash apps/desktop/scripts/notarize-check.sh <id>
-      # (needs APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID exported locally). That same
-      # script staples the ticket once Apple accepts — this job does not staple, since stapling
-      # requires knowing the outcome, which isn't available yet at this point in the job.
-      - name: Submit for notarization (async, does not wait)
+      - name: Submit for notarization
         run: bash scripts/notarize-submit.sh
         working-directory: apps/desktop
         env:
@@ -64,12 +58,47 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      # Uploads the signed-but-not-yet-stapled dmg/zip. Not the final distributable artifact —
-      # download it after stapling locally (notarize-check.sh handles that once Apple accepts),
-      # or re-run this workflow once stapling is folded in as a separate follow-up step.
+      - name: Read submission id
+        id: submission
+        working-directory: apps/desktop
+        run: |
+          echo "id=$(python3 -c "import json; print(json.load(open('release/.notarize-state.json'))['submissionId'])")" >> "$GITHUB_OUTPUT"
+
+      # Bounded wait, not electron-builder's own unbounded auto-notarize. On today's actual runs
+      # Apple responded within minutes, but this account has previously seen multi-day delays —
+      # 45m leaves real margin over that observed normal case while still failing well short of
+      # GitHub's 6-hour hard job cap. If it times out, the job fails here (submission keeps
+      # processing on Apple's side regardless — check/staple it later from a local machine with
+      # `bash apps/desktop/scripts/notarize-check.sh <id>`, the id is in this step's logs above).
+      - name: Wait for Apple's decision (bounded, 45m)
+        run: |
+          xcrun notarytool wait "${{ steps.submission.outputs.id }}" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --timeout 45m
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # Reuses the same script proven working locally: staples the .app and .dmg, rebuilds the
+      # .zip from the now-stapled .app. Only reached if `wait` above resolved to a terminal
+      # status — notarize-check.sh itself fails the job (and prints Apple's log) if that status
+      # was Invalid/Rejected rather than Accepted.
+      - name: Staple + rebuild zip
+        run: bash scripts/notarize-check.sh "${{ steps.submission.outputs.id }}"
+        working-directory: apps/desktop
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # This is now the finished, distributable artifact — signed, notarized, stapled. Download
+      # and test it before deciding to publish that version anywhere.
       - uses: actions/upload-artifact@v4
         with:
-          name: clipper-mac-signed-unstapled
+          name: clipper-mac
           path: |
             apps/desktop/release/*.dmg
             apps/desktop/release/*.zip

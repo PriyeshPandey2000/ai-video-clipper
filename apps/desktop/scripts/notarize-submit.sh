@@ -4,12 +4,16 @@
 # in package.json). Apple's processing can take anywhere from minutes to hours; this script
 # returns immediately with a submission ID, so nothing here blocks or times out.
 #
-# Submits the .dmg specifically, not the .zip: electron-builder already codesigns the .dmg
-# wrapper itself (dmg-builder/dmg.js calls `codesign` on the artifact directly, unconditional on
-# notarize:false — that setting only skips the notarize step, not dmg signing). Apple's
-# notarization ticket is keyed to the codesigned .app's own hash regardless of which container
-# submitted it, so notarizing the .dmg covers both the .app inside AND the .dmg container's own
-# ticket in one submission — no need to separately submit a .zip.
+# Submits the .dmg specifically, not the .zip. In practice electron-builder does NOT codesign
+# the .dmg wrapper here (dmg-builder has a codesign code path, but it isn't triggering for this
+# build — confirmed empirically: `spctl -t open --context context:primary-signature` on the dmg
+# reports "no usable signature" even right after a clean submit+staple, with nothing else
+# touching the file). That's fine and expected — Apple's own guidance is that an unsigned .dmg
+# wrapper containing a signed+notarized .app is the standard, correct pattern for Electron apps;
+# Gatekeeper's real check happens on the .app at launch, not on the wrapper. Submitting the .dmg
+# still works and still notarizes the .app inside it (the ticket is keyed to the app's own
+# codesign hash, regardless of which container carried it to Apple) — just don't expect the
+# dmg-level spctl checks to ever pass, they're not meant to for this shape of distribution.
 #
 # Requires APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID exported in your shell.
 #

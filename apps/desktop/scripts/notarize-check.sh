@@ -1,10 +1,11 @@
 #!/bin/bash
 # Checks the status of a notarization submission and, once Apple has accepted it, staples the
-# notarization ticket onto both the .app and the .dmg so they work offline (Gatekeeper checks
-# the stapled ticket first, only falling back to an online check if it's missing). Both staples
-# succeed because notarize-submit.sh submits the .dmg itself (already codesigned by
-# electron-builder) — Apple's ticket is keyed to the codesigned .app's hash regardless of
-# container, so notarizing the .dmg covers the .app inside it too.
+# notarization ticket onto both the .app and the .dmg. Both staples succeed as an operation, but
+# the .dmg wrapper here is NOT itself codesigned (confirmed empirically — spctl dmg-level checks
+# report "no usable signature" even right after a clean staple) — that's fine and expected, the
+# standard pattern for Electron apps is an unsigned .dmg wrapper containing a signed+notarized
+# .app. The .app is what Gatekeeper actually checks at launch; verify with -t execute on it, not
+# any spctl check against the .dmg — those aren't meant to pass for this shape of distribution.
 #
 # Requires APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID exported in your shell.
 #
