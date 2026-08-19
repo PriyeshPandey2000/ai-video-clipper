@@ -69,12 +69,11 @@ fi
 
 # ── 7. Whisper bundle ─────────────────────────────────────────────────────────
 step "Whisper bundle"
-if [ -f "resources/whisper/whisper-cli" ]; then
-  ok "Bundled whisper-cli already present — skipping"
-else
-  echo "Running whisper-cli setup (this may take a few minutes)..."
-  bash scripts/setup-whisper.sh
-fi
+# setup-whisper.sh does its own validate-then-skip check (runs the existing binary, not just
+# checks it exists) — always call it rather than duplicating that logic here with a weaker
+# existence-only check.
+bash scripts/setup-whisper.sh
+ok "Bundled whisper-cli ready"
 
 # ── 8. .env check ─────────────────────────────────────────────────────────────
 step ".env file"

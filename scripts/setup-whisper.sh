@@ -9,9 +9,17 @@ set -eo pipefail
 DEST="resources/whisper"
 mkdir -p "$DEST"
 
+# Existence alone isn't enough to trust — a run that got killed mid-bundle (e.g. dylibbundler
+# interrupted) can leave a whisper-cli file present but unable to actually load its dylibs. Run
+# it for real before deciding to skip; if it fails, wipe the stale bundle and rebuild.
 if [ -f "$DEST/whisper-cli" ]; then
-  echo "whisper-cli already present at $DEST/whisper-cli — skipping."
-  exit 0
+  if "$DEST/whisper-cli" --help >/dev/null 2>&1; then
+    echo "whisper-cli already present at $DEST/whisper-cli — skipping."
+    exit 0
+  fi
+  echo "Existing $DEST/whisper-cli is present but doesn't run (stale/incomplete bundle) — rebuilding."
+  rm -rf "$DEST"
+  mkdir -p "$DEST"
 fi
 
 if ! command -v brew &>/dev/null; then
@@ -38,6 +46,8 @@ dylibbundler -od -b \
   -s "$(brew --prefix whisper-cpp)/lib" 2>&1 | grep -v "^$"
 
 echo "Done. Verifying..."
-"$DEST/whisper-cli" --help >/dev/null 2>&1 \
-  && echo "✓ whisper-cli runs standalone (dylibs bundled correctly)" \
-  || echo "✗ whisper-cli failed to run — check dylib bundling"
+if ! "$DEST/whisper-cli" --help >/dev/null 2>&1; then
+  echo "✗ whisper-cli failed to run — check dylib bundling" >&2
+  exit 1
+fi
+echo "✓ whisper-cli runs standalone (dylibs bundled correctly)"
