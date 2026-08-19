@@ -49,11 +49,15 @@ jobs:
 
       - run: pnpm lint
 
-      # Fetches the bundled ffmpeg binary so the packaging step below has something real to
-      # include via extraResources — without this, the check below wouldn't catch a bug in the
-      # resources/ wiring itself (e.g. the electronVersion config bug this workflow was added to
-      # catch, which only shows up during an actual electron-builder packaging run).
+      # Fetches the bundled ffmpeg/whisper binaries so the packaging step below has something
+      # real to include via extraResources — without this, the check below wouldn't catch a bug
+      # in the resources/ wiring itself (e.g. the electronVersion config bug this workflow was
+      # added to catch, which only shows up during an actual electron-builder packaging run —
+      # and whisper-cli going unbundled entirely, which shipped in a real release before anyone
+      # caught it, precisely because nothing ever validated resources/whisper/ was populated).
       - run: bash scripts/setup-ffmpeg.sh
+
+      - run: bash scripts/setup-whisper.sh
 
       # Unsigned, --dir mode — validates the full electron-builder config (electronVersion,
       # entitlements path, extraResources, asarUnpack) without needing any signing credentials.
