@@ -1,7 +1,10 @@
 #!/bin/bash
 # Downloads and bundles a portable FFmpeg binary with libass support.
 # Run once after cloning: bash scripts/setup-ffmpeg.sh
-set -e
+# pipefail: without it, `dylibbundler ... | grep -v "^$"` below reports grep's exit status, not
+# dylibbundler's — a failed bundling step that still printed a non-blank line would look
+# successful and leave an incomplete (missing dylibs) ffmpeg binary with no error.
+set -eo pipefail
 
 DEST="resources/ffmpeg"
 mkdir -p "$DEST"

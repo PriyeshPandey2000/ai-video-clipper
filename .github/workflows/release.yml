@@ -24,15 +24,19 @@ jobs:
           node-version: 20
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
-
-      - run: pnpm build
-
-      # node-gyp 9.x needs Python's distutils, removed in 3.12+. See ci.yml for the full
-      # explanation — same fix, needed here too since this job also rebuilds better-sqlite3.
+      # Must run before `pnpm install`: better-sqlite3's own install script is
+      # `prebuild-install || node-gyp rebuild --release` — if no matching prebuilt binary is
+      # found, it falls back to node-gyp during install itself, which needs Python's distutils
+      # (removed in 3.12+, see ci.yml for the full explanation). Usually prebuild-install
+      # succeeds and this fallback never triggers, but a 3.12+ default python3 would fail
+      # install outright if it ever does.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
 
       - run: bash scripts/setup-ffmpeg.sh
 

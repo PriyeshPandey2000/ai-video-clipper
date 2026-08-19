@@ -29,6 +29,16 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      # Must run before `pnpm install`: better-sqlite3's own install script is
+      # `prebuild-install || node-gyp rebuild --release` — if no matching prebuilt binary is
+      # found, it falls back to node-gyp during install itself, which needs Python's distutils
+      # (removed in 3.12+). The runner's default Homebrew python3 is 3.14 with no distutils
+      # shim. Usually prebuild-install succeeds and this fallback never triggers — but if it
+      # ever does, install would fail outright before this step had a chance to run.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm build
@@ -38,14 +48,6 @@ jobs:
       - run: pnpm test
 
       - run: pnpm lint
-
-      # node-gyp 9.x (pulled in transitively by electron-builder) still imports Python's
-      # distutils, removed in Python 3.12. The runner's default Homebrew python3 is 3.14 with no
-      # distutils shim, so the better-sqlite3 native rebuild below fails with
-      # "ModuleNotFoundError: No module named 'distutils'" otherwise. Pin 3.11 for node-gyp only.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       # Fetches the bundled ffmpeg binary so the packaging step below has something real to
       # include via extraResources — without this, the check below wouldn't catch a bug in the
