@@ -235,3 +235,23 @@ describe("hostile input", () => {
     expect(clips).toHaveLength(0)
   })
 })
+
+describe("chunk failure isolation", () => {
+  it("keeps clips from other chunks when one chunk's generateObject call fails every attempt", async () => {
+    const flaky: Handler = (prompt) => {
+      const r = range(prompt)
+      if (!r) return { ranking: [] } // re-ranking call
+      // This mock stands in for the whole AiClient, so it bypasses createGroqClient's own
+      // internal retry (covered separately in client.test.ts) — this test is only about the
+      // outer per-chunk try/catch in selectClips: does the very first chunk failing outright
+      // still let later chunks' clips through, instead of aborting the whole run.
+      const [lo] = r
+      if (lo === 0) throw new Error("simulated malformed JSON")
+      return twoPerChunk(prompt)
+    }
+    const { clips } = await selectClips(mockClient(flaky), words, sentences)
+    // First chunk's candidates are lost, but later chunks still produced clips — selectClips
+    // didn't abort the whole run when one chunk failed.
+    expect(clips.length).toBeGreaterThan(0)
+  })
+})

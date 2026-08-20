@@ -468,6 +468,7 @@ export function registerIpcHandlers(): void {
         burnSubtitles = true,
         reframe = false,
         blurBg = false,
+        removeFillers = true,
         captionStyle,
       }: {
         projectId: string
@@ -476,6 +477,7 @@ export function registerIpcHandlers(): void {
         burnSubtitles?: boolean
         reframe?: boolean
         blurBg?: boolean
+        removeFillers?: boolean
         captionStyle?: CaptionStyle
       },
     ) => {
@@ -504,8 +506,12 @@ export function registerIpcHandlers(): void {
         const clip = clipRows[ci]!
         const outPath = join(outDir, `${sanitizeName(clip.title)}.mp4`)
 
-        // Segments that fall inside this clip's range.
-        const clipSegs = allSegs.filter((s) => s.startMs < clip.endMs && s.endMs > clip.startMs)
+        // Segments that fall inside this clip's range. Individual clip export can opt out of
+        // filler/silence removal (unlike episode cleanup, aggressive cutting can hurt a short
+        // clip's rhythm — see docs/IMPROVEMENTS.md).
+        const clipSegs = removeFillers
+          ? allSegs.filter((s) => s.startMs < clip.endMs && s.endMs > clip.startMs)
+          : []
         const keepIntervals =
           clipSegs.length > 0
             ? subtractSegments(clip.startMs, clip.endMs, clipSegs)
@@ -541,9 +547,7 @@ export function registerIpcHandlers(): void {
             ...(srtPath ? { srtPath } : {}),
             ...(reframe ? { reframe: true, cropX: clip.cropX, blurBg } : {}),
             hookText: clip.title,
-            // Loudness normalization is two-pass (single-clip path). When D7 triggers
-            // multi-interval export via exportEpisode, normalization is skipped.
-            normalizeLoudness: keepIntervals.length <= 1,
+            normalizeLoudness: true,
             onProgress: (progress) =>
               send("export:progress", {
                 projectId,
@@ -632,6 +636,9 @@ export function registerIpcHandlers(): void {
           keepIntervals,
           ...(srtPath ? { srtPath } : {}),
           ...(reframe ? { reframe: true, cropX, blurBg } : {}),
+          // Episode export is multi-interval by definition — this is the fix for E6's loudnorm
+          // previously being silently skipped whenever there was more than one keep interval.
+          normalizeLoudness: true,
           onProgress: (progress) =>
             send("export:progress", {
               projectId,

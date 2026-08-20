@@ -17,8 +17,9 @@ export interface ExportOptions {
   reframe?: boolean
   cropX?: number // 0.0 (left) – 1.0 (right), default 0.5 (center)
   blurBg?: boolean // fill 9:16 background with blurred source instead of black bars
-  // E6 — two-pass loudnorm to -14 LUFS. Ignored when removeSegments spans more than one
-  // keep interval — that path routes through exportEpisode, which doesn't normalize.
+  // E6 — two-pass loudnorm to -14 LUFS. When removeSegments spans more than one keep interval,
+  // this routes through exportEpisode, which measures loudness on the concatenated audio (see
+  // exportEpisode's own normalizeLoudness handling) rather than a single contiguous range.
   normalizeLoudness?: boolean
   /** D7 — filler/silence segments to cut out of the clip before encoding. */
   removeSegments?: { startMs: number; endMs: number }[]
@@ -318,6 +319,7 @@ export async function exportClip(opts: ExportOptions): Promise<void> {
         ...(opts.srtPath && !opts.assPath ? { srtPath: opts.srtPath } : {}),
         ...(opts.reframe ? { reframe: true, cropX: opts.cropX, blurBg: opts.blurBg } : {}),
         ...(opts.hookText ? { hookText: opts.hookText } : {}),
+        ...(opts.normalizeLoudness ? { normalizeLoudness: true } : {}),
         ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
       })
     }
@@ -429,7 +431,43 @@ export interface EpisodeExportOptions {
   blurBg?: boolean
   /** E5 — text burned into the first ~3 s of the exported (concatenated) clip with a fade-out. */
   hookText?: string
+  /** E6 — measured on the concatenated audio (see extractConcatAudio), not a single input range. */
+  normalizeLoudness?: boolean
   onProgress?: (fraction: number) => void
+}
+
+/**
+ * Renders just the trim+concat audio chain to a temp WAV, with no video and no loudnorm, so
+ * two-pass loudnorm can measure the actual concatenated signal instead of a single contiguous
+ * input range (which is all `measureLoudness` can address directly).
+ */
+async function extractConcatAudio(
+  binaryPath: string,
+  inputPath: string,
+  keepIntervals: { startMs: number; endMs: number }[],
+): Promise<string> {
+  const tmp = join(tmpdir(), `concat-audio-${randomUUID()}.wav`)
+  const filterParts: string[] = []
+  keepIntervals.forEach((seg, i) => {
+    const start = seg.startMs / 1000
+    const end = seg.endMs / 1000
+    filterParts.push(`[0:a]atrim=${start}:${end},asetpts=PTS-STARTPTS[a${i}]`)
+  })
+  const n = keepIntervals.length
+  const audioInputs = keepIntervals.map((_, i) => `[a${i}]`).join("")
+  filterParts.push(`${audioInputs}concat=n=${n}:v=0:a=1[outa]`)
+
+  await run(binaryPath, [
+    "-y",
+    "-i",
+    inputPath,
+    "-filter_complex",
+    filterParts.join(";"),
+    "-map",
+    "[outa]",
+    tmp,
+  ])
+  return tmp
 }
 
 export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
@@ -455,9 +493,27 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
       ...(opts.srtPath && !opts.assPath ? { srtPath: opts.srtPath } : {}),
       ...(opts.reframe ? { reframe: true, cropX: opts.cropX, blurBg: opts.blurBg } : {}),
       ...(opts.hookText ? { hookText: opts.hookText } : {}),
+      ...(opts.normalizeLoudness ? { normalizeLoudness: true } : {}),
       ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
     })
     return
+  }
+
+  // E6 — two-pass loudnorm on the real concatenated signal, not a single input range. Measured
+  // before building the main filtergraph so the stats can be spliced into the [outa] chain below.
+  let loudnessStats: LoudnessStats | null = null
+  if (opts.normalizeLoudness) {
+    const concatAudioPath = await extractConcatAudio(
+      opts.binaryPath,
+      opts.inputPath,
+      opts.keepIntervals,
+    )
+    try {
+      const totalMs = opts.keepIntervals.reduce((sum, iv) => sum + (iv.endMs - iv.startMs), 0)
+      loudnessStats = await measureLoudness(opts.binaryPath, concatAudioPath, 0, totalMs)
+    } finally {
+      await unlink(concatAudioPath).catch(() => {})
+    }
   }
 
   const filterParts: string[] = []
@@ -490,7 +546,12 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
   const videoInputs = opts.keepIntervals.map((_, i) => `[v${i}]`).join("")
   const audioInputs = opts.keepIntervals.map((_, i) => `[a${i}]`).join("")
   filterParts.push(`${videoInputs}concat=n=${n}:v=1:a=0[outv]`)
-  filterParts.push(`${audioInputs}concat=n=${n}:v=0:a=1[outa]`)
+  if (loudnessStats) {
+    filterParts.push(`${audioInputs}concat=n=${n}:v=0:a=1[outaraw]`)
+    filterParts.push(`[outaraw]${loudnormFilter(loudnessStats)}[outa]`)
+  } else {
+    filterParts.push(`${audioInputs}concat=n=${n}:v=0:a=1[outa]`)
+  }
 
   // Each segment already resets to its own PTS=0 via setpts=PTS-STARTPTS before concat, so the
   // concatenated [outv] stream's own timeline starts at 0 — chaining subtitles then drawtext onto
