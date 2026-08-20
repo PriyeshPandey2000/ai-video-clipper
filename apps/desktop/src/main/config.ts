@@ -64,6 +64,7 @@ export function loadGroqApiKeySync(): string | null {
 export async function saveGroqApiKey(groqApiKey: string): Promise<void> {
   const config = await readConfig()
   delete config.groqApiKey
+  delete config.groqApiKeyEncrypted
   if (safeStorage.isEncryptionAvailable()) {
     config.groqApiKeyEncrypted = safeStorage.encryptString(groqApiKey).toString("base64")
   } else {
