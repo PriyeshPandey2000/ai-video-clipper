@@ -57,6 +57,7 @@ video-ai-editor/
 │   ├── ffmpeg/                ← FFmpeg wrapper (clip export, proxy gen, audio extract)
 │   ├── whisper/               ← Whisper model download + transcription runner
 │   ├── transcript/            ← Transcript processing (filler detection, silence, SRT)
+│   ├── captions/               ← Caption styling (ASS subtitle generation for burn-in)
 │   ├── export/                ← Export pipeline orchestration
 │   ├── player/                ← React <VideoPlayer> component
 │   └── ui/                    ← Shared UI components (Button, Card, Badge, etc.)
@@ -126,6 +127,7 @@ whisper   → types
 ffmpeg    → types
 transcript → types, utils, whisper (types only)
 ai        → types
+captions  → utils, types (types only)
 export    → types, utils, ffmpeg
 player    → types
 desktop   → all packages

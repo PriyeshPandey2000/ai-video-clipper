@@ -12,13 +12,19 @@ Open-source alternative to OpusClip, Descript & Submagic. Turn long recordings i
 - Export clips as 9:16 vertical video with burned-in subtitles
 - Export full episode with filler words and silences removed
 
-## Prerequisites
+## Install
 
-- macOS
-- [Homebrew](https://brew.sh)
-- [Groq API key](https://console.groq.com) (free — used for AI clip suggestions)
+**macOS, Apple Silicon (M1 or later).** Windows support planned.
 
-## Setup
+1. Download the latest `.dmg` from [Releases](https://github.com/PriyeshPandey2000/ai-video-clipper/releases/latest)
+2. Open it, drag Clipper to Applications
+3. Launch Clipper, add your [Groq API key](https://console.groq.com) (free) in Settings
+
+The app is signed and notarized — no Gatekeeper warnings.
+
+### Build from source
+
+For development or contributing. Requires [Homebrew](https://brew.sh).
 
 ```bash
 git clone https://github.com/PriyeshPandey2000/ai-video-clipper.git
@@ -26,15 +32,13 @@ cd ai-video-clipper
 bash scripts/setup.sh
 ```
 
-The script installs Node.js, pnpm, dependencies, and the bundled FFmpeg. It also creates a `.env` template.
+The script installs Node.js, pnpm, dependencies, and the bundled FFmpeg/Whisper. It also creates a `.env` template.
 
 Add your Groq key to `.env`:
 
 ```
 GROQ_API_KEY=your_key_here
 ```
-
-## Run
 
 ```bash
 pnpm dev
@@ -108,7 +112,7 @@ The deep dive — IPC contracts, database schema, dependency rules — is in [`d
 
 ## Tech stack
 
-Electron · React 19 · TypeScript · Tailwind v4 · SQLite (Drizzle ORM) · whisper.cpp · FFmpeg · Groq (Llama 3.3 70B)
+Electron · React 19 · TypeScript · Tailwind v4 · SQLite (Drizzle ORM) · whisper.cpp · FFmpeg · Groq (gpt-oss-120b)
 
 ## Contributing
 
