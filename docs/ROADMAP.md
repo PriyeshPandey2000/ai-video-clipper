@@ -78,7 +78,7 @@
 - [x] 9:16 vertical reframe — drag-on-video crop overlay, per-clip position saved to DB, 1080×1920 FFmpeg output
 - [x] Customizable filler word list — add/remove words per project from UI
 - [x] Whisper model manager — Settings page with per-model download (live progress), delete, disk usage
-- [x] Audio crossfade at episode splice points (issue #10)
+- [x] Hard concat at episode splice points (issue #10) — crossfade (`3a1b777`) caused AV drift over long episodes and was reverted (`2216dcc`); cuts land at near-silent boundaries so hard concat is imperceptible
 - [x] Episode SRT timestamp remapping (issue #7)
 
 ## Phase 8 — Distribution + reach ❌ Not started
