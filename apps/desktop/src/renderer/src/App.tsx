@@ -1151,14 +1151,18 @@ function ProjectView({
             className="flex items-center gap-2 select-none cursor-pointer"
             title="Cut filler words and silences out of exported clips. Turn off to preserve delivery rhythm on tight clips."
           >
-            <div
+            <button
+              type="button"
+              role="switch"
+              aria-checked={removeFillers}
+              aria-label="Remove fillers"
               onClick={() => setRemoveFillers((v) => !v)}
               className={`relative w-7 h-4 rounded-full transition-colors cursor-pointer ${removeFillers ? "bg-violet-600" : "bg-neutral-700"}`}
             >
               <div
                 className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${removeFillers ? "translate-x-3.5" : "translate-x-0.5"}`}
               />
-            </div>
+            </button>
             <span className="text-xs text-neutral-400">Remove fillers</span>
           </label>
 

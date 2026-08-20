@@ -457,16 +457,23 @@ async function extractConcatAudio(
   const audioInputs = keepIntervals.map((_, i) => `[a${i}]`).join("")
   filterParts.push(`${audioInputs}concat=n=${n}:v=0:a=1[outa]`)
 
-  await run(binaryPath, [
-    "-y",
-    "-i",
-    inputPath,
-    "-filter_complex",
-    filterParts.join(";"),
-    "-map",
-    "[outa]",
-    tmp,
-  ])
+  try {
+    await run(binaryPath, [
+      "-y",
+      "-i",
+      inputPath,
+      "-filter_complex",
+      filterParts.join(";"),
+      "-map",
+      "[outa]",
+      tmp,
+    ])
+  } catch (err) {
+    // ffmpeg can leave a partial file behind on failure — the caller never receives `tmp` on the
+    // throw path below, so it can't clean this up itself; do it here before rethrowing.
+    await unlink(tmp).catch(() => {})
+    throw err
+  }
   return tmp
 }
 
@@ -501,18 +508,24 @@ export async function exportEpisode(opts: EpisodeExportOptions): Promise<void> {
 
   // E6 — two-pass loudnorm on the real concatenated signal, not a single input range. Measured
   // before building the main filtergraph so the stats can be spliced into the [outa] chain below.
+  // Best-effort like measureLoudness itself: extraction/measurement failing should skip
+  // normalization, not abort the whole export — normalizeLoudness never used to be able to fail
+  // the export outright, and a temp-file extraction step shouldn't change that contract.
   let loudnessStats: LoudnessStats | null = null
   if (opts.normalizeLoudness) {
-    const concatAudioPath = await extractConcatAudio(
-      opts.binaryPath,
-      opts.inputPath,
-      opts.keepIntervals,
-    )
+    let concatAudioPath: string | null = null
     try {
+      concatAudioPath = await extractConcatAudio(
+        opts.binaryPath,
+        opts.inputPath,
+        opts.keepIntervals,
+      )
       const totalMs = opts.keepIntervals.reduce((sum, iv) => sum + (iv.endMs - iv.startMs), 0)
       loudnessStats = await measureLoudness(opts.binaryPath, concatAudioPath, 0, totalMs)
+    } catch {
+      loudnessStats = null
     } finally {
-      await unlink(concatAudioPath).catch(() => {})
+      if (concatAudioPath) await unlink(concatAudioPath).catch(() => {})
     }
   }
 
