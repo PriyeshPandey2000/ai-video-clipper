@@ -432,7 +432,18 @@ export async function selectClips(
   const chunks = topicsToChunks(sentences, topics)
   const perChunk: Candidate[][] = []
   for (const chunk of chunks) {
-    perChunk.push(await selectFromChunk(client, chunk, words, arousalPerSec, contentType))
+    // client.generateObject already retries transient/malformed-JSON failures internally. If a
+    // chunk still fails after that, drop just this chunk's candidates rather than aborting clip
+    // selection for the whole video — other chunks' clips are still worth surfacing.
+    try {
+      perChunk.push(await selectFromChunk(client, chunk, words, arousalPerSec, contentType))
+    } catch (err) {
+      console.error(
+        `[clip-selector] chunk (sentences #${chunk[0]?.index}-#${chunk[chunk.length - 1]?.index}) failed after retries, skipping:`,
+        err,
+      )
+      perChunk.push([])
+    }
   }
 
   const clips: ClipSuggestion[] = []

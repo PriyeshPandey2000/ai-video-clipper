@@ -135,6 +135,7 @@ export interface IpcChannels {
       burnSubtitles?: boolean
       reframe?: boolean
       blurBg?: boolean
+      removeFillers?: boolean
       captionStyle?: CaptionStyle
     }
     result: string[]

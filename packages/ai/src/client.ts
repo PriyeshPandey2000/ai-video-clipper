@@ -58,6 +58,17 @@ export function createAiClient(config?: AiClientConfig): AiClient {
   throw new Error(`Unsupported provider: ${provider}`)
 }
 
+// A malformed/truncated JSON response from the model is common enough with json_object mode
+// (no schema enforcement server-side) that a single attempt regularly loses an entire chunk's
+// worth of clip candidates. Retrying a few times with backoff turns a transient bad response
+// into a non-event instead of an aborted pipeline stage.
+const GENERATE_OBJECT_ATTEMPTS = 3
+const RETRY_BACKOFF_MS = 500
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 function createGroqClient(
   groq: ReturnType<typeof createGroq>,
   textModel: string,
@@ -76,18 +87,27 @@ function createGroqClient(
       return text
     },
     async generateObject({ prompt, schema: _schema, system }) {
-      const { output } = await generateText({
-        model: groq(structuredModel),
-        prompt: `${prompt}\n\nReturn ONLY valid JSON. No explanation, no markdown, no code fences.`,
-        ...(system ? { system } : {}),
-        output: Output.object({ schema: _schema }),
-        providerOptions: {
-          groq: {
-            structuredOutputs: false,
-          },
-        },
-      })
-      return output as never
+      let lastError: unknown
+      for (let attempt = 1; attempt <= GENERATE_OBJECT_ATTEMPTS; attempt++) {
+        try {
+          const { output } = await generateText({
+            model: groq(structuredModel),
+            prompt: `${prompt}\n\nReturn ONLY valid JSON. No explanation, no markdown, no code fences.`,
+            ...(system ? { system } : {}),
+            output: Output.object({ schema: _schema }),
+            providerOptions: {
+              groq: {
+                structuredOutputs: false,
+              },
+            },
+          })
+          return output as never
+        } catch (err) {
+          lastError = err
+          if (attempt < GENERATE_OBJECT_ATTEMPTS) await sleep(RETRY_BACKOFF_MS * attempt)
+        }
+      }
+      throw lastError
     },
   }
 }

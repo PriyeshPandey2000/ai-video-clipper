@@ -666,6 +666,7 @@ function ProjectView({
   const [reframe, setReframe] = useState(false)
   const [reframeWarning, setReframeWarning] = useState<string | null>(null)
   const [blurBg, setBlurBg] = useState(false)
+  const [removeFillers, setRemoveFillers] = useState(true)
   const [episodeCropX, setEpisodeCropX] = useState(0.5)
   const [subtitlesSupported, setSubtitlesSupported] = useState<boolean | null>(null)
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle>(DEFAULT_CAPTION_STYLE)
@@ -946,6 +947,7 @@ function ProjectView({
         burnSubtitles,
         reframe,
         blurBg,
+        removeFillers,
         ...(burnSubtitles ? { captionStyle } : {}),
       })
       firstPath = paths[0]
@@ -964,7 +966,7 @@ function ProjectView({
       }
     }
     if (firstPath) await window.api.invoke("shell:show-item", { path: firstPath }).catch(() => {})
-  }, [project.id, outputDir, burnSubtitles, reframe, blurBg, captionStyle])
+  }, [project.id, outputDir, burnSubtitles, reframe, blurBg, removeFillers, captionStyle])
 
   const handleExportSrt = useCallback(async () => {
     setExportingSrt(true)
@@ -1143,6 +1145,25 @@ function ProjectView({
               />
             </div>
             <span className="text-xs text-neutral-400">Subtitles</span>
+          </label>
+
+          <label
+            className="flex items-center gap-2 select-none cursor-pointer"
+            title="Cut filler words and silences out of exported clips. Turn off to preserve delivery rhythm on tight clips."
+          >
+            <button
+              type="button"
+              role="switch"
+              aria-checked={removeFillers}
+              aria-label="Remove fillers"
+              onClick={() => setRemoveFillers((v) => !v)}
+              className={`relative w-7 h-4 rounded-full transition-colors cursor-pointer ${removeFillers ? "bg-violet-600" : "bg-neutral-700"}`}
+            >
+              <div
+                className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${removeFillers ? "translate-x-3.5" : "translate-x-0.5"}`}
+              />
+            </button>
+            <span className="text-xs text-neutral-400">Remove fillers</span>
           </label>
 
           <label className="flex items-center gap-2 select-none cursor-pointer">
@@ -1593,7 +1614,14 @@ function ProjectView({
               <ClipReview
                 projectId={project.id}
                 onSelectClip={handleSelectClip}
-                exportSettings={{ outputDir, burnSubtitles, reframe, blurBg, captionStyle }}
+                exportSettings={{
+                  outputDir,
+                  burnSubtitles,
+                  reframe,
+                  blurBg,
+                  removeFillers,
+                  captionStyle,
+                }}
                 refreshTrigger={clipRefreshTrigger}
                 analysisComplete={project.status === "ready"}
               />
