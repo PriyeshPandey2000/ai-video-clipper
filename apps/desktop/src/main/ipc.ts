@@ -1,7 +1,7 @@
 import { ipcMain, BrowserWindow, app, shell, dialog } from "electron"
 import { join } from "path"
 import { tmpdir } from "os"
-import { copyFile, mkdir, writeFile, unlink, readFile } from "fs/promises"
+import { copyFile, mkdir, writeFile, unlink } from "fs/promises"
 import {
   getDb,
   projects,
@@ -47,6 +47,7 @@ import {
   DEFAULT_FILLER_WORDS,
 } from "@video-editor/transcript"
 import { createAiClient, selectClips, generateSocialCaptions } from "@video-editor/ai"
+import { saveGroqApiKey } from "./config"
 import { buildAssFile } from "@video-editor/captions"
 import type { CaptionStyle } from "@video-editor/types"
 
@@ -796,18 +797,7 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle("settings:set-api-key", async (_event, { groqApiKey }: { groqApiKey: string }) => {
-    const configPath = join(app.getPath("userData"), "config.json")
-    let config: Record<string, unknown> = {}
-    try {
-      const parsed: unknown = JSON.parse(await readFile(configPath, "utf-8"))
-      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-        config = parsed as Record<string, unknown>
-      }
-    } catch {
-      // file doesn't exist yet or is malformed — start fresh
-    }
-    config.groqApiKey = groqApiKey
-    await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8")
+    await saveGroqApiKey(groqApiKey)
     process.env["GROQ_API_KEY"] = groqApiKey
   })
 }
