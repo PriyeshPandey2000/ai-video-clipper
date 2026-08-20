@@ -65,8 +65,9 @@
 
 - [x] App icon — Clipper C lettermark (SVG + 1024×1024 PNG), `productName` updated to "Clipper"
 - [x] `scripts/setup.sh` — full dev environment bootstrap (Node, pnpm, FFmpeg bundle, .env template)
-- [ ] Mac DMG build
-- [ ] Code signing + notarization (Apple Developer account required)
+- [x] Mac DMG build (`electron-builder`, dmg + zip targets)
+- [x] Code signing + notarization — hardened runtime, `xcrun notarytool`, stapled dmg/zip
+- [x] Tag-triggered release pipeline (`.github/workflows/release.yml`) — build, sign, notarize, draft GitHub Release with assets
 - [ ] Auto-update via `electron-updater`
 - [ ] Onboarding flow (first-run walkthrough: drop video → pick model → transcribe)
 

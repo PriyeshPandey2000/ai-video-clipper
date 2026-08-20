@@ -36,13 +36,13 @@
 
 ---
 
-## ADR-005: Cloud AI (OpenAI/Anthropic) with user's API key
+## ADR-005: Cloud AI (Groq) with user's API key
 
-**Decision:** User provides their own API key for clip selection, blog post, captions.
+**Decision:** User provides their own Groq API key for clip selection, blog post, captions.
 
-**Why:** Cloud models (GPT-4o, Claude) produce significantly higher quality output than local models for content tasks. User controls cost. No backend infrastructure needed for v1.
+**Why:** Cloud models produce significantly higher quality output than local models for content tasks. Groq specifically: free tier, fast inference, no backend infrastructure needed for v1. User controls cost. `packages/ai` is provider-agnostic by design (`AiClient` abstraction) — OpenAI/Anthropic were the original candidates but Groq shipped first and is the only implemented provider today.
 
-**Future:** May add optional proxy backend later for freemium tier where we absorb API costs.
+**Future:** May add optional proxy backend later for freemium tier where we absorb API costs. Additional providers can be added behind the existing `AiClient` interface without touching call sites.
 
 ---
 
