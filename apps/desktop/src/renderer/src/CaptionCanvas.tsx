@@ -1,6 +1,7 @@
 import { useEffect, useRef, useMemo } from "react"
 import type { CaptionStyle } from "@video-editor/types"
-import { drawCaptionFrame, buildCaptionAccentSet } from "./draw"
+import { buildCaptionAccentSet } from "@video-editor/utils"
+import { drawCaptionFrame } from "./draw"
 
 interface Word {
   text: string

@@ -8,6 +8,7 @@ import type {
   CaptionStyle,
   IpcEventChannels,
 } from "@video-editor/types"
+import { DEFAULT_CAPTION_STYLE } from "@video-editor/captions"
 import { Button } from "@video-editor/ui"
 import { Progress } from "@video-editor/ui"
 import { Spinner } from "@video-editor/ui"
@@ -79,16 +80,6 @@ function StylePreviewCard({
       </span>
     </button>
   )
-}
-
-const DEFAULT_CAPTION_STYLE: CaptionStyle = {
-  preset: "hormozi",
-  accentColor: "#FFD700",
-  textColor: "#FFFFFF",
-  position: "bottom",
-  size: "M",
-  allCaps: true,
-  showKeywords: true,
 }
 
 type View = "empty" | "projects" | "project" | "settings"
