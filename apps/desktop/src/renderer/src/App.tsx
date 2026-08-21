@@ -6,7 +6,7 @@ import type {
   WhisperModel,
   Clip,
   CaptionStyle,
-  IpcChannels,
+  IpcEventChannels,
 } from "@video-editor/types"
 import { Button } from "@video-editor/ui"
 import { Progress } from "@video-editor/ui"
@@ -659,7 +659,9 @@ function ProjectView({
   const [isPlaying, setIsPlaying] = useState(false)
   const [exportingEpisode, setExportingEpisode] = useState(false)
   const [exportingAllClips, setExportingAllClips] = useState(false)
-  const [exportProgress, setExportProgress] = useState<IpcChannels["export:progress"] | null>(null)
+  const [exportProgress, setExportProgress] = useState<IpcEventChannels["export:progress"] | null>(
+    null,
+  )
   const [exportError, setExportError] = useState<string | null>(null)
   const activeProjectIdRef = useRef(project.id)
   const [clipRefreshTrigger, setClipRefreshTrigger] = useState(0)
@@ -762,13 +764,6 @@ function ProjectView({
     setHighlightRange(null)
     setIsPlaying(false)
     setCropX(0.5)
-  }, [project.id])
-
-  useEffect(() => {
-    const unsub = window.api.on("export:progress", (data) => {
-      if (data.projectId === project.id) setExportProgress(data)
-    })
-    return unsub
   }, [project.id])
 
   // Keep ref current so drawFrame always reads latest cropX without restarting the RAF loop

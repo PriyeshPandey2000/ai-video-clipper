@@ -115,8 +115,7 @@ export interface CaptionStyle {
   showKeywords: boolean
 }
 
-export interface IpcChannels {
-  // invoke channels
+export interface IpcInvokeChannels {
   "project:list": { args: void; result: Project[] }
   "project:create": { args: { name: string; mediaPath: string }; result: Project }
   "project:get": { args: { id: string }; result: Project | null }
@@ -173,7 +172,10 @@ export interface IpcChannels {
   "models:download": { args: { model: WhisperModel }; result: void }
   "settings:get-api-key": { args: void; result: { configured: boolean; preview: string | null } }
   "settings:set-api-key": { args: { groqApiKey: string }; result: void }
-  // event channels (main → renderer)
+}
+
+// Main → renderer (send/on): payload only, no args/result envelope.
+export interface IpcEventChannels {
   "models:download-progress": { model: WhisperModel; progress: number }
   "pipeline:progress": PipelineProgress
   "pipeline:complete": { projectId: string }

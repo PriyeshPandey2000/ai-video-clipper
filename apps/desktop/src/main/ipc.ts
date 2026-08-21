@@ -36,7 +36,12 @@ import {
 } from "@video-editor/whisper"
 import type { WhisperModel, ModelInfo } from "@video-editor/types"
 import { generateId, now } from "@video-editor/utils"
-import type { PipelineProgress, PipelineStage } from "@video-editor/types"
+import type {
+  PipelineProgress,
+  PipelineStage,
+  IpcInvokeChannels,
+  IpcEventChannels,
+} from "@video-editor/types"
 import {
   whisperToWords,
   detectFillerWords,
@@ -51,6 +56,22 @@ import { saveGroqApiKey } from "./config"
 import log from "./logger"
 import { buildAssFile } from "@video-editor/captions"
 import type { CaptionStyle } from "@video-editor/types"
+
+// Typed wrapper around ipcMain.handle — channel and callback args are checked against
+// IpcInvokeChannels, so a renamed/retyped channel is a compile error on the main side too
+// (the renderer side was already checked via IpcInvokeChannels in preload/env.d.ts).
+function handle<K extends keyof IpcInvokeChannels>(
+  channel: K,
+  listener: (
+    event: Electron.IpcMainInvokeEvent,
+    args: IpcInvokeChannels[K]["args"],
+  ) => IpcInvokeChannels[K]["result"] | Promise<IpcInvokeChannels[K]["result"]>,
+): void {
+  ipcMain.handle(
+    channel,
+    listener as (event: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown,
+  )
+}
 
 // Both branches must return a path whose direct children are ffmpeg/whisper/fonts. In dev this
 // is the repo's own resources/ folder. In a packaged app, process.resourcesPath is
@@ -162,7 +183,7 @@ export function registerIpcHandlers(): void {
   const dbPath = join(app.getPath("userData"), "db.sqlite")
   const db = getDb(dbPath)
 
-  function send(channel: string, data: unknown): void {
+  function send<K extends keyof IpcEventChannels>(channel: K, data: IpcEventChannels[K]): void {
     const win = BrowserWindow.getAllWindows()[0]
     if (win) win.webContents.send(channel, data)
   }
@@ -214,23 +235,23 @@ export function registerIpcHandlers(): void {
     }
   }
 
-  ipcMain.handle("project:list", async () => {
+  handle("project:list", async () => {
     return db.select().from(projects).orderBy(desc(projects.updatedAt)).all()
   })
 
-  ipcMain.handle("project:get", async (_event, { id }: { id: string }) => {
+  handle("project:get", async (_event, { id }: { id: string }) => {
     return db.select().from(projects).where(eq(projects.id, id)).all()[0] ?? null
   })
 
-  ipcMain.handle("project:get-words", async (_event, { projectId }) => {
+  handle("project:get-words", async (_event, { projectId }) => {
     return db.select().from(words).where(eq(words.projectId, projectId)).all()
   })
 
-  ipcMain.handle("project:get-ai-outputs", async (_event, { projectId }) => {
+  handle("project:get-ai-outputs", async (_event, { projectId }) => {
     return db.select().from(aiOutputs).where(eq(aiOutputs.projectId, projectId)).all()
   })
 
-  ipcMain.handle(
+  handle(
     "project:create",
     async (_event, { name, mediaPath }: { name: string; mediaPath: string }) => {
       const id = generateId()
@@ -262,7 +283,7 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle(
+  handle(
     "pipeline:start",
     async (_event, { projectId, model }: { projectId: string; model: WhisperModel }) => {
       const proj = db.select().from(projects).where(eq(projects.id, projectId)).all()[0]
@@ -414,11 +435,11 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle("clip:list", async (_event, { projectId }) => {
+  handle("clip:list", async (_event, { projectId }) => {
     return db.select().from(clips).where(eq(clips.projectId, projectId)).all()
   })
 
-  ipcMain.handle(
+  handle(
     "clip:update-status",
     async (
       _event,
@@ -431,7 +452,7 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle(
+  handle(
     "clip:update-times",
     async (
       _event,
@@ -446,29 +467,26 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle(
+  handle(
     "clip:update-crop-x",
     async (_event, { clipId, cropX }: { clipId: string; cropX: number }) => {
       db.update(clips).set({ cropX }).where(eq(clips.id, clipId)).run()
     },
   )
 
-  ipcMain.handle("ffmpeg:has-subtitles-filter", async () => {
+  handle("ffmpeg:has-subtitles-filter", async () => {
     return hasSubtitlesFilter(resolveFfmpegBinary(getResourcesPath()))
   })
 
-  ipcMain.handle(
-    "dialog:pick-folder",
-    async (_event, { defaultPath }: { defaultPath?: string }) => {
-      const result = await dialog.showOpenDialog({
-        properties: ["openDirectory", "createDirectory"],
-        defaultPath: defaultPath ?? app.getPath("downloads"),
-      })
-      return result.canceled ? null : (result.filePaths[0] ?? null)
-    },
-  )
+  handle("dialog:pick-folder", async (_event, { defaultPath }: { defaultPath?: string }) => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openDirectory", "createDirectory"],
+      defaultPath: defaultPath ?? app.getPath("downloads"),
+    })
+    return result.canceled ? null : (result.filePaths[0] ?? null)
+  })
 
-  ipcMain.handle(
+  handle(
     "export:clips",
     async (
       _event,
@@ -588,7 +606,7 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle(
+  handle(
     "export:full",
     async (
       _event,
@@ -666,7 +684,7 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle(
+  handle(
     "export:srt",
     async (_event, { projectId, outputDir }: { projectId: string; outputDir?: string }) => {
       const db = getDb(join(app.getPath("userData"), "db.sqlite"))
@@ -684,7 +702,7 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle(
+  handle(
     "project:save-caption-style",
     async (
       _event,
@@ -698,39 +716,33 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle(
-    "project:load-caption-style",
-    async (_event, { projectId }: { projectId: string }) => {
-      const db = getDb(join(app.getPath("userData"), "db.sqlite"))
-      const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
-      if (!project?.captionStyle) return null
-      try {
-        return JSON.parse(project.captionStyle) as CaptionStyle
-      } catch {
-        return null
-      }
-    },
-  )
+  handle("project:load-caption-style", async (_event, { projectId }: { projectId: string }) => {
+    const db = getDb(join(app.getPath("userData"), "db.sqlite"))
+    const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
+    if (!project?.captionStyle) return null
+    try {
+      return JSON.parse(project.captionStyle) as CaptionStyle
+    } catch {
+      return null
+    }
+  })
 
-  ipcMain.handle("get-font-url", () => {
+  handle("get-font-url", () => {
     return `file://${join(getResourcesPath(), "fonts", "Montserrat-ExtraBold.ttf")}`
   })
 
-  ipcMain.handle(
-    "project:get-filler-words",
-    async (_event, { projectId }: { projectId: string }) => {
-      const db = getDb(join(app.getPath("userData"), "db.sqlite"))
-      const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
-      if (!project?.fillerWords) return DEFAULT_FILLER_WORDS
-      try {
-        return JSON.parse(project.fillerWords) as string[]
-      } catch {
-        return DEFAULT_FILLER_WORDS
-      }
-    },
-  )
+  handle("project:get-filler-words", async (_event, { projectId }: { projectId: string }) => {
+    const db = getDb(join(app.getPath("userData"), "db.sqlite"))
+    const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
+    if (!project?.fillerWords) return DEFAULT_FILLER_WORDS
+    try {
+      return JSON.parse(project.fillerWords) as string[]
+    } catch {
+      return DEFAULT_FILLER_WORDS
+    }
+  })
 
-  ipcMain.handle(
+  handle(
     "project:set-filler-words",
     async (_event, { projectId, fillerList }: { projectId: string; fillerList: string[] }) => {
       const db = getDb(join(app.getPath("userData"), "db.sqlite"))
@@ -750,15 +762,15 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle("shell:show-item", async (_event, { path }: { path: string }) => {
+  handle("shell:show-item", async (_event, { path }: { path: string }) => {
     shell.showItemInFolder(path)
   })
 
-  ipcMain.handle("shell:open-logs", async () => {
+  handle("shell:open-logs", async () => {
     await shell.openPath(app.getPath("logs"))
   })
 
-  ipcMain.handle(
+  handle(
     "log:report-error",
     async (
       _event,
@@ -789,7 +801,7 @@ export function registerIpcHandlers(): void {
 
   const WHISPER_MODELS: WhisperModel[] = ["tiny", "base", "small", "medium", "large"]
 
-  ipcMain.handle("models:list", async () => {
+  handle("models:list", async () => {
     const modelsDir = join(app.getPath("userData"), "models")
     const results: ModelInfo[] = await Promise.all(
       WHISPER_MODELS.map(async (model) => {
@@ -801,26 +813,26 @@ export function registerIpcHandlers(): void {
     return results
   })
 
-  ipcMain.handle("models:delete", async (_event, { model }: { model: WhisperModel }) => {
+  handle("models:delete", async (_event, { model }: { model: WhisperModel }) => {
     const modelsDir = join(app.getPath("userData"), "models")
     await deleteModel(modelsDir, model)
   })
 
-  ipcMain.handle("models:download", async (_event, { model }: { model: WhisperModel }) => {
+  handle("models:download", async (_event, { model }: { model: WhisperModel }) => {
     const modelsDir = join(app.getPath("userData"), "models")
     await ensureModelDownloaded(modelsDir, model, (progress) => {
       send("models:download-progress", { model, progress })
     })
   })
 
-  ipcMain.handle("settings:get-api-key", async () => {
+  handle("settings:get-api-key", async () => {
     const key = process.env["GROQ_API_KEY"] ?? ""
     if (!key) return { configured: false, preview: null }
     const preview = key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : "****"
     return { configured: true, preview }
   })
 
-  ipcMain.handle("settings:set-api-key", async (_event, { groqApiKey }: { groqApiKey: string }) => {
+  handle("settings:set-api-key", async (_event, { groqApiKey }: { groqApiKey: string }) => {
     await saveGroqApiKey(groqApiKey)
     process.env["GROQ_API_KEY"] = groqApiKey
   })
