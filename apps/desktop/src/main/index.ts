@@ -4,6 +4,9 @@ import { existsSync } from "fs"
 import { closeDb } from "@video-editor/database"
 import { registerIpcHandlers } from "./ipc"
 import { loadGroqApiKeySync } from "./config"
+import { initLogger } from "./logger"
+
+initLogger()
 
 // Load .env into process.env for the main process.
 // dotenv searches from process.cwd() by default, which in dev mode

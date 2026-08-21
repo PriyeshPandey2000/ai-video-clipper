@@ -48,6 +48,7 @@ import {
 } from "@video-editor/transcript"
 import { createAiClient, selectClips, generateSocialCaptions } from "@video-editor/ai"
 import { saveGroqApiKey } from "./config"
+import log from "./logger"
 import { buildAssFile } from "@video-editor/captions"
 import type { CaptionStyle } from "@video-editor/types"
 
@@ -151,6 +152,13 @@ function projectDir(projectId: string): string {
 }
 
 export function registerIpcHandlers(): void {
+  const resourcesPath = getResourcesPath()
+  log.info("Resolved binary paths", {
+    resourcesPath,
+    ffmpeg: resolveFfmpegBinary(resourcesPath),
+    whisper: resolveWhisperBinary(resourcesPath),
+  })
+
   const dbPath = join(app.getPath("userData"), "db.sqlite")
   const db = getDb(dbPath)
 
@@ -197,6 +205,7 @@ export function registerIpcHandlers(): void {
       sendProgress(projectId, "analyzing", 1, "Ready for transcription")
       send("pipeline:complete", { projectId })
     } catch (err) {
+      log.error(`Import pipeline failed for project ${projectId}`, err)
       db.update(projects)
         .set({ status: "error", updatedAt: now() })
         .where(eq(projects.id, projectId))
@@ -258,7 +267,10 @@ export function registerIpcHandlers(): void {
     async (_event, { projectId, model }: { projectId: string; model: WhisperModel }) => {
       const proj = db.select().from(projects).where(eq(projects.id, projectId)).all()[0]
       if (!proj) throw new Error(`Project ${projectId} not found`)
-      if (proj.status === "transcribing" || proj.status === "analyzing") return
+      if (proj.status === "transcribing" || proj.status === "analyzing") {
+        log.warn(`pipeline:start ignored — project ${projectId} already ${proj.status}`)
+        return
+      }
 
       db.update(projects)
         .set({ status: "transcribing", updatedAt: now() })
@@ -326,11 +338,11 @@ export function registerIpcHandlers(): void {
 
           sendProgress(projectId, "generating_clips", 0.05, "Segmenting topics")
           const topics = await segmentTopics(sentences, modelsDir)
-          console.log(`[topics] ${topics.length} segment(s) found`)
+          log.info(`[topics] ${topics.length} segment(s) found`)
 
           sendProgress(projectId, "generating_clips", 0.07, "Measuring audio arousal")
           const arousalPerSec = await measureArousal(ffmpegBin, audioPath)
-          console.log(`[arousal] ${arousalPerSec.length} seconds measured`)
+          log.info(`[arousal] ${arousalPerSec.length} seconds measured`)
 
           sendProgress(projectId, "generating_clips", 0.1, "Analyzing transcript for clips")
           const { clips: clipSuggestions, rejected } = await selectClips(
@@ -342,7 +354,7 @@ export function registerIpcHandlers(): void {
             arousalPerSec,
           )
           if (rejected.length > 0) {
-            console.log(
+            log.info(
               `[clips] ${clipSuggestions.length} kept, ${rejected.length} dropped by quality gate:`,
               rejected.map((r) => `${r.title} (${r.reasons.join(", ")})`).join(" | "),
             )
@@ -382,10 +394,7 @@ export function registerIpcHandlers(): void {
               .run()
           }
         } catch (err) {
-          console.warn(
-            "AI stage failed (GROQ_API_KEY missing or AI error) — transcript saved:",
-            String(err),
-          )
+          log.warn("AI stage failed (GROQ_API_KEY missing or AI error) — transcript saved:", err)
         }
 
         db.update(projects)
@@ -395,6 +404,7 @@ export function registerIpcHandlers(): void {
 
         send("pipeline:complete", { projectId })
       } catch (err) {
+        log.error(`Transcription pipeline failed for project ${projectId}`, err)
         db.update(projects)
           .set({ status: "error", updatedAt: now() })
           .where(eq(projects.id, projectId))
@@ -743,6 +753,20 @@ export function registerIpcHandlers(): void {
   ipcMain.handle("shell:show-item", async (_event, { path }: { path: string }) => {
     shell.showItemInFolder(path)
   })
+
+  ipcMain.handle("shell:open-logs", async () => {
+    await shell.openPath(app.getPath("logs"))
+  })
+
+  ipcMain.handle(
+    "log:report-error",
+    async (
+      _event,
+      { message, stack, source }: { message: string; stack?: string; source: string },
+    ) => {
+      log.error(`[renderer:${source}] ${message}`, stack ?? "")
+    },
+  )
 
   // Deduplicates concurrent download requests for the same model across both
   // pipeline:start (implicit) and models:download (explicit) call sites.
