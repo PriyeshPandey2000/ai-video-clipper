@@ -35,8 +35,14 @@ import {
   resolveWhisperBinary,
 } from "@video-editor/whisper"
 import type { WhisperModel, ModelInfo } from "@video-editor/types"
+import { WHISPER_MODELS } from "@video-editor/types"
 import { generateId, now } from "@video-editor/utils"
-import type { PipelineProgress, PipelineStage } from "@video-editor/types"
+import type {
+  PipelineProgress,
+  PipelineStage,
+  IpcInvokeChannels,
+  IpcEventChannels,
+} from "@video-editor/types"
 import {
   whisperToWords,
   detectFillerWords,
@@ -47,10 +53,27 @@ import {
   DEFAULT_FILLER_WORDS,
 } from "@video-editor/transcript"
 import { createAiClient, selectClips, generateSocialCaptions } from "@video-editor/ai"
+import { sanitizeName, buildSrt, remapWordsToEpisodeTimeline } from "@video-editor/export"
 import { saveGroqApiKey } from "./config"
 import log from "./logger"
 import { buildAssFile } from "@video-editor/captions"
 import type { CaptionStyle } from "@video-editor/types"
+
+// Typed wrapper around ipcMain.handle — channel and callback args are checked against
+// IpcInvokeChannels, so a renamed/retyped channel is a compile error on the main side too
+// (the renderer side was already checked via IpcInvokeChannels in preload/env.d.ts).
+function handle<K extends keyof IpcInvokeChannels>(
+  channel: K,
+  listener: (
+    event: Electron.IpcMainInvokeEvent,
+    args: IpcInvokeChannels[K]["args"],
+  ) => IpcInvokeChannels[K]["result"] | Promise<IpcInvokeChannels[K]["result"]>,
+): void {
+  ipcMain.handle(
+    channel,
+    listener as (event: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown,
+  )
+}
 
 // Both branches must return a path whose direct children are ffmpeg/whisper/fonts. In dev this
 // is the repo's own resources/ folder. In a packaged app, process.resourcesPath is
@@ -65,82 +88,6 @@ function getResourcesPath(): string {
   return app.isPackaged
     ? join(process.resourcesPath, "resources")
     : join(__dirname, "../../../../resources")
-}
-
-function sanitizeName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9_-]/g, "_")
-}
-
-function msToSrtTime(ms: number): string {
-  const h = Math.floor(ms / 3_600_000)
-  const m = Math.floor((ms % 3_600_000) / 60_000)
-  const s = Math.floor((ms % 60_000) / 1000)
-  const millis = ms % 1000
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(millis).padStart(3, "0")}`
-}
-
-function buildSrt(wordRows: Array<{ text: string; startMs: number; endMs: number }>): string {
-  if (wordRows.length === 0) return ""
-  const MAX_WORDS = 8
-  const MAX_DURATION_MS = 4000
-  const lines: Array<{ start: number; end: number; text: string }> = []
-  let i = 0
-  while (i < wordRows.length) {
-    const lineStart = wordRows[i]!.startMs
-    const lineWords: string[] = []
-    let lineEnd = lineStart
-    while (i < wordRows.length && lineWords.length < MAX_WORDS) {
-      const word = wordRows[i]!
-      if (
-        lineWords.length > 0 &&
-        (word.startMs - lineEnd > 1000 || word.endMs - lineStart > MAX_DURATION_MS)
-      ) {
-        break
-      }
-      lineWords.push(word.text.trim())
-      lineEnd = word.endMs
-      i++
-    }
-    if (lineWords.length > 0) {
-      lines.push({ start: lineStart, end: lineEnd, text: lineWords.join(" ") })
-    }
-  }
-  return lines
-    .map(
-      (line, idx) =>
-        `${idx + 1}\n${msToSrtTime(line.start)} --> ${msToSrtTime(line.end)}\n${line.text}\n`,
-    )
-    .join("\n")
-}
-
-function remapWordsToEpisodeTimeline(
-  wordRows: Array<{ text: string; startMs: number; endMs: number }>,
-  keepIntervals: Array<{ startMs: number; endMs: number }>,
-): Array<{ text: string; startMs: number; endMs: number }> {
-  const intervalOutputStarts: number[] = []
-  let cumulative = 0
-  for (const interval of keepIntervals) {
-    intervalOutputStarts.push(cumulative)
-    cumulative += interval.endMs - interval.startMs
-  }
-
-  const remapped: Array<{ text: string; startMs: number; endMs: number }> = []
-  for (const word of wordRows) {
-    for (let i = 0; i < keepIntervals.length; i++) {
-      const interval = keepIntervals[i]!
-      if (word.startMs >= interval.startMs && word.startMs < interval.endMs) {
-        const offset = intervalOutputStarts[i]!
-        remapped.push({
-          ...word,
-          startMs: word.startMs - interval.startMs + offset,
-          endMs: Math.min(word.endMs, interval.endMs) - interval.startMs + offset,
-        })
-        break
-      }
-    }
-    // words starting in removed segments are dropped
-  }
-  return remapped
 }
 
 function getProjectsDir(): string {
@@ -162,7 +109,7 @@ export function registerIpcHandlers(): void {
   const dbPath = join(app.getPath("userData"), "db.sqlite")
   const db = getDb(dbPath)
 
-  function send(channel: string, data: unknown): void {
+  function send<K extends keyof IpcEventChannels>(channel: K, data: IpcEventChannels[K]): void {
     const win = BrowserWindow.getAllWindows()[0]
     if (win) win.webContents.send(channel, data)
   }
@@ -214,23 +161,23 @@ export function registerIpcHandlers(): void {
     }
   }
 
-  ipcMain.handle("project:list", async () => {
+  handle("project:list", async () => {
     return db.select().from(projects).orderBy(desc(projects.updatedAt)).all()
   })
 
-  ipcMain.handle("project:get", async (_event, { id }: { id: string }) => {
+  handle("project:get", async (_event, { id }: { id: string }) => {
     return db.select().from(projects).where(eq(projects.id, id)).all()[0] ?? null
   })
 
-  ipcMain.handle("project:get-words", async (_event, { projectId }) => {
+  handle("project:get-words", async (_event, { projectId }) => {
     return db.select().from(words).where(eq(words.projectId, projectId)).all()
   })
 
-  ipcMain.handle("project:get-ai-outputs", async (_event, { projectId }) => {
+  handle("project:get-ai-outputs", async (_event, { projectId }) => {
     return db.select().from(aiOutputs).where(eq(aiOutputs.projectId, projectId)).all()
   })
 
-  ipcMain.handle(
+  handle(
     "project:create",
     async (_event, { name, mediaPath }: { name: string; mediaPath: string }) => {
       const id = generateId()
@@ -262,7 +209,7 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle(
+  handle(
     "pipeline:start",
     async (_event, { projectId, model }: { projectId: string; model: WhisperModel }) => {
       const proj = db.select().from(projects).where(eq(projects.id, projectId)).all()[0]
@@ -414,11 +361,11 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle("clip:list", async (_event, { projectId }) => {
+  handle("clip:list", async (_event, { projectId }) => {
     return db.select().from(clips).where(eq(clips.projectId, projectId)).all()
   })
 
-  ipcMain.handle(
+  handle(
     "clip:update-status",
     async (
       _event,
@@ -431,7 +378,7 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle(
+  handle(
     "clip:update-times",
     async (
       _event,
@@ -446,29 +393,26 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle(
+  handle(
     "clip:update-crop-x",
     async (_event, { clipId, cropX }: { clipId: string; cropX: number }) => {
       db.update(clips).set({ cropX }).where(eq(clips.id, clipId)).run()
     },
   )
 
-  ipcMain.handle("ffmpeg:has-subtitles-filter", async () => {
+  handle("ffmpeg:has-subtitles-filter", async () => {
     return hasSubtitlesFilter(resolveFfmpegBinary(getResourcesPath()))
   })
 
-  ipcMain.handle(
-    "dialog:pick-folder",
-    async (_event, { defaultPath }: { defaultPath?: string }) => {
-      const result = await dialog.showOpenDialog({
-        properties: ["openDirectory", "createDirectory"],
-        defaultPath: defaultPath ?? app.getPath("downloads"),
-      })
-      return result.canceled ? null : (result.filePaths[0] ?? null)
-    },
-  )
+  handle("dialog:pick-folder", async (_event, { defaultPath }: { defaultPath?: string }) => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openDirectory", "createDirectory"],
+      defaultPath: defaultPath ?? app.getPath("downloads"),
+    })
+    return result.canceled ? null : (result.filePaths[0] ?? null)
+  })
 
-  ipcMain.handle(
+  handle(
     "export:clips",
     async (
       _event,
@@ -588,7 +532,7 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle(
+  handle(
     "export:full",
     async (
       _event,
@@ -613,16 +557,7 @@ export function registerIpcHandlers(): void {
       if (!project) throw new Error("Project not found")
 
       const segs = db.select().from(segments).where(eq(segments.projectId, projectId)).all()
-      const sorted = [...segs].sort((a, b) => a.startMs - b.startMs)
-      const keepIntervals: { startMs: number; endMs: number }[] = []
-      let cursor = 0
-      for (const seg of sorted) {
-        if (seg.startMs > cursor) keepIntervals.push({ startMs: cursor, endMs: seg.startMs })
-        cursor = Math.max(cursor, seg.endMs)
-      }
-      if (cursor < project.durationMs)
-        keepIntervals.push({ startMs: cursor, endMs: project.durationMs })
-      if (keepIntervals.length === 0) keepIntervals.push({ startMs: 0, endMs: project.durationMs })
+      const keepIntervals = subtractSegments(0, project.durationMs, segs)
 
       const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
       const outDir = outputDir ?? join(app.getPath("downloads"), sanitizeName(project.name))
@@ -666,7 +601,7 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle(
+  handle(
     "export:srt",
     async (_event, { projectId, outputDir }: { projectId: string; outputDir?: string }) => {
       const db = getDb(join(app.getPath("userData"), "db.sqlite"))
@@ -684,7 +619,7 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle(
+  handle(
     "project:save-caption-style",
     async (
       _event,
@@ -698,39 +633,33 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle(
-    "project:load-caption-style",
-    async (_event, { projectId }: { projectId: string }) => {
-      const db = getDb(join(app.getPath("userData"), "db.sqlite"))
-      const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
-      if (!project?.captionStyle) return null
-      try {
-        return JSON.parse(project.captionStyle) as CaptionStyle
-      } catch {
-        return null
-      }
-    },
-  )
+  handle("project:load-caption-style", async (_event, { projectId }: { projectId: string }) => {
+    const db = getDb(join(app.getPath("userData"), "db.sqlite"))
+    const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
+    if (!project?.captionStyle) return null
+    try {
+      return JSON.parse(project.captionStyle) as CaptionStyle
+    } catch {
+      return null
+    }
+  })
 
-  ipcMain.handle("get-font-url", () => {
+  handle("get-font-url", () => {
     return `file://${join(getResourcesPath(), "fonts", "Montserrat-ExtraBold.ttf")}`
   })
 
-  ipcMain.handle(
-    "project:get-filler-words",
-    async (_event, { projectId }: { projectId: string }) => {
-      const db = getDb(join(app.getPath("userData"), "db.sqlite"))
-      const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
-      if (!project?.fillerWords) return DEFAULT_FILLER_WORDS
-      try {
-        return JSON.parse(project.fillerWords) as string[]
-      } catch {
-        return DEFAULT_FILLER_WORDS
-      }
-    },
-  )
+  handle("project:get-filler-words", async (_event, { projectId }: { projectId: string }) => {
+    const db = getDb(join(app.getPath("userData"), "db.sqlite"))
+    const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
+    if (!project?.fillerWords) return DEFAULT_FILLER_WORDS
+    try {
+      return JSON.parse(project.fillerWords) as string[]
+    } catch {
+      return DEFAULT_FILLER_WORDS
+    }
+  })
 
-  ipcMain.handle(
+  handle(
     "project:set-filler-words",
     async (_event, { projectId, fillerList }: { projectId: string; fillerList: string[] }) => {
       const db = getDb(join(app.getPath("userData"), "db.sqlite"))
@@ -750,15 +679,15 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle("shell:show-item", async (_event, { path }: { path: string }) => {
+  handle("shell:show-item", async (_event, { path }: { path: string }) => {
     shell.showItemInFolder(path)
   })
 
-  ipcMain.handle("shell:open-logs", async () => {
+  handle("shell:open-logs", async () => {
     await shell.openPath(app.getPath("logs"))
   })
 
-  ipcMain.handle(
+  handle(
     "log:report-error",
     async (
       _event,
@@ -787,9 +716,7 @@ export function registerIpcHandlers(): void {
     return promise
   }
 
-  const WHISPER_MODELS: WhisperModel[] = ["tiny", "base", "small", "medium", "large"]
-
-  ipcMain.handle("models:list", async () => {
+  handle("models:list", async () => {
     const modelsDir = join(app.getPath("userData"), "models")
     const results: ModelInfo[] = await Promise.all(
       WHISPER_MODELS.map(async (model) => {
@@ -801,26 +728,26 @@ export function registerIpcHandlers(): void {
     return results
   })
 
-  ipcMain.handle("models:delete", async (_event, { model }: { model: WhisperModel }) => {
+  handle("models:delete", async (_event, { model }: { model: WhisperModel }) => {
     const modelsDir = join(app.getPath("userData"), "models")
     await deleteModel(modelsDir, model)
   })
 
-  ipcMain.handle("models:download", async (_event, { model }: { model: WhisperModel }) => {
+  handle("models:download", async (_event, { model }: { model: WhisperModel }) => {
     const modelsDir = join(app.getPath("userData"), "models")
     await ensureModelDownloaded(modelsDir, model, (progress) => {
       send("models:download-progress", { model, progress })
     })
   })
 
-  ipcMain.handle("settings:get-api-key", async () => {
+  handle("settings:get-api-key", async () => {
     const key = process.env["GROQ_API_KEY"] ?? ""
     if (!key) return { configured: false, preview: null }
     const preview = key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : "****"
     return { configured: true, preview }
   })
 
-  ipcMain.handle("settings:set-api-key", async (_event, { groqApiKey }: { groqApiKey: string }) => {
+  handle("settings:set-api-key", async (_event, { groqApiKey }: { groqApiKey: string }) => {
     await saveGroqApiKey(groqApiKey)
     process.env["GROQ_API_KEY"] = groqApiKey
   })

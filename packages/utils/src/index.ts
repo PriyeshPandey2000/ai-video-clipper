@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto"
-
+// Global Web Crypto API, not a node:crypto import — this file must stay renderer-safe
+// (buildCaptionAccentSet below is shared with the browser-side canvas caption renderer).
 export function generateId(): string {
-  return randomUUID()
+  return crypto.randomUUID()
 }
 
 export function msToTimecode(ms: number): string {

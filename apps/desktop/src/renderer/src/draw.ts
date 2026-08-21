@@ -1,24 +1,7 @@
 import type { CaptionStyle } from "@video-editor/types"
+import { baseFontSizePx } from "@video-editor/captions"
 
 export type CaptionPreset = "hormozi" | "wordpop" | "none"
-
-const ACCENT_GROUP = 4
-export function buildCaptionAccentSet(words: Array<{ text: string }>): Set<number> {
-  const accents = new Set<number>()
-  for (let i = 0; i < words.length; i += ACCENT_GROUP) {
-    let bestIdx = -1
-    let bestLen = 4
-    words.slice(i, i + ACCENT_GROUP).forEach((w, j) => {
-      const len = w.text.replace(/\P{L}/gu, "").length
-      if (len > bestLen) {
-        bestLen = len
-        bestIdx = j
-      }
-    })
-    if (bestIdx >= 0) accents.add(i + bestIdx)
-  }
-  return accents
-}
 
 export interface DrawWord {
   text: string
@@ -26,8 +9,7 @@ export interface DrawWord {
 }
 
 function fontSizePx(size: "S" | "M" | "L", canvasHeight: number): number {
-  const base = size === "S" ? 60 : size === "L" ? 100 : 80
-  return Math.round(base * (canvasHeight / 1080))
+  return Math.round(baseFontSizePx(size) * (canvasHeight / 1080))
 }
 
 // High-contrast text color against a given background hex

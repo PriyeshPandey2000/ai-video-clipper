@@ -39,14 +39,6 @@ const MODEL_FILES: Record<WhisperModel, string> = {
   large: "ggml-large-v3.bin",
 }
 
-export const MODEL_DISPLAY_SIZE: Record<WhisperModel, string> = {
-  tiny: "~75 MB",
-  base: "~142 MB",
-  small: "~466 MB",
-  medium: "~1.5 GB",
-  large: "~3.1 GB",
-}
-
 const MODEL_URLS: Record<WhisperModel, string> = {
   tiny: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILES.tiny}`,
   base: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILES.base}`,

@@ -1,23 +1,8 @@
 import { useState, useEffect, useCallback } from "react"
 import type { ModelInfo, WhisperModel } from "@video-editor/types"
+import { WHISPER_MODEL_INFO } from "@video-editor/types"
 import { Spinner } from "@video-editor/ui"
 import { ArrowLeft, Trash2, Download, Eye, EyeOff, FolderOpen } from "lucide-react"
-
-const MODEL_LABELS: Record<WhisperModel, string> = {
-  tiny: "Tiny",
-  base: "Base",
-  small: "Small",
-  medium: "Medium",
-  large: "Large",
-}
-
-const MODEL_DISPLAY_SIZE: Record<WhisperModel, string> = {
-  tiny: "~75 MB",
-  base: "~142 MB",
-  small: "~466 MB",
-  medium: "~1.5 GB",
-  large: "~3.1 GB",
-}
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`
@@ -281,10 +266,12 @@ export function SettingsPage({ onBack, onModelsChanged }: SettingsPageProps): Re
                             }`}
                           />
                           <span className="text-sm font-medium text-neutral-200 w-16 shrink-0">
-                            {MODEL_LABELS[m.model]}
+                            {WHISPER_MODEL_INFO[m.model].label}
                           </span>
                           <span className="text-xs text-neutral-500">
-                            {m.sizeOnDisk ? formatBytes(m.sizeOnDisk) : MODEL_DISPLAY_SIZE[m.model]}
+                            {m.sizeOnDisk
+                              ? formatBytes(m.sizeOnDisk)
+                              : WHISPER_MODEL_INFO[m.model].sizeLabel}
                           </span>
                         </div>
 
@@ -309,7 +296,7 @@ export function SettingsPage({ onBack, onModelsChanged }: SettingsPageProps): Re
                             <button
                               onClick={() => handleDelete(m.model)}
                               disabled={deleting === m.model || downloading !== null}
-                              title={`Delete ${MODEL_LABELS[m.model]} model`}
+                              title={`Delete ${WHISPER_MODEL_INFO[m.model].label} model`}
                               className="p-1 rounded text-neutral-600 hover:text-red-400 hover:bg-red-950/40 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
                             >
                               {deleting === m.model ? <Spinner size={12} /> : <Trash2 size={13} />}
@@ -320,7 +307,7 @@ export function SettingsPage({ onBack, onModelsChanged }: SettingsPageProps): Re
                             <button
                               onClick={() => handleDownload(m.model)}
                               disabled={downloading !== null || deleting !== null}
-                              title={`Download ${MODEL_LABELS[m.model]} model`}
+                              title={`Download ${WHISPER_MODEL_INFO[m.model].label} model`}
                               className="p-1 rounded text-neutral-600 hover:text-violet-400 hover:bg-violet-950/40 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
                             >
                               <Download size={13} />

@@ -88,6 +88,19 @@ export type PipelineStage = "transcribing" | "analyzing" | "generating_clips" | 
 
 export type WhisperModel = "tiny" | "base" | "small" | "medium" | "large"
 
+export const WHISPER_MODELS: WhisperModel[] = ["tiny", "base", "small", "medium", "large"]
+
+// Single source for display metadata — was previously hand-copied across the whisper
+// package, the model picker, and Settings, and had already drifted (whisper's own copy
+// was unused dead code).
+export const WHISPER_MODEL_INFO: Record<WhisperModel, { label: string; sizeLabel: string }> = {
+  tiny: { label: "Tiny", sizeLabel: "~75 MB" },
+  base: { label: "Base", sizeLabel: "~142 MB" },
+  small: { label: "Small", sizeLabel: "~466 MB" },
+  medium: { label: "Medium", sizeLabel: "~1.5 GB" },
+  large: { label: "Large", sizeLabel: "~3.1 GB" },
+}
+
 export interface PipelineProgress {
   projectId: string
   stage: PipelineStage
@@ -115,8 +128,7 @@ export interface CaptionStyle {
   showKeywords: boolean
 }
 
-export interface IpcChannels {
-  // invoke channels
+export interface IpcInvokeChannels {
   "project:list": { args: void; result: Project[] }
   "project:create": { args: { name: string; mediaPath: string }; result: Project }
   "project:get": { args: { id: string }; result: Project | null }
@@ -173,7 +185,10 @@ export interface IpcChannels {
   "models:download": { args: { model: WhisperModel }; result: void }
   "settings:get-api-key": { args: void; result: { configured: boolean; preview: string | null } }
   "settings:set-api-key": { args: { groqApiKey: string }; result: void }
-  // event channels (main → renderer)
+}
+
+// Main → renderer (send/on): payload only, no args/result envelope.
+export interface IpcEventChannels {
   "models:download-progress": { model: WhisperModel; progress: number }
   "pipeline:progress": PipelineProgress
   "pipeline:complete": { projectId: string }

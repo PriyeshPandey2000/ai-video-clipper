@@ -6,8 +6,10 @@ import type {
   WhisperModel,
   Clip,
   CaptionStyle,
-  IpcChannels,
+  IpcEventChannels,
 } from "@video-editor/types"
+import { WHISPER_MODELS, WHISPER_MODEL_INFO } from "@video-editor/types"
+import { DEFAULT_CAPTION_STYLE } from "@video-editor/captions"
 import { Button } from "@video-editor/ui"
 import { Progress } from "@video-editor/ui"
 import { Spinner } from "@video-editor/ui"
@@ -81,16 +83,6 @@ function StylePreviewCard({
   )
 }
 
-const DEFAULT_CAPTION_STYLE: CaptionStyle = {
-  preset: "hormozi",
-  accentColor: "#FFD700",
-  textColor: "#FFFFFF",
-  position: "bottom",
-  size: "M",
-  allCaps: true,
-  showKeywords: true,
-}
-
 type View = "empty" | "projects" | "project" | "settings"
 
 const VIDEO_EXTS = new Set([
@@ -109,13 +101,9 @@ const VIDEO_EXTS = new Set([
   "ogv",
 ])
 
-const MODEL_SIZES: { key: WhisperModel; label: string; size: string }[] = [
-  { key: "tiny", label: "Tiny", size: "~75 MB" },
-  { key: "base", label: "Base", size: "~142 MB" },
-  { key: "small", label: "Small", size: "~466 MB" },
-  { key: "medium", label: "Medium", size: "~1.5 GB" },
-  { key: "large", label: "Large", size: "~3.1 GB" },
-]
+const MODEL_SIZES: { key: WhisperModel; label: string; size: string }[] = WHISPER_MODELS.map(
+  (key) => ({ key, label: WHISPER_MODEL_INFO[key].label, size: WHISPER_MODEL_INFO[key].sizeLabel }),
+)
 
 function statusColor(status: Project["status"]): "violet" | "green" | "yellow" | "red" | "neutral" {
   switch (status) {
@@ -659,7 +647,9 @@ function ProjectView({
   const [isPlaying, setIsPlaying] = useState(false)
   const [exportingEpisode, setExportingEpisode] = useState(false)
   const [exportingAllClips, setExportingAllClips] = useState(false)
-  const [exportProgress, setExportProgress] = useState<IpcChannels["export:progress"] | null>(null)
+  const [exportProgress, setExportProgress] = useState<IpcEventChannels["export:progress"] | null>(
+    null,
+  )
   const [exportError, setExportError] = useState<string | null>(null)
   const activeProjectIdRef = useRef(project.id)
   const [clipRefreshTrigger, setClipRefreshTrigger] = useState(0)
@@ -762,13 +752,6 @@ function ProjectView({
     setHighlightRange(null)
     setIsPlaying(false)
     setCropX(0.5)
-  }, [project.id])
-
-  useEffect(() => {
-    const unsub = window.api.on("export:progress", (data) => {
-      if (data.projectId === project.id) setExportProgress(data)
-    })
-    return unsub
   }, [project.id])
 
   // Keep ref current so drawFrame always reads latest cropX without restarting the RAF loop

@@ -33,12 +33,14 @@ function msToAssTime(ms: number): string {
   return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(centiseconds).padStart(2, "0")}`
 }
 
-function fontSizePx(size: "S" | "M" | "L"): number {
+// Base S/M/L point sizes, shared with the browser-side canvas renderer (draw.ts), which
+// scales this by the preview canvas's actual height — ASS/libass output is resolution-fixed.
+export function baseFontSizePx(size: "S" | "M" | "L"): number {
   return size === "S" ? 60 : size === "L" ? 100 : 80
 }
 
 function buildStyleBlock(style: CaptionStyle): string {
-  const fs = fontSizePx(style.size)
+  const fs = baseFontSizePx(style.size)
   const alignment = style.position === "top" ? 8 : 2
   const primaryColor = hexToAssColor(style.textColor)
   const accentColor = hexToAssColor(style.accentColor)
@@ -83,7 +85,7 @@ export function buildAssFile(
     // Shrink very long words inline
     const display =
       cased.replace(/\P{L}/gu, "").length > 12
-        ? `{\\fs${Math.round(fontSizePx(style.size) * 0.7)}}${cased}`
+        ? `{\\fs${Math.round(baseFontSizePx(style.size) * 0.7)}}${cased}`
         : cased
     const styleName = keyIndices.has(i) ? "Accent" : "Default"
     return `Dialogue: 0,${msToAssTime(w.startMs)},${msToAssTime(w.endMs)},${styleName},,0,0,0,,${display}`

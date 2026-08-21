@@ -192,12 +192,6 @@ importers:
 
   packages/export:
     dependencies:
-      '@video-editor/ffmpeg':
-        specifier: workspace:*
-        version: link:../ffmpeg
-      '@video-editor/types':
-        specifier: workspace:*
-        version: link:../types
       '@video-editor/utils':
         specifier: workspace:*
         version: link:../utils

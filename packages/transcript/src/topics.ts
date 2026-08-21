@@ -1,3 +1,5 @@
+// Node-only (ONNX model file resolution) — not renderer-safe, unlike sentences.ts/boundaries.ts
+// in this package. Do not value-import this file from the renderer without a source alias.
 import { join } from "node:path"
 import type { Sentence } from "@video-editor/types"
 

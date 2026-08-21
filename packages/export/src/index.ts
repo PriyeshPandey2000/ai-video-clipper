@@ -1,65 +1,91 @@
-import { join } from "path"
-import { mkdir, writeFile } from "fs/promises"
-import { exportClip } from "@video-editor/ffmpeg"
-import type { Clip, Word } from "@video-editor/types"
 import { msToSrtTimecode } from "@video-editor/utils"
 
-export interface ExportClipOptions {
-  ffmpegBinaryPath: string
-  clip: Clip
-  mediaPath: string
-  outputDir: string
-  words: Word[]
-  burnCaptions?: boolean
+export interface WordRow {
+  text: string
+  startMs: number
+  endMs: number
 }
 
-export async function exportSingleClip(opts: ExportClipOptions): Promise<string> {
-  await mkdir(opts.outputDir, { recursive: true })
+export interface TimeInterval {
+  startMs: number
+  endMs: number
+}
 
-  const filename = `${sanitize(opts.clip.title)}_${opts.clip.id.slice(0, 8)}.mp4`
-  const outputPath = join(opts.outputDir, filename)
+export function sanitizeName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, "_")
+}
 
-  let srtPath: string | undefined
-  if (opts.burnCaptions) {
-    srtPath = join(opts.outputDir, `${opts.clip.id}.srt`)
-    const clipWords = opts.words.filter(
-      (w) => w.startMs >= opts.clip.startMs && w.endMs <= opts.clip.endMs,
+export function buildSrt(wordRows: WordRow[]): string {
+  if (wordRows.length === 0) return ""
+  const MAX_WORDS = 8
+  const MAX_DURATION_MS = 4000
+  const lines: Array<{ start: number; end: number; text: string }> = []
+  let i = 0
+  while (i < wordRows.length) {
+    const lineStart = wordRows[i]!.startMs
+    const lineWords: string[] = []
+    let lineEnd = lineStart
+    while (i < wordRows.length && lineWords.length < MAX_WORDS) {
+      const word = wordRows[i]!
+      if (
+        lineWords.length > 0 &&
+        (word.startMs - lineEnd > 1000 || word.endMs - lineStart > MAX_DURATION_MS)
+      ) {
+        break
+      }
+      lineWords.push(word.text.trim())
+      lineEnd = word.endMs
+      i++
+    }
+    if (lineWords.length > 0) {
+      lines.push({ start: lineStart, end: lineEnd, text: lineWords.join(" ") })
+    }
+  }
+  return lines
+    .map(
+      (line, idx) =>
+        `${idx + 1}\n${msToSrtTimecode(line.start)} --> ${msToSrtTimecode(line.end)}\n${line.text}\n`,
     )
-    await writeFile(srtPath, generateSrt(clipWords, opts.clip.startMs))
+    .join("\n")
+}
+
+/**
+ * Remaps word timestamps from the original media timeline onto the output timeline produced
+ * by concatenating `keepIntervals` back to back (with any gaps between them removed) — used
+ * for burning subtitles into an episode/clip export where filler/silence segments were cut.
+ * Words that fall entirely inside a removed segment are dropped. A word that straddles a cut
+ * (starts in a removed segment, ends inside the next kept one, or vice versa) is clamped to
+ * whichever kept interval it overlaps — displaying it for its surviving audio only is better
+ * than dropping it entirely.
+ */
+export function remapWordsToEpisodeTimeline(
+  wordRows: WordRow[],
+  keepIntervals: TimeInterval[],
+): WordRow[] {
+  const intervalOutputStarts: number[] = []
+  let cumulative = 0
+  for (const interval of keepIntervals) {
+    intervalOutputStarts.push(cumulative)
+    cumulative += interval.endMs - interval.startMs
   }
 
-  await exportClip({
-    binaryPath: opts.ffmpegBinaryPath,
-    inputPath: opts.mediaPath,
-    outputPath,
-    startMs: opts.clip.startMs,
-    endMs: opts.clip.endMs,
-    ...(srtPath !== undefined ? { srtPath } : {}),
-  })
-
-  return outputPath
-}
-
-function generateSrt(words: Word[], offsetMs: number): string {
-  const lines: string[] = []
-  const chunkSize = 7
-
-  for (let i = 0; i < words.length; i += chunkSize) {
-    const chunk = words.slice(i, i + chunkSize)
-    const first = chunk[0]!
-    const last = chunk[chunk.length - 1]!
-    const index = Math.floor(i / chunkSize) + 1
-    lines.push(
-      `${index}`,
-      `${msToSrtTimecode(first.startMs - offsetMs)} --> ${msToSrtTimecode(last.endMs - offsetMs)}`,
-      chunk.map((w) => w.text).join(" "),
-      "",
-    )
+  const remapped: Array<{ text: string; startMs: number; endMs: number }> = []
+  for (const word of wordRows) {
+    for (let i = 0; i < keepIntervals.length; i++) {
+      const interval = keepIntervals[i]!
+      if (word.endMs > interval.startMs && word.startMs < interval.endMs) {
+        const offset = intervalOutputStarts[i]!
+        const clampedStart = Math.max(word.startMs, interval.startMs)
+        const clampedEnd = Math.min(word.endMs, interval.endMs)
+        remapped.push({
+          ...word,
+          startMs: clampedStart - interval.startMs + offset,
+          endMs: clampedEnd - interval.startMs + offset,
+        })
+        break
+      }
+    }
+    // words with no overlapping kept interval (fully inside a removed segment) are dropped
   }
-
-  return lines.join("\n")
-}
-
-function sanitize(name: string): string {
-  return name.replace(/[^a-z0-9_-]/gi, "_").slice(0, 60)
+  return remapped
 }
