@@ -1482,7 +1482,7 @@ function ProjectView({
                 />
               )}
               {burnSubtitles && captionStyle.preset !== "none" && previewWords.length > 0 && (
-                <ErrorBoundary label="Caption preview">
+                <ErrorBoundary key={project.id} label="Caption preview">
                   <CaptionCanvas
                     videoRef={videoRef}
                     words={previewWords}
@@ -1530,7 +1530,7 @@ function ProjectView({
           )}
 
           {selectedClip && project.durationMs > 0 && (
-            <ErrorBoundary label="Trim strip">
+            <ErrorBoundary key={project.id} label="Trim strip">
               <TrimStrip
                 clip={selectedClip}
                 durationMs={project.durationMs}
@@ -1593,7 +1593,7 @@ function ProjectView({
 
       {project.status === "ready" && (
         <>
-          <ErrorBoundary label="Transcript">
+          <ErrorBoundary key={project.id} label="Transcript">
             <TranscriptViewer
               projectId={project.id}
               onSeekWord={handleSeekWord}
@@ -1620,7 +1620,7 @@ function ProjectView({
             </div>
 
             {aiTab === "clips" ? (
-              <ErrorBoundary label="Suggested clips">
+              <ErrorBoundary key={project.id} label="Suggested clips">
                 <ClipReview
                   projectId={project.id}
                   onSelectClip={handleSelectClip}
@@ -1637,7 +1637,7 @@ function ProjectView({
                 />
               </ErrorBoundary>
             ) : (
-              <ErrorBoundary label="Social captions">
+              <ErrorBoundary key={project.id} label="Social captions">
                 <CaptionsPanel projectId={project.id} />
               </ErrorBoundary>
             )}

@@ -21,11 +21,13 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
     const stack = info.componentStack ?? error.stack
-    void window.api.invoke("log:report-error", {
-      message: error.message,
-      source: this.props.label,
-      ...(stack ? { stack } : {}),
-    })
+    window.api
+      .invoke("log:report-error", {
+        message: error.message,
+        source: this.props.label,
+        ...(stack ? { stack } : {}),
+      })
+      .catch(() => {})
   }
 
   render(): ReactNode {
