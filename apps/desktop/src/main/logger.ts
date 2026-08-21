@@ -13,6 +13,14 @@ let lastDialogAt = 0
 // would otherwise already be evicted. Old sessions are pruned so this stays bounded.
 const MAX_SESSIONS = 10
 
+function sessionTimestamp(d: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, "0")
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`
+  )
+}
+
 function pruneOldSessions(logDir: string, currentFileName: string): void {
   try {
     const sessions = readdirSync(logDir)
@@ -28,7 +36,7 @@ function pruneOldSessions(logDir: string, currentFileName: string): void {
 }
 
 export function initLogger(): typeof log {
-  const sessionFileName = `session-${new Date().toISOString().replace(/[:.]/g, "-")}.log`
+  const sessionFileName = `session-${sessionTimestamp(new Date())}.log`
   log.transports.file.fileName = sessionFileName
   log.transports.file.level = "info"
   // Default rotation is 1MB/.old.log, which is free — bumped up since a single pipeline
