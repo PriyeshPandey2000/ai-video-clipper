@@ -35,6 +35,7 @@ import {
   resolveWhisperBinary,
 } from "@video-editor/whisper"
 import type { WhisperModel, ModelInfo } from "@video-editor/types"
+import { WHISPER_MODELS } from "@video-editor/types"
 import { generateId, now } from "@video-editor/utils"
 import type {
   PipelineProgress,
@@ -798,8 +799,6 @@ export function registerIpcHandlers(): void {
     inFlightDownloads.set(model, promise)
     return promise
   }
-
-  const WHISPER_MODELS: WhisperModel[] = ["tiny", "base", "small", "medium", "large"]
 
   handle("models:list", async () => {
     const modelsDir = join(app.getPath("userData"), "models")

@@ -55,6 +55,7 @@ export default defineConfig({
         // doesn't reliably resolve named exports through a pnpm workspace symlink, and this
         // way the renderer gets live source in dev too, same as the main process already does.
         "@video-editor/captions": resolve("../../packages/captions/src/index.ts"),
+        "@video-editor/types": resolve("../../packages/types/src/index.ts"),
         "@video-editor/utils": resolve("../../packages/utils/src/index.ts"),
       },
     },

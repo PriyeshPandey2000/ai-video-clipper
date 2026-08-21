@@ -88,6 +88,19 @@ export type PipelineStage = "transcribing" | "analyzing" | "generating_clips" | 
 
 export type WhisperModel = "tiny" | "base" | "small" | "medium" | "large"
 
+export const WHISPER_MODELS: WhisperModel[] = ["tiny", "base", "small", "medium", "large"]
+
+// Single source for display metadata — was previously hand-copied across the whisper
+// package, the model picker, and Settings, and had already drifted (whisper's own copy
+// was unused dead code).
+export const WHISPER_MODEL_INFO: Record<WhisperModel, { label: string; sizeLabel: string }> = {
+  tiny: { label: "Tiny", sizeLabel: "~75 MB" },
+  base: { label: "Base", sizeLabel: "~142 MB" },
+  small: { label: "Small", sizeLabel: "~466 MB" },
+  medium: { label: "Medium", sizeLabel: "~1.5 GB" },
+  large: { label: "Large", sizeLabel: "~3.1 GB" },
+}
+
 export interface PipelineProgress {
   projectId: string
   stage: PipelineStage

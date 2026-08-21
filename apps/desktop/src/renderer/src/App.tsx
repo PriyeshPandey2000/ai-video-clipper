@@ -8,6 +8,7 @@ import type {
   CaptionStyle,
   IpcEventChannels,
 } from "@video-editor/types"
+import { WHISPER_MODELS, WHISPER_MODEL_INFO } from "@video-editor/types"
 import { DEFAULT_CAPTION_STYLE } from "@video-editor/captions"
 import { Button } from "@video-editor/ui"
 import { Progress } from "@video-editor/ui"
@@ -100,13 +101,9 @@ const VIDEO_EXTS = new Set([
   "ogv",
 ])
 
-const MODEL_SIZES: { key: WhisperModel; label: string; size: string }[] = [
-  { key: "tiny", label: "Tiny", size: "~75 MB" },
-  { key: "base", label: "Base", size: "~142 MB" },
-  { key: "small", label: "Small", size: "~466 MB" },
-  { key: "medium", label: "Medium", size: "~1.5 GB" },
-  { key: "large", label: "Large", size: "~3.1 GB" },
-]
+const MODEL_SIZES: { key: WhisperModel; label: string; size: string }[] = WHISPER_MODELS.map(
+  (key) => ({ key, label: WHISPER_MODEL_INFO[key].label, size: WHISPER_MODEL_INFO[key].sizeLabel }),
+)
 
 function statusColor(status: Project["status"]): "violet" | "green" | "yellow" | "red" | "neutral" {
   switch (status) {
