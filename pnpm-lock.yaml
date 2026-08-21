@@ -56,6 +56,9 @@ importers:
       '@video-editor/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@video-editor/export':
+        specifier: workspace:*
+        version: link:../../packages/export
       '@video-editor/ffmpeg':
         specifier: workspace:*
         version: link:../../packages/ffmpeg
@@ -183,6 +186,16 @@ importers:
       drizzle-kit:
         specifier: ^0.24.0
         version: 0.24.2
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
+  packages/export:
+    dependencies:
+      '@video-editor/utils':
+        specifier: workspace:*
+        version: link:../utils
+    devDependencies:
       typescript:
         specifier: '*'
         version: 5.9.3

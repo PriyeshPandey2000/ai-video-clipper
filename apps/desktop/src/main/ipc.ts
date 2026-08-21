@@ -53,6 +53,7 @@ import {
   DEFAULT_FILLER_WORDS,
 } from "@video-editor/transcript"
 import { createAiClient, selectClips, generateSocialCaptions } from "@video-editor/ai"
+import { sanitizeName, buildSrt, remapWordsToEpisodeTimeline } from "@video-editor/export"
 import { saveGroqApiKey } from "./config"
 import log from "./logger"
 import { buildAssFile } from "@video-editor/captions"
@@ -87,82 +88,6 @@ function getResourcesPath(): string {
   return app.isPackaged
     ? join(process.resourcesPath, "resources")
     : join(__dirname, "../../../../resources")
-}
-
-function sanitizeName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9_-]/g, "_")
-}
-
-function msToSrtTime(ms: number): string {
-  const h = Math.floor(ms / 3_600_000)
-  const m = Math.floor((ms % 3_600_000) / 60_000)
-  const s = Math.floor((ms % 60_000) / 1000)
-  const millis = ms % 1000
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(millis).padStart(3, "0")}`
-}
-
-function buildSrt(wordRows: Array<{ text: string; startMs: number; endMs: number }>): string {
-  if (wordRows.length === 0) return ""
-  const MAX_WORDS = 8
-  const MAX_DURATION_MS = 4000
-  const lines: Array<{ start: number; end: number; text: string }> = []
-  let i = 0
-  while (i < wordRows.length) {
-    const lineStart = wordRows[i]!.startMs
-    const lineWords: string[] = []
-    let lineEnd = lineStart
-    while (i < wordRows.length && lineWords.length < MAX_WORDS) {
-      const word = wordRows[i]!
-      if (
-        lineWords.length > 0 &&
-        (word.startMs - lineEnd > 1000 || word.endMs - lineStart > MAX_DURATION_MS)
-      ) {
-        break
-      }
-      lineWords.push(word.text.trim())
-      lineEnd = word.endMs
-      i++
-    }
-    if (lineWords.length > 0) {
-      lines.push({ start: lineStart, end: lineEnd, text: lineWords.join(" ") })
-    }
-  }
-  return lines
-    .map(
-      (line, idx) =>
-        `${idx + 1}\n${msToSrtTime(line.start)} --> ${msToSrtTime(line.end)}\n${line.text}\n`,
-    )
-    .join("\n")
-}
-
-function remapWordsToEpisodeTimeline(
-  wordRows: Array<{ text: string; startMs: number; endMs: number }>,
-  keepIntervals: Array<{ startMs: number; endMs: number }>,
-): Array<{ text: string; startMs: number; endMs: number }> {
-  const intervalOutputStarts: number[] = []
-  let cumulative = 0
-  for (const interval of keepIntervals) {
-    intervalOutputStarts.push(cumulative)
-    cumulative += interval.endMs - interval.startMs
-  }
-
-  const remapped: Array<{ text: string; startMs: number; endMs: number }> = []
-  for (const word of wordRows) {
-    for (let i = 0; i < keepIntervals.length; i++) {
-      const interval = keepIntervals[i]!
-      if (word.startMs >= interval.startMs && word.startMs < interval.endMs) {
-        const offset = intervalOutputStarts[i]!
-        remapped.push({
-          ...word,
-          startMs: word.startMs - interval.startMs + offset,
-          endMs: Math.min(word.endMs, interval.endMs) - interval.startMs + offset,
-        })
-        break
-      }
-    }
-    // words starting in removed segments are dropped
-  }
-  return remapped
 }
 
 function getProjectsDir(): string {
@@ -632,16 +557,7 @@ export function registerIpcHandlers(): void {
       if (!project) throw new Error("Project not found")
 
       const segs = db.select().from(segments).where(eq(segments.projectId, projectId)).all()
-      const sorted = [...segs].sort((a, b) => a.startMs - b.startMs)
-      const keepIntervals: { startMs: number; endMs: number }[] = []
-      let cursor = 0
-      for (const seg of sorted) {
-        if (seg.startMs > cursor) keepIntervals.push({ startMs: cursor, endMs: seg.startMs })
-        cursor = Math.max(cursor, seg.endMs)
-      }
-      if (cursor < project.durationMs)
-        keepIntervals.push({ startMs: cursor, endMs: project.durationMs })
-      if (keepIntervals.length === 0) keepIntervals.push({ startMs: 0, endMs: project.durationMs })
+      const keepIntervals = subtractSegments(0, project.durationMs, segs)
 
       const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
       const outDir = outputDir ?? join(app.getPath("downloads"), sanitizeName(project.name))
