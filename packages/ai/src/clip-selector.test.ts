@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
-import type { Word } from "@video-editor/types"
+import type { Word, Sentence } from "@video-editor/types"
 import { buildSentences } from "@video-editor/transcript"
+import type { TopicSegment } from "@video-editor/transcript"
 import type { AiClient } from "./client"
 import { selectClips } from "./clip-selector"
 
@@ -95,6 +96,38 @@ describe("chunking — fixed fallback (no topics)", () => {
     expect(ranges[0]![0]).toBe(0)
     expect(ranges.at(-1)![1]).toBe(sentences.length - 1)
     expect(ranges[1]![0]).toBeLessThan(ranges[0]![1]) // overlap
+  })
+})
+
+function topicsFromSentences(sents: Sentence[], segmentCount: number): TopicSegment[] {
+  const perSegment = Math.ceil(sents.length / segmentCount)
+  const segments: TopicSegment[] = []
+  for (let i = 0; i < sents.length; i += perSegment) {
+    const slice = sents.slice(i, i + perSegment)
+    if (slice.length === 0) continue
+    segments.push({
+      sentences: slice,
+      startMs: slice[0]!.startMs,
+      endMs: slice[slice.length - 1]!.endMs,
+    })
+  }
+  return segments
+}
+
+describe("chunking — topic-coherent (C5)", () => {
+  it("carries overlap across a topic-segment boundary, same as the fixed-time fallback", async () => {
+    // 8 small topic segments over the ~64min transcript forces multiple chunk flushes.
+    const topics = topicsFromSentences(sentences, 8)
+    const prompts: string[] = []
+    await selectClips(mockClient(twoPerChunk, prompts), words, sentences, topics)
+    const ranges = prompts.map(range).filter((r): r is [number, number] => r !== null)
+
+    expect(ranges.length).toBeGreaterThan(1)
+    expect(ranges[0]![0]).toBe(0)
+    expect(ranges.at(-1)![1]).toBe(sentences.length - 1)
+    // Regression check: topic chunking used to have zero overlap between chunks, unlike the
+    // fixed-time fallback below — a clip straddling this boundary was invisible to both calls.
+    expect(ranges[1]![0]).toBeLessThan(ranges[0]![1])
   })
 })
 
