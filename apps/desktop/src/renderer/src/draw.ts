@@ -1,4 +1,5 @@
 import type { CaptionStyle } from "@video-editor/types"
+import { baseFontSizePx } from "@video-editor/captions"
 
 export type CaptionPreset = "hormozi" | "wordpop" | "none"
 
@@ -8,8 +9,7 @@ export interface DrawWord {
 }
 
 function fontSizePx(size: "S" | "M" | "L", canvasHeight: number): number {
-  const base = size === "S" ? 60 : size === "L" ? 100 : 80
-  return Math.round(base * (canvasHeight / 1080))
+  return Math.round(baseFontSizePx(size) * (canvasHeight / 1080))
 }
 
 // High-contrast text color against a given background hex
