@@ -7,7 +7,7 @@ interface ElectronAPI {
 interface Api {
   invoke<K extends keyof IpcInvokeChannels>(
     channel: K,
-    args?: IpcInvokeChannels[K]["args"],
+    ...args: IpcInvokeChannels[K]["args"] extends void ? [] : [IpcInvokeChannels[K]["args"]]
   ): Promise<IpcInvokeChannels[K]["result"]>
   on<K extends keyof IpcEventChannels>(
     channel: K,

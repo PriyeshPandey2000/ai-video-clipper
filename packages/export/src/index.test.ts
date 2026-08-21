@@ -54,6 +54,21 @@ describe("remapWordsToEpisodeTimeline", () => {
     expect(remapped[1]).toMatchObject({ text: "c", startMs: 1500, endMs: 1700 })
   })
 
+  it("clamps a word that starts in a removed segment but ends inside the next kept one", () => {
+    // Removed: [1000-1200]. Word spans the cut, starting in the removed gap.
+    const keepIntervals = [
+      { startMs: 0, endMs: 1000 },
+      { startMs: 1200, endMs: 2000 },
+    ]
+    const words = [{ text: "straddle", startMs: 1150, endMs: 1250 }]
+    const remapped = remapWordsToEpisodeTimeline(words, keepIntervals)
+    expect(remapped).toHaveLength(1)
+    // Clamped to the kept interval's start (1200), output-offset by the first interval's
+    // length (1000) — so 1200 -> 1000, 1250 -> 1050. The word displays for its surviving
+    // audio only; better than dropping it entirely.
+    expect(remapped[0]).toMatchObject({ text: "straddle", startMs: 1000, endMs: 1050 })
+  })
+
   it("returns nothing when every word falls in a removed segment", () => {
     const remapped = remapWordsToEpisodeTimeline(
       [{ text: "a", startMs: 1200, endMs: 1300 }],
