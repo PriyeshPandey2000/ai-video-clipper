@@ -18,6 +18,8 @@ type InvokeChannels = Pick<
   | "dialog:pick-folder"
   | "ffmpeg:has-subtitles-filter"
   | "shell:show-item"
+  | "shell:open-logs"
+  | "log:report-error"
   | "project:save-caption-style"
   | "project:load-caption-style"
   | "get-font-url"

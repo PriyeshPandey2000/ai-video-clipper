@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react"
 import type { ModelInfo, WhisperModel } from "@video-editor/types"
 import { Spinner } from "@video-editor/ui"
-import { ArrowLeft, Trash2, Download, Eye, EyeOff } from "lucide-react"
+import { ArrowLeft, Trash2, Download, Eye, EyeOff, FolderOpen } from "lucide-react"
 
 const MODEL_LABELS: Record<WhisperModel, string> = {
   tiny: "Tiny",
@@ -346,6 +346,26 @@ export function SettingsPage({ onBack, onModelsChanged }: SettingsPageProps): Re
                 })}
               </div>
             )}
+          </section>
+
+          {/* Diagnostics section */}
+          <section>
+            <div className="mb-4">
+              <h2 className="text-sm font-semibold text-neutral-100">Diagnostics</h2>
+              <p className="text-xs text-neutral-500 mt-0.5">
+                For troubleshooting a bug or filing a report.
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-neutral-800 overflow-hidden">
+              <button
+                onClick={() => void window.api.invoke("shell:open-logs")}
+                className="w-full flex items-center gap-2 px-4 py-3 text-sm text-neutral-300 hover:bg-neutral-900 transition-colors cursor-pointer"
+              >
+                <FolderOpen size={14} />
+                Open Log Folder
+              </button>
+            </div>
           </section>
         </div>
       </div>

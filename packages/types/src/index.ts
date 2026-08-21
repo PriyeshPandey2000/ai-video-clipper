@@ -155,6 +155,11 @@ export interface IpcChannels {
   "dialog:pick-folder": { args: { defaultPath?: string }; result: string | null }
   "ffmpeg:has-subtitles-filter": { args: void; result: boolean }
   "shell:show-item": { args: { path: string }; result: void }
+  "shell:open-logs": { args: void; result: void }
+  "log:report-error": {
+    args: { message: string; stack?: string; source: string }
+    result: void
+  }
   "project:save-caption-style": {
     args: { projectId: string; captionStyle: CaptionStyle }
     result: void

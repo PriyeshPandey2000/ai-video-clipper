@@ -21,6 +21,7 @@ import { TrimStrip } from "./TrimStrip"
 import { CropOverlay } from "./CropOverlay"
 import { CaptionCanvas } from "./CaptionCanvas"
 import { SettingsPage } from "./SettingsPage"
+import { ErrorBoundary } from "./ErrorBoundary"
 import { drawPreviewCard, type CaptionPreset } from "./draw"
 
 interface PreviewCardProps {
@@ -409,10 +410,12 @@ export default function App(): React.ReactElement {
 
         <main className="flex-1 flex flex-col">
           {view === "settings" ? (
-            <SettingsPage
-              onBack={() => setView(selectedProject ? "project" : "empty")}
-              onModelsChanged={loadModelStatuses}
-            />
+            <ErrorBoundary label="Settings">
+              <SettingsPage
+                onBack={() => setView(selectedProject ? "project" : "empty")}
+                onModelsChanged={loadModelStatuses}
+              />
+            </ErrorBoundary>
           ) : view === "project" && selectedProject ? (
             <ProjectView
               project={selectedProject}
@@ -1479,13 +1482,15 @@ function ProjectView({
                 />
               )}
               {burnSubtitles && captionStyle.preset !== "none" && previewWords.length > 0 && (
-                <CaptionCanvas
-                  videoRef={videoRef}
-                  words={previewWords}
-                  style={captionStyle}
-                  fontLoaded={fontLoaded}
-                  popAmount={popAmount}
-                />
+                <ErrorBoundary key={project.id} label="Caption preview">
+                  <CaptionCanvas
+                    videoRef={videoRef}
+                    words={previewWords}
+                    style={captionStyle}
+                    fontLoaded={fontLoaded}
+                    popAmount={popAmount}
+                  />
+                </ErrorBoundary>
               )}
 
               {reframe && selectedClip && previewMode === "wide" && (
@@ -1525,14 +1530,16 @@ function ProjectView({
           )}
 
           {selectedClip && project.durationMs > 0 && (
-            <TrimStrip
-              clip={selectedClip}
-              durationMs={project.durationMs}
-              onSeek={(ms) => seekTo(ms, false)}
-              onSaved={() => {
-                setClipRefreshTrigger((n) => n + 1)
-              }}
-            />
+            <ErrorBoundary key={project.id} label="Trim strip">
+              <TrimStrip
+                clip={selectedClip}
+                durationMs={project.durationMs}
+                onSeek={(ms) => seekTo(ms, false)}
+                onSaved={() => {
+                  setClipRefreshTrigger((n) => n + 1)
+                }}
+              />
+            </ErrorBoundary>
           )}
         </div>
       ) : null}
@@ -1586,12 +1593,14 @@ function ProjectView({
 
       {project.status === "ready" && (
         <>
-          <TranscriptViewer
-            projectId={project.id}
-            onSeekWord={handleSeekWord}
-            highlightRange={highlightRange}
-            fillerWords={fillerWords}
-          />
+          <ErrorBoundary key={project.id} label="Transcript">
+            <TranscriptViewer
+              projectId={project.id}
+              onSeekWord={handleSeekWord}
+              highlightRange={highlightRange}
+              fillerWords={fillerWords}
+            />
+          </ErrorBoundary>
 
           <div>
             <div className="flex gap-1 border-b border-neutral-800 mb-4">
@@ -1611,22 +1620,26 @@ function ProjectView({
             </div>
 
             {aiTab === "clips" ? (
-              <ClipReview
-                projectId={project.id}
-                onSelectClip={handleSelectClip}
-                exportSettings={{
-                  outputDir,
-                  burnSubtitles,
-                  reframe,
-                  blurBg,
-                  removeFillers,
-                  captionStyle,
-                }}
-                refreshTrigger={clipRefreshTrigger}
-                analysisComplete={project.status === "ready"}
-              />
+              <ErrorBoundary key={project.id} label="Suggested clips">
+                <ClipReview
+                  projectId={project.id}
+                  onSelectClip={handleSelectClip}
+                  exportSettings={{
+                    outputDir,
+                    burnSubtitles,
+                    reframe,
+                    blurBg,
+                    removeFillers,
+                    captionStyle,
+                  }}
+                  refreshTrigger={clipRefreshTrigger}
+                  analysisComplete={project.status === "ready"}
+                />
+              </ErrorBoundary>
             ) : (
-              <CaptionsPanel projectId={project.id} />
+              <ErrorBoundary key={project.id} label="Social captions">
+                <CaptionsPanel projectId={project.id} />
+              </ErrorBoundary>
             )}
           </div>
         </>
