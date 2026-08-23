@@ -36,8 +36,17 @@ export function insertBatched<T>(
   rows: T[],
   columnsPerRow: number,
 ): void {
+  if (
+    !Number.isInteger(columnsPerRow) ||
+    columnsPerRow < 1 ||
+    columnsPerRow > SQLITE_MAX_VARIABLES
+  ) {
+    throw new Error(
+      `insertBatched: columnsPerRow must be an integer between 1 and ${SQLITE_MAX_VARIABLES}, got ${columnsPerRow}`,
+    )
+  }
   if (rows.length === 0) return
-  const batchSize = Math.max(1, Math.floor(SQLITE_MAX_VARIABLES / columnsPerRow))
+  const batchSize = Math.floor(SQLITE_MAX_VARIABLES / columnsPerRow)
   for (let i = 0; i < rows.length; i += batchSize) {
     insertFn(rows.slice(i, i + batchSize))
   }

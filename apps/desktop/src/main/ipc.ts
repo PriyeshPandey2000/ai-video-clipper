@@ -257,7 +257,11 @@ export function registerIpcHandlers(): void {
 
         const wordRows = whisperToWords(result.segments, projectId)
         if (wordRows.length > 0) {
-          insertBatched((batch) => db.insert(words).values(batch).run(), wordRows, 7)
+          // A long transcript's word insert can take dozens of batches (see insertBatched) — wrap
+          // in a transaction so a failure partway through can't leave a half-written transcript.
+          db.transaction((tx) => {
+            insertBatched((batch) => tx.insert(words).values(batch).run(), wordRows, 7)
+          })
         }
 
         db.update(projects)
@@ -268,13 +272,17 @@ export function registerIpcHandlers(): void {
         sendProgress(projectId, "analyzing", 0.1, "Detecting filler words")
         const fillerSegments = detectFillerWords(wordRows, projectId)
         if (fillerSegments.length > 0) {
-          insertBatched((batch) => db.insert(segments).values(batch).run(), fillerSegments, 5)
+          db.transaction((tx) => {
+            insertBatched((batch) => tx.insert(segments).values(batch).run(), fillerSegments, 5)
+          })
         }
 
         sendProgress(projectId, "analyzing", 0.6, "Detecting silences")
         const silenceSegments = detectSilences(wordRows, projectId)
         if (silenceSegments.length > 0) {
-          insertBatched((batch) => db.insert(segments).values(batch).run(), silenceSegments, 5)
+          db.transaction((tx) => {
+            insertBatched((batch) => tx.insert(segments).values(batch).run(), silenceSegments, 5)
+          })
         }
 
         // AI content generation — failure here is non-fatal, transcript is still saved
@@ -664,19 +672,22 @@ export function registerIpcHandlers(): void {
     "project:set-filler-words",
     async (_event, { projectId, fillerList }: { projectId: string; fillerList: string[] }) => {
       const db = getDb(join(app.getPath("userData"), "db.sqlite"))
-      db.update(projects)
-        .set({ fillerWords: JSON.stringify(fillerList), updatedAt: now() })
-        .where(eq(projects.id, projectId))
-        .run()
-      // Re-detect with new list: wipe filler segments then reinsert
       const wordRows = db.select().from(words).where(eq(words.projectId, projectId)).all()
-      db.delete(segments)
-        .where(and(eq(segments.projectId, projectId), eq(segments.type, "filler")))
-        .run()
       const fillerSegs = detectFillerWords(wordRows, projectId, new Set(fillerList))
-      if (fillerSegs.length > 0) {
-        insertBatched((batch) => db.insert(segments).values(batch).run(), fillerSegs, 5)
-      }
+      // Whole read-modify-write as one transaction — a failure partway through the batched
+      // reinsert would otherwise leave the filler word list updated but segments half-written.
+      db.transaction((tx) => {
+        tx.update(projects)
+          .set({ fillerWords: JSON.stringify(fillerList), updatedAt: now() })
+          .where(eq(projects.id, projectId))
+          .run()
+        tx.delete(segments)
+          .where(and(eq(segments.projectId, projectId), eq(segments.type, "filler")))
+          .run()
+        if (fillerSegs.length > 0) {
+          insertBatched((batch) => tx.insert(segments).values(batch).run(), fillerSegs, 5)
+        }
+      })
     },
   )
 

@@ -29,4 +29,18 @@ describe("insertBatched", () => {
     // Every row appears exactly once, in order, across all batches.
     expect(batches.flat()).toEqual(rows)
   })
+
+  it("rejects invalid columnsPerRow instead of silently misbehaving", () => {
+    // Each of these would otherwise silently do the wrong thing: 0 -> Infinity batch size
+    // (reverts to one giant unbatched insert, the exact bug this function exists to prevent),
+    // NaN -> Math.max(1, NaN) is NaN -> an empty first slice and the loop never advances,
+    // negative -> clamped to 1 masking a caller bug, over the SQLite limit -> a single row
+    // alone could still exceed it.
+    const insertFn = vi.fn()
+    const rows = [1, 2, 3]
+    for (const bad of [0, -5, NaN, 1.5, 1000]) {
+      expect(() => insertBatched(insertFn, rows, bad)).toThrow(/columnsPerRow/)
+    }
+    expect(insertFn).not.toHaveBeenCalled()
+  })
 })
