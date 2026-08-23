@@ -13,6 +13,7 @@ import {
   and,
   desc,
   inArray,
+  insertBatched,
 } from "@video-editor/database"
 import {
   generateProxy,
@@ -256,7 +257,7 @@ export function registerIpcHandlers(): void {
 
         const wordRows = whisperToWords(result.segments, projectId)
         if (wordRows.length > 0) {
-          db.insert(words).values(wordRows).run()
+          insertBatched((batch) => db.insert(words).values(batch).run(), wordRows, 7)
         }
 
         db.update(projects)
@@ -267,13 +268,13 @@ export function registerIpcHandlers(): void {
         sendProgress(projectId, "analyzing", 0.1, "Detecting filler words")
         const fillerSegments = detectFillerWords(wordRows, projectId)
         if (fillerSegments.length > 0) {
-          db.insert(segments).values(fillerSegments).run()
+          insertBatched((batch) => db.insert(segments).values(batch).run(), fillerSegments, 5)
         }
 
         sendProgress(projectId, "analyzing", 0.6, "Detecting silences")
         const silenceSegments = detectSilences(wordRows, projectId)
         if (silenceSegments.length > 0) {
-          db.insert(segments).values(silenceSegments).run()
+          insertBatched((batch) => db.insert(segments).values(batch).run(), silenceSegments, 5)
         }
 
         // AI content generation — failure here is non-fatal, transcript is still saved
@@ -674,7 +675,7 @@ export function registerIpcHandlers(): void {
         .run()
       const fillerSegs = detectFillerWords(wordRows, projectId, new Set(fillerList))
       if (fillerSegs.length > 0) {
-        db.insert(segments).values(fillerSegs).run()
+        insertBatched((batch) => db.insert(segments).values(batch).run(), fillerSegs, 5)
       }
     },
   )
