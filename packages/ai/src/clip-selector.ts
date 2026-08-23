@@ -114,8 +114,11 @@ function topicsToChunks(sentences: Sentence[], topics: TopicSegment[]): Sentence
     const segMs = seg.endMs - seg.startMs
     if (current.length > 0 && currentMs + segMs > CHUNK_SIZE_MS) {
       chunks.push(current)
-      current = [...seg.sentences]
-      currentMs = segMs
+      // Carry the tail of the just-closed chunk into the next one — otherwise a clip whose
+      // sentences straddle this topic-segment boundary is invisible to both LLM calls. The
+      // fixed-time fallback already does this; topic chunking silently didn't.
+      current = [...trailingOverlap(current, CHUNK_OVERLAP_MS), ...seg.sentences]
+      currentMs = current[current.length - 1]!.endMs - current[0]!.startMs
     } else {
       current.push(...seg.sentences)
       currentMs += segMs
@@ -123,6 +126,15 @@ function topicsToChunks(sentences: Sentence[], topics: TopicSegment[]): Sentence
   }
   if (current.length > 0) chunks.push(current)
   return chunks
+}
+
+/** Trailing sentences within `overlapMs` of a chunk's end, for carrying into the next chunk. */
+function trailingOverlap(chunk: Sentence[], overlapMs: number): Sentence[] {
+  if (chunk.length === 0) return []
+  const chunkEndMs = chunk[chunk.length - 1]!.endMs
+  let start = chunk.length - 1
+  while (start > 0 && chunkEndMs - chunk[start - 1]!.startMs <= overlapMs) start--
+  return chunk.slice(start)
 }
 
 /** Fallback for when topic segmentation found no boundaries (uniform content or model unavailable). */
