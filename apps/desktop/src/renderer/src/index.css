@@ -30,12 +30,20 @@
     background: transparent;
   }
 
+  /* Invisible at rest — a permanently-visible thin line reads as a stray edge in a minimal
+     dark UI. Fades in only while the pointer is over the scrollable region (same pattern as
+     VSCode/Linear/Notion), so it never has to look "aligned" because it isn't there to judge. */
   ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.12);
+    background-color: transparent;
     border-radius: 2px;
+    transition: background-color 0.15s ease;
+  }
+
+  *:hover::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.14);
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.2);
+    background-color: rgba(255, 255, 255, 0.24);
   }
 }
