@@ -351,7 +351,7 @@ export default function App(): React.ReactElement {
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-2 divide-y divide-neutral-800/60">
+          <div className="flex-1 overflow-y-auto pl-2 divide-y divide-neutral-800/60">
             {liveProjects
               .filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
               .map((proj) => (
