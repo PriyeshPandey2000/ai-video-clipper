@@ -716,9 +716,14 @@ function ProjectView({
   }, [project.id])
 
   useEffect(() => {
+    // Clear before the ready-check, not after — this effect stays mounted across a project's
+    // whole idle/transcribing/analyzing/ready lifecycle (the video player and caption overlay
+    // aren't gated on status like TranscriptViewer/ClipReview are), so returning early while a
+    // freshly-imported project is still processing left the *previous* project's words showing
+    // in the caption preview the entire time — looked exactly like captions from the old video.
+    setPreviewWords([])
     if (project.status !== "ready") return
     let cancelled = false
-    setPreviewWords([])
     window.api
       .invoke("project:get-words", { projectId: project.id })
       .then((ws) => {
