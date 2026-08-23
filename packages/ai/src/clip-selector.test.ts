@@ -126,8 +126,12 @@ describe("chunking — topic-coherent (C5)", () => {
     expect(ranges[0]![0]).toBe(0)
     expect(ranges.at(-1)![1]).toBe(sentences.length - 1)
     // Regression check: topic chunking used to have zero overlap between chunks, unlike the
-    // fixed-time fallback below — a clip straddling this boundary was invisible to both calls.
-    expect(ranges[1]![0]).toBeLessThan(ranges[0]![1])
+    // fixed-time fallback below — a clip straddling a boundary was invisible to both calls.
+    // Sentence indices are inclusive, so a one-sentence overlap (nextStart === previousEnd)
+    // is valid too — check every adjacent boundary, not just the first.
+    for (let i = 1; i < ranges.length; i++) {
+      expect(ranges[i]![0]).toBeLessThanOrEqual(ranges[i - 1]![1])
+    }
   })
 })
 
