@@ -25,6 +25,33 @@ export function closeDb(): void {
   _db = null
 }
 
+// SQLite's bound-parameter limit (SQLITE_MAX_VARIABLE_NUMBER) is 999 in the most conservative
+// common builds. A single multi-row insert binds rows.length * columnsPerRow parameters — a
+// long transcript's word count clears that easily (better-sqlite3 throws "too many SQL
+// variables" around ~140 word rows at 7 columns each). Split into batches that stay under it.
+const SQLITE_MAX_VARIABLES = 999
+
+export function insertBatched<T>(
+  insertFn: (batch: T[]) => void,
+  rows: T[],
+  columnsPerRow: number,
+): void {
+  if (
+    !Number.isInteger(columnsPerRow) ||
+    columnsPerRow < 1 ||
+    columnsPerRow > SQLITE_MAX_VARIABLES
+  ) {
+    throw new Error(
+      `insertBatched: columnsPerRow must be an integer between 1 and ${SQLITE_MAX_VARIABLES}, got ${columnsPerRow}`,
+    )
+  }
+  if (rows.length === 0) return
+  const batchSize = Math.floor(SQLITE_MAX_VARIABLES / columnsPerRow)
+  for (let i = 0; i < rows.length; i += batchSize) {
+    insertFn(rows.slice(i, i + batchSize))
+  }
+}
+
 // bootstrapSchema creates tables on first run.
 // Column names here MUST match schema.ts — update both when adding columns.
 function bootstrapSchema(sqlite: Database.Database): void {
