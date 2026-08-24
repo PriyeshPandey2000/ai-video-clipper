@@ -1,6 +1,6 @@
 {
   "name": "@video-editor/desktop",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "AI-assisted clip selection and export for long-form video",
   "author": "Clipper",
   "private": true,
