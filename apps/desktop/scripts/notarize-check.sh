@@ -87,10 +87,20 @@ xcrun stapler staple "$DMG" && echo "Stapled: $DMG"
 # time and holds its own separate, now-stale (unstapled) copy of the .app. Rebuild it from the
 # just-stapled .app so anyone who distributes the .zip instead of the .dmg also gets a properly
 # stapled, offline-verifiable copy (electron-updater's mac autoUpdater uses the .zip, not the
-# .dmg, so this matters once auto-update is wired up).
+# .dmg, so this matters for auto-update).
 echo "Rebuilding $ZIP from the stapled .app..."
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 echo "Rebuilt: $ZIP"
+
+# electron-builder wrote latest-mac.yml's checksum against the PRE-rebuild zip — the rebuild
+# above produces different bytes (different sha512), so electron-updater would reject every
+# download as corrupted unless the manifest is patched to match what actually gets uploaded.
+YML="$RELEASE_DIR/latest-mac.yml"
+if [ -f "$YML" ]; then
+  node "$(dirname "$0")/fix-update-manifest.js" "$ZIP" "$YML"
+else
+  echo "Warning: $YML not found — auto-update manifest not generated, skipping patch." >&2
+fi
 
 echo "Done. Verify with: spctl -a -vvv -t execute \"$APP\""

@@ -185,6 +185,8 @@ export interface IpcInvokeChannels {
   "models:download": { args: { model: WhisperModel }; result: void }
   "settings:get-api-key": { args: void; result: { configured: boolean; preview: string | null } }
   "settings:set-api-key": { args: { groqApiKey: string }; result: void }
+  "updater:download": { args: void; result: void }
+  "updater:restart-now": { args: void; result: void }
 }
 
 // Main → renderer (send/on): payload only, no args/result envelope.
@@ -201,4 +203,8 @@ export interface IpcEventChannels {
     clipId?: string
     progress: number
   }
+  "updater:available": { version: string }
+  "updater:progress": { percent: number }
+  "updater:downloaded": { readyToInstall: boolean }
+  "updater:error": { message: string }
 }

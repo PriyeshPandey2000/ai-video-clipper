@@ -10,10 +10,10 @@
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "lint": "eslint src",
-    "package:mac": "pnpm build && electron-builder --mac",
-    "package:win": "pnpm build && electron-builder --win",
-    "package:linux": "pnpm build && electron-builder --linux",
-    "package:dir": "pnpm build && electron-builder --dir"
+    "package:mac": "pnpm build && electron-builder --mac --publish=never",
+    "package:win": "pnpm build && electron-builder --win --publish=never",
+    "package:linux": "pnpm build && electron-builder --linux --publish=never",
+    "package:dir": "pnpm build && electron-builder --dir --publish=never"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.0",
@@ -41,6 +41,7 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",
     "electron": "^32.0.0",
+    "js-yaml": "^4.3.0",
     "electron-builder": "^25.0.0",
     "electron-vite": "^2.3.0",
     "react": "^19.0.0",
@@ -99,6 +100,11 @@
         "from": "../../resources/",
         "to": "resources/"
       }
-    ]
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "PriyeshPandey2000",
+      "repo": "ai-video-clipper"
+    }
   }
 }

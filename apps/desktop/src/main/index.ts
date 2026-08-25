@@ -5,6 +5,7 @@ import { closeDb } from "@video-editor/database"
 import { registerIpcHandlers } from "./ipc"
 import { loadGroqApiKeySync } from "./config"
 import { initLogger } from "./logger"
+import { initUpdater } from "./updater"
 
 initLogger()
 
@@ -67,6 +68,7 @@ app.whenReady().then(() => {
 
   registerIpcHandlers()
   createWindow()
+  initUpdater()
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
