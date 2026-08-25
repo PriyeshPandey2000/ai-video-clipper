@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest"
 import Database from "better-sqlite3"
-import { resolve } from "node:path"
+import { resolve, join } from "node:path"
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import {
   insertBatched,
   createDb,
@@ -34,8 +36,9 @@ const MIGRATIONS_DIR = resolve(process.cwd(), "resources/drizzle")
 
 // The installed better-sqlite3 binary targets whichever runtime last built it — on dev machines
 // that's usually Electron (electron-rebuild), not system Node, so vitest can't load it here.
-// CI installs fresh, where pnpm builds it against the same Node that runs tests. Skip the
-// sqlite-backed tests when the native module doesn't match instead of failing the whole suite.
+// CI installs fresh, where pnpm builds it against the same Node that runs tests — so there,
+// skipping would mean silently shipping without any database coverage. Locally we skip; in CI
+// the suite fails instead.
 const sqliteUsable = (() => {
   try {
     new Database(":memory:")
@@ -44,7 +47,19 @@ const sqliteUsable = (() => {
     return false
   }
 })()
-const describeSqlite = sqliteUsable ? describe : describe.skip
+type DescribeFn = (name: string, fn: () => void) => void
+const describeSqlite: DescribeFn = sqliteUsable
+  ? (name, fn) => describe(name, fn)
+  : process.env.CI
+    ? (name) =>
+        describe(name, () => {
+          it("loads better-sqlite3 against the Node running the tests", () => {
+            throw new Error(
+              "better-sqlite3 is not loadable in this runtime — database tests did NOT run. Rebuild it for the CI Node version instead of letting coverage disappear.",
+            )
+          })
+        })
+    : (name, fn) => describe.skip(name, fn)
 
 function testDb(): Db {
   return createDb(new Database(":memory:"), MIGRATIONS_DIR)
@@ -118,71 +133,44 @@ describeSqlite("repository", () => {
   })
 
   it("baselines a legacy bootstrapSchema database without re-running DDL or losing data", () => {
-    // The exact DDL bootstrapSchema used before migrations existed (minus the try/catch ALTERs,
-    // which produced this same final shape).
-    const sqlite = new Database(":memory:")
-    sqlite.exec(`
-      CREATE TABLE projects (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        media_path TEXT NOT NULL,
-        proxy_path TEXT,
-        duration_ms INTEGER NOT NULL DEFAULT 0,
-        status TEXT NOT NULL DEFAULT 'idle',
-        caption_style TEXT,
-        filler_words TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-      CREATE TABLE words (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-        text TEXT NOT NULL,
-        start_ms INTEGER NOT NULL,
-        end_ms INTEGER NOT NULL,
-        confidence REAL NOT NULL DEFAULT 1,
-        speaker_label TEXT
-      );
-      CREATE TABLE clips (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-        title TEXT NOT NULL,
-        start_ms INTEGER NOT NULL,
-        end_ms INTEGER NOT NULL,
-        ai_score REAL,
-        ai_reason TEXT,
-        status TEXT NOT NULL DEFAULT 'suggested',
-        platform TEXT,
-        crop_x REAL NOT NULL DEFAULT 0.5,
-        created_at INTEGER NOT NULL
-      );
-      CREATE TABLE segments (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-        type TEXT NOT NULL,
-        start_ms INTEGER NOT NULL,
-        end_ms INTEGER NOT NULL
-      );
-      CREATE TABLE ai_outputs (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-        type TEXT NOT NULL,
-        content TEXT NOT NULL,
-        created_at INTEGER NOT NULL
-      );
-    `)
-    sqlite
-      .prepare(
-        "INSERT INTO projects (id, name, media_path, created_at, updated_at) VALUES ('legacy', 'Old', '/m.mp4', 1, 1)",
-      )
-      .run()
-
+    const sqlite = makeLegacySqlite()
     const db = createDb(sqlite, MIGRATIONS_DIR)
 
     // Migration 0000 was skipped (tables already exist), user data survives, and the db is usable.
     expect(getProject(db, "legacy")?.name).toBe("Old")
     insertProject(db, { ...baseProject, id: "new" })
     expect(getProject(db, "new")).not.toBeNull()
+  })
+
+  it("still applies later migrations to a baselined legacy database even though their timestamps predate 'now'", () => {
+    // Regression: the baseline used to stamp Date.now(), so a user skipping app versions would
+    // baseline ABOVE migrations generated before "now" and those migrations were silently
+    // skipped, leaving their schema permanently behind. The baseline must use migration 0000's
+    // journal timestamp instead — here both fake migrations are stamped in 1970 (long before any
+    // plausible Date.now()), so a Date.now() baseline would skip 0001 and fail this test.
+    const dir = mkdtempSync(join(tmpdir(), "db-migrations-test-"))
+    mkdirSync(join(dir, "meta"))
+    writeFileSync(
+      join(dir, "meta", "_journal.json"),
+      JSON.stringify({
+        version: "7",
+        dialect: "sqlite",
+        entries: [
+          { idx: 0, version: "6", when: 1000, tag: "0000_legacy", breakpoints: true },
+          { idx: 1, version: "6", when: 2000, tag: "0001_late", breakpoints: true },
+        ],
+      }),
+    )
+    // 0000 never runs on legacy dbs (tables exist); its content is irrelevant here.
+    writeFileSync(join(dir, "0000_legacy.sql"), "SELECT 1;")
+    writeFileSync(join(dir, "0001_late.sql"), "ALTER TABLE projects ADD COLUMN marker TEXT;")
+
+    const sqlite = makeLegacySqlite()
+    const db = createDb(sqlite, dir)
+
+    const columns = sqlite.prepare("PRAGMA table_info(projects)").all() as { name: string }[]
+    expect(columns.some((c) => c.name === "marker")).toBe(true)
+    expect(getProject(db, "legacy")?.name).toBe("Old")
   })
 
   it("insertProject / getProject / listProjects order by updatedAt desc", () => {
@@ -274,6 +262,68 @@ describeSqlite("repository", () => {
 
 // Small raw helpers for assertions — reading through drizzle directly keeps these tests honest
 // about what actually landed in sqlite.
+function makeLegacySqlite(): Database.Database {
+  // The exact DDL bootstrapSchema used before migrations existed (minus the try/catch ALTERs,
+  // which produced this same final shape).
+  const sqlite = new Database(":memory:")
+  sqlite.exec(`
+    CREATE TABLE projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      media_path TEXT NOT NULL,
+      proxy_path TEXT,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'idle',
+      caption_style TEXT,
+      filler_words TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE words (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      text TEXT NOT NULL,
+      start_ms INTEGER NOT NULL,
+      end_ms INTEGER NOT NULL,
+      confidence REAL NOT NULL DEFAULT 1,
+      speaker_label TEXT
+    );
+    CREATE TABLE clips (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      start_ms INTEGER NOT NULL,
+      end_ms INTEGER NOT NULL,
+      ai_score REAL,
+      ai_reason TEXT,
+      status TEXT NOT NULL DEFAULT 'suggested',
+      platform TEXT,
+      crop_x REAL NOT NULL DEFAULT 0.5,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE segments (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      start_ms INTEGER NOT NULL,
+      end_ms INTEGER NOT NULL
+    );
+    CREATE TABLE ai_outputs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+  `)
+  sqlite
+    .prepare(
+      "INSERT INTO projects (id, name, media_path, created_at, updated_at) VALUES ('legacy', 'Old', '/m.mp4', 1, 1)",
+    )
+    .run()
+  return sqlite
+}
+
 function getWordsCount(db: Db): number {
   return db.select({ id: wordsTable.id }).from(wordsTable).all().length
 }

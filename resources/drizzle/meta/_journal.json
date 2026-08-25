@@ -8,6 +8,13 @@
       "when": 1787647530383,
       "tag": "0000_initial-schema",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1787649808671,
+      "tag": "0001_add-project-id-indexes",
+      "breakpoints": true
     }
   ]
 }

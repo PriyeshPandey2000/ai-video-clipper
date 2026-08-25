@@ -2,6 +2,8 @@ import Database from "better-sqlite3"
 import { drizzle, BetterSQLite3Database } from "drizzle-orm/better-sqlite3"
 import { migrate } from "drizzle-orm/better-sqlite3/migrator"
 import { and, desc, eq, inArray } from "drizzle-orm"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import * as schema from "./schema"
 import { aiOutputs, clips, projects, segments, words } from "./schema"
 
@@ -55,10 +57,13 @@ export function insertBatched<T>(
 
 // Legacy databases were first-run-created by raw CREATE TABLE DDL (bootstrapSchema) before
 // migrations existed. That DDL matches 0000_initial-schema exactly, so replaying it would fail
-// on existing tables. Instead, stamp a sentinel row with a timestamp newer than any migration
-// generated so far — drizzle's migrator compares timestamps, so 0000 is recorded as applied
-// while every future migration (generated later, larger folderMillis) still runs normally.
-function baselineLegacyDb(sqlite: Database.Database): void {
+// on existing tables. Instead, stamp the FIRST migration's journal timestamp as already applied:
+// drizzle's migrator skips migrations whose folderMillis is <= that value, so 0000 is skipped
+// while every later migration (generated after it, larger timestamp) still applies. Using a
+// runtime Date.now() here would be wrong — a user skipping several app versions would baseline
+// above migrations generated before "now", and those would be silently skipped, leaving their
+// schema permanently behind.
+function baselineLegacyDb(sqlite: Database.Database, migrationsFolder: string): void {
   const hasTables =
     (
       sqlite
@@ -76,13 +81,28 @@ function baselineLegacyDb(sqlite: Database.Database): void {
 
   if (!hasTables || (migrationTableExists && hasAppliedMigrations(sqlite))) return
 
+  // No journal (or no entries) means there is nothing to skip — let migrate() handle everything.
+  const firstMigrationWhen = readFirstMigrationTimestamp(migrationsFolder)
+  if (firstMigrationWhen === null) return
+
   sqlite.exec(
     'CREATE TABLE IF NOT EXISTS "__drizzle_migrations" (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT, created_at NUMERIC)',
   )
-  if (!hasAppliedMigrations(sqlite)) {
-    sqlite
-      .prepare('INSERT INTO "__drizzle_migrations" ("hash", "created_at") VALUES (?, ?)')
-      .run("legacy-bootstrap-baseline", Date.now())
+  sqlite
+    .prepare('INSERT INTO "__drizzle_migrations" ("hash", "created_at") VALUES (?, ?)')
+    .run("legacy-bootstrap-baseline", firstMigrationWhen)
+}
+
+function readFirstMigrationTimestamp(migrationsFolder: string): number | null {
+  try {
+    const journalPath = join(migrationsFolder, "meta", "_journal.json")
+    const journal = JSON.parse(readFileSync(journalPath, "utf-8")) as {
+      entries?: { when?: number }[]
+    }
+    const when = journal.entries?.[0]?.when
+    return typeof when === "number" ? when : null
+  } catch {
+    return null
   }
 }
 
@@ -95,7 +115,7 @@ function hasAppliedMigrations(sqlite: Database.Database): boolean {
 export function createDb(sqlite: Database.Database, migrationsFolder: string): Db {
   sqlite.pragma("journal_mode = WAL")
   sqlite.pragma("foreign_keys = ON")
-  baselineLegacyDb(sqlite)
+  baselineLegacyDb(sqlite, migrationsFolder)
   const db = drizzle(sqlite, { schema })
   migrate(db, { migrationsFolder })
   return db
@@ -193,12 +213,16 @@ export function getAiOutputs(db: Db, projectId: string): AiOutputRow[] {
   return db.select().from(aiOutputs).where(eq(aiOutputs.projectId, projectId)).all()
 }
 
-// Everything regenerated when a transcript is re-run: derived data, never source media.
+// Everything regenerated when a transcript is re-run: derived data, never source media. One
+// transaction — a partial clear followed by re-inserts would mix stale clips/outputs with a
+// fresh transcript.
 export function clearDerivedData(db: Db, projectId: string): void {
-  db.delete(words).where(eq(words.projectId, projectId)).run()
-  db.delete(segments).where(eq(segments.projectId, projectId)).run()
-  db.delete(clips).where(eq(clips.projectId, projectId)).run()
-  db.delete(aiOutputs).where(eq(aiOutputs.projectId, projectId)).run()
+  db.transaction((tx) => {
+    tx.delete(words).where(eq(words.projectId, projectId)).run()
+    tx.delete(segments).where(eq(segments.projectId, projectId)).run()
+    tx.delete(clips).where(eq(clips.projectId, projectId)).run()
+    tx.delete(aiOutputs).where(eq(aiOutputs.projectId, projectId)).run()
+  })
 }
 
 export function insertWords(db: Db, rows: NewWord[]): void {
