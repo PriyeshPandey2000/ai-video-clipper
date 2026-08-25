@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core"
+import { index, sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core"
 
 export const projects = sqliteTable("projects", {
   id: text("id").primaryKey(),
@@ -17,58 +17,76 @@ export const projects = sqliteTable("projects", {
   updatedAt: integer("updated_at").notNull(),
 })
 
-export const words = sqliteTable("words", {
-  id: text("id").primaryKey(),
-  projectId: text("project_id")
-    .notNull()
-    .references(() => projects.id, { onDelete: "cascade" }),
-  text: text("text").notNull(),
-  startMs: integer("start_ms").notNull(),
-  endMs: integer("end_ms").notNull(),
-  confidence: real("confidence").notNull().default(1),
-  speakerLabel: text("speaker_label"),
-})
+export const words = sqliteTable(
+  "words",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    text: text("text").notNull(),
+    startMs: integer("start_ms").notNull(),
+    endMs: integer("end_ms").notNull(),
+    confidence: real("confidence").notNull().default(1),
+    speakerLabel: text("speaker_label"),
+  },
+  // SQLite does not auto-index foreign-key columns — every repository query filters by
+  // project_id, so each child table needs its own index.
+  (table) => ({ wordsProjectIdIdx: index("words_project_id_idx").on(table.projectId) }),
+)
 
-export const clips = sqliteTable("clips", {
-  id: text("id").primaryKey(),
-  projectId: text("project_id")
-    .notNull()
-    .references(() => projects.id, { onDelete: "cascade" }),
-  title: text("title").notNull(),
-  startMs: integer("start_ms").notNull(),
-  endMs: integer("end_ms").notNull(),
-  aiScore: real("ai_score"),
-  aiReason: text("ai_reason"),
-  status: text("status", {
-    enum: ["suggested", "approved", "rejected", "exported"],
-  })
-    .notNull()
-    .default("suggested"),
-  platform: text("platform", {
-    enum: ["tiktok", "reels", "shorts", "generic"],
-  }),
-  cropX: real("crop_x").notNull().default(0.5),
-  createdAt: integer("created_at").notNull(),
-})
+export const clips = sqliteTable(
+  "clips",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    startMs: integer("start_ms").notNull(),
+    endMs: integer("end_ms").notNull(),
+    aiScore: real("ai_score"),
+    aiReason: text("ai_reason"),
+    status: text("status", {
+      enum: ["suggested", "approved", "rejected", "exported"],
+    })
+      .notNull()
+      .default("suggested"),
+    platform: text("platform", {
+      enum: ["tiktok", "reels", "shorts", "generic"],
+    }),
+    cropX: real("crop_x").notNull().default(0.5),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => ({ clipsProjectIdIdx: index("clips_project_id_idx").on(table.projectId) }),
+)
 
-export const segments = sqliteTable("segments", {
-  id: text("id").primaryKey(),
-  projectId: text("project_id")
-    .notNull()
-    .references(() => projects.id, { onDelete: "cascade" }),
-  type: text("type", { enum: ["filler", "silence"] }).notNull(),
-  startMs: integer("start_ms").notNull(),
-  endMs: integer("end_ms").notNull(),
-})
+export const segments = sqliteTable(
+  "segments",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    type: text("type", { enum: ["filler", "silence"] }).notNull(),
+    startMs: integer("start_ms").notNull(),
+    endMs: integer("end_ms").notNull(),
+  },
+  (table) => ({ segmentsProjectIdIdx: index("segments_project_id_idx").on(table.projectId) }),
+)
 
-export const aiOutputs = sqliteTable("ai_outputs", {
-  id: text("id").primaryKey(),
-  projectId: text("project_id")
-    .notNull()
-    .references(() => projects.id, { onDelete: "cascade" }),
-  type: text("type", {
-    enum: ["blog_post", "social_caption", "timestamps", "chapter_markers"],
-  }).notNull(),
-  content: text("content").notNull(),
-  createdAt: integer("created_at").notNull(),
-})
+export const aiOutputs = sqliteTable(
+  "ai_outputs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    type: text("type", {
+      enum: ["blog_post", "social_caption", "timestamps", "chapter_markers"],
+    }).notNull(),
+    content: text("content").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => ({ aiOutputsProjectIdIdx: index("ai_outputs_project_id_idx").on(table.projectId) }),
+)
