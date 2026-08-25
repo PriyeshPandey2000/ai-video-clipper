@@ -3,17 +3,28 @@ import { join } from "path"
 import { tmpdir } from "os"
 import { copyFile, mkdir, writeFile, unlink } from "fs/promises"
 import {
-  getDb,
-  projects,
-  words,
-  segments,
-  clips,
-  aiOutputs,
-  eq,
-  and,
-  desc,
-  inArray,
-  insertBatched,
+  initDb,
+  listProjects,
+  getProject,
+  insertProject,
+  updateProjectImportResult,
+  setProjectStatus,
+  setCaptionStyle,
+  setFillerWords,
+  clearDerivedData,
+  insertWords,
+  insertSegments,
+  insertClips,
+  insertAiOutput,
+  getWords,
+  getSegments,
+  getClips,
+  getClipsByIds,
+  getAiOutputs,
+  setClipStatus,
+  setClipTimes,
+  setClipCropX,
+  markClipExported,
 } from "@video-editor/database"
 import {
   generateProxy,
@@ -108,7 +119,10 @@ export function registerIpcHandlers(): void {
   })
 
   const dbPath = join(app.getPath("userData"), "db.sqlite")
-  const db = getDb(dbPath)
+  // Migrations ride the same resources/ packaging path as ffmpeg/whisper/fonts (see
+  // getResourcesPath above and the v0.1.2 resourcesPath incident) — drizzle's migrator reads
+  // the .sql files from this folder at runtime.
+  const db = initDb(dbPath, join(getResourcesPath(), "drizzle"))
 
   function send<K extends keyof IpcEventChannels>(channel: K, data: IpcEventChannels[K]): void {
     const win = BrowserWindow.getAllWindows()[0]
@@ -145,37 +159,31 @@ export function registerIpcHandlers(): void {
 
       const durationMs = await probeDuration(ffmpegBin, sourcePath)
 
-      db.update(projects)
-        .set({ proxyPath, durationMs, updatedAt: now() })
-        .where(eq(projects.id, projectId))
-        .run()
+      updateProjectImportResult(db, projectId, proxyPath, durationMs)
 
       sendProgress(projectId, "analyzing", 1, "Ready for transcription")
       send("pipeline:complete", { projectId })
     } catch (err) {
       log.error(`Import pipeline failed for project ${projectId}`, err)
-      db.update(projects)
-        .set({ status: "error", updatedAt: now() })
-        .where(eq(projects.id, projectId))
-        .run()
+      setProjectStatus(db, projectId, "error")
       send("pipeline:error", { projectId, error: String(err) })
     }
   }
 
   handle("project:list", async () => {
-    return db.select().from(projects).orderBy(desc(projects.updatedAt)).all()
+    return listProjects(db)
   })
 
   handle("project:get", async (_event, { id }: { id: string }) => {
-    return db.select().from(projects).where(eq(projects.id, id)).all()[0] ?? null
+    return getProject(db, id)
   })
 
   handle("project:get-words", async (_event, { projectId }) => {
-    return db.select().from(words).where(eq(words.projectId, projectId)).all()
+    return getWords(db, projectId)
   })
 
   handle("project:get-ai-outputs", async (_event, { projectId }) => {
-    return db.select().from(aiOutputs).where(eq(aiOutputs.projectId, projectId)).all()
+    return getAiOutputs(db, projectId)
   })
 
   handle(
@@ -200,7 +208,7 @@ export function registerIpcHandlers(): void {
         updatedAt: now(),
       }
 
-      db.insert(projects).values(proj).run()
+      insertProject(db, proj)
 
       // Fire-and-forget: proxy + audio extraction happens in background.
       // Progress arrives via pipeline:progress events. IPC returns immediately.
@@ -213,17 +221,14 @@ export function registerIpcHandlers(): void {
   handle(
     "pipeline:start",
     async (_event, { projectId, model }: { projectId: string; model: WhisperModel }) => {
-      const proj = db.select().from(projects).where(eq(projects.id, projectId)).all()[0]
+      const proj = getProject(db, projectId)
       if (!proj) throw new Error(`Project ${projectId} not found`)
       if (proj.status === "transcribing" || proj.status === "analyzing") {
         log.warn(`pipeline:start ignored — project ${projectId} already ${proj.status}`)
         return
       }
 
-      db.update(projects)
-        .set({ status: "transcribing", updatedAt: now() })
-        .where(eq(projects.id, projectId))
-        .run()
+      setProjectStatus(db, projectId, "transcribing")
 
       try {
         const modelsDir = join(app.getPath("userData"), "models")
@@ -250,39 +255,25 @@ export function registerIpcHandlers(): void {
 
         sendProgress(projectId, "transcribing", 0.9, "Writing transcript to database")
 
-        db.delete(words).where(eq(words.projectId, projectId)).run()
-        db.delete(segments).where(eq(segments.projectId, projectId)).run()
-        db.delete(clips).where(eq(clips.projectId, projectId)).run()
-        db.delete(aiOutputs).where(eq(aiOutputs.projectId, projectId)).run()
+        clearDerivedData(db, projectId)
 
         const wordRows = whisperToWords(result.segments, projectId)
         if (wordRows.length > 0) {
-          // A long transcript's word insert can take dozens of batches (see insertBatched) — wrap
-          // in a transaction so a failure partway through can't leave a half-written transcript.
-          db.transaction((tx) => {
-            insertBatched((batch) => tx.insert(words).values(batch).run(), wordRows, 7)
-          })
+          insertWords(db, wordRows)
         }
 
-        db.update(projects)
-          .set({ status: "analyzing", updatedAt: now() })
-          .where(eq(projects.id, projectId))
-          .run()
+        setProjectStatus(db, projectId, "analyzing")
 
         sendProgress(projectId, "analyzing", 0.1, "Detecting filler words")
         const fillerSegments = detectFillerWords(wordRows, projectId)
         if (fillerSegments.length > 0) {
-          db.transaction((tx) => {
-            insertBatched((batch) => tx.insert(segments).values(batch).run(), fillerSegments, 5)
-          })
+          insertSegments(db, fillerSegments)
         }
 
         sendProgress(projectId, "analyzing", 0.6, "Detecting silences")
         const silenceSegments = detectSilences(wordRows, projectId)
         if (silenceSegments.length > 0) {
-          db.transaction((tx) => {
-            insertBatched((batch) => tx.insert(segments).values(batch).run(), silenceSegments, 5)
-          })
+          insertSegments(db, silenceSegments)
         }
 
         // AI content generation — failure here is non-fatal, transcript is still saved
@@ -328,7 +319,7 @@ export function registerIpcHandlers(): void {
             createdAt: now(),
           }))
           if (clipRows.length > 0) {
-            db.insert(clips).values(clipRows).run()
+            insertClips(db, clipRows)
           }
 
           if (clipSuggestions.length > 0) {
@@ -339,39 +330,31 @@ export function registerIpcHandlers(): void {
             )
             const clipText = wordsToPlainText(clipWords)
             const captions = await generateSocialCaptions(client, topClip.title, clipText)
-            db.insert(aiOutputs)
-              .values({
-                id: generateId(),
-                projectId,
-                type: "social_caption",
-                content: JSON.stringify(captions),
-                createdAt: now(),
-              })
-              .run()
+            insertAiOutput(db, {
+              id: generateId(),
+              projectId,
+              type: "social_caption",
+              content: JSON.stringify(captions),
+              createdAt: now(),
+            })
           }
         } catch (err) {
           log.warn("AI stage failed (GROQ_API_KEY missing or AI error) — transcript saved:", err)
         }
 
-        db.update(projects)
-          .set({ status: "ready", updatedAt: now() })
-          .where(eq(projects.id, projectId))
-          .run()
+        setProjectStatus(db, projectId, "ready")
 
         send("pipeline:complete", { projectId })
       } catch (err) {
         log.error(`Transcription pipeline failed for project ${projectId}`, err)
-        db.update(projects)
-          .set({ status: "error", updatedAt: now() })
-          .where(eq(projects.id, projectId))
-          .run()
+        setProjectStatus(db, projectId, "error")
         send("pipeline:error", { projectId, error: String(err) })
       }
     },
   )
 
   handle("clip:list", async (_event, { projectId }) => {
-    return db.select().from(clips).where(eq(clips.projectId, projectId)).all()
+    return getClips(db, projectId)
   })
 
   handle(
@@ -383,7 +366,7 @@ export function registerIpcHandlers(): void {
         status,
       }: { clipId: string; status: "suggested" | "approved" | "rejected" | "exported" },
     ) => {
-      db.update(clips).set({ status }).where(eq(clips.id, clipId)).run()
+      setClipStatus(db, clipId, status)
     },
   )
 
@@ -393,19 +376,14 @@ export function registerIpcHandlers(): void {
       _event,
       { clipId, startMs, endMs }: { clipId: string; startMs: number; endMs: number },
     ) => {
-      const clip = db.select().from(clips).where(eq(clips.id, clipId)).get()
-      const status = clip?.status === "exported" ? "approved" : undefined
-      db.update(clips)
-        .set({ startMs, endMs, ...(status ? { status } : {}) })
-        .where(eq(clips.id, clipId))
-        .run()
+      setClipTimes(db, clipId, startMs, endMs)
     },
   )
 
   handle(
     "clip:update-crop-x",
     async (_event, { clipId, cropX }: { clipId: string; cropX: number }) => {
-      db.update(clips).set({ cropX }).where(eq(clips.id, clipId)).run()
+      setClipCropX(db, clipId, cropX)
     },
   )
 
@@ -445,12 +423,10 @@ export function registerIpcHandlers(): void {
         captionStyle?: CaptionStyle
       },
     ) => {
-      const db = getDb(join(app.getPath("userData"), "db.sqlite"))
-      const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
+      const project = getProject(db, projectId)
       if (!project) throw new Error("Project not found")
 
-      const clipRows =
-        clipIds.length > 0 ? db.select().from(clips).where(inArray(clips.id, clipIds)).all() : []
+      const clipRows = getClipsByIds(db, clipIds)
 
       const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
       const fontsDir = join(getResourcesPath(), "fonts")
@@ -458,12 +434,10 @@ export function registerIpcHandlers(): void {
       await mkdir(outDir, { recursive: true })
 
       const useAnimated = burnSubtitles && captionStyle && captionStyle.preset !== "none"
-      const wordRows = burnSubtitles
-        ? db.select().from(words).where(eq(words.projectId, projectId)).all()
-        : []
+      const wordRows = burnSubtitles ? getWords(db, projectId) : []
 
       // D7 — query segments once; subtractSegments computes keep intervals per clip.
-      const allSegs = db.select().from(segments).where(eq(segments.projectId, projectId)).all()
+      const allSegs = getSegments(db, projectId)
 
       const exportedPaths: string[] = []
       for (let ci = 0; ci < clipRows.length; ci++) {
@@ -534,7 +508,7 @@ export function registerIpcHandlers(): void {
           if (srtPath) await unlink(srtPath).catch(() => {})
         }
 
-        db.update(clips).set({ status: "exported" }).where(eq(clips.id, clip.id)).run()
+        markClipExported(db, clip.id)
         exportedPaths.push(outPath)
       }
       return exportedPaths
@@ -561,11 +535,10 @@ export function registerIpcHandlers(): void {
         blurBg?: boolean
       },
     ) => {
-      const db = getDb(join(app.getPath("userData"), "db.sqlite"))
-      const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
+      const project = getProject(db, projectId)
       if (!project) throw new Error("Project not found")
 
-      const segs = db.select().from(segments).where(eq(segments.projectId, projectId)).all()
+      const segs = getSegments(db, projectId)
       const keepIntervals = subtractSegments(0, project.durationMs, segs)
 
       const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
@@ -575,7 +548,7 @@ export function registerIpcHandlers(): void {
 
       let srtPath: string | undefined
       if (burnSubtitles) {
-        const wordRows = db.select().from(words).where(eq(words.projectId, projectId)).all()
+        const wordRows = getWords(db, projectId)
         if (wordRows.length > 0) {
           const remappedWords = remapWordsToEpisodeTimeline(wordRows, keepIntervals)
           srtPath = join(tmpdir(), `episode-${projectId}.srt`)
@@ -613,11 +586,10 @@ export function registerIpcHandlers(): void {
   handle(
     "export:srt",
     async (_event, { projectId, outputDir }: { projectId: string; outputDir?: string }) => {
-      const db = getDb(join(app.getPath("userData"), "db.sqlite"))
-      const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
+      const project = getProject(db, projectId)
       if (!project) throw new Error("Project not found")
 
-      const wordRows = db.select().from(words).where(eq(words.projectId, projectId)).all()
+      const wordRows = getWords(db, projectId)
       const srtContent = buildSrt(wordRows)
 
       const outDir = outputDir ?? join(app.getPath("downloads"), sanitizeName(project.name))
@@ -634,17 +606,12 @@ export function registerIpcHandlers(): void {
       _event,
       { projectId, captionStyle }: { projectId: string; captionStyle: CaptionStyle },
     ) => {
-      const db = getDb(join(app.getPath("userData"), "db.sqlite"))
-      db.update(projects)
-        .set({ captionStyle: JSON.stringify(captionStyle), updatedAt: now() })
-        .where(eq(projects.id, projectId))
-        .run()
+      setCaptionStyle(db, projectId, JSON.stringify(captionStyle))
     },
   )
 
   handle("project:load-caption-style", async (_event, { projectId }: { projectId: string }) => {
-    const db = getDb(join(app.getPath("userData"), "db.sqlite"))
-    const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
+    const project = getProject(db, projectId)
     if (!project?.captionStyle) return null
     try {
       return JSON.parse(project.captionStyle) as CaptionStyle
@@ -658,8 +625,7 @@ export function registerIpcHandlers(): void {
   })
 
   handle("project:get-filler-words", async (_event, { projectId }: { projectId: string }) => {
-    const db = getDb(join(app.getPath("userData"), "db.sqlite"))
-    const project = db.select().from(projects).where(eq(projects.id, projectId)).get()
+    const project = getProject(db, projectId)
     if (!project?.fillerWords) return DEFAULT_FILLER_WORDS
     try {
       return JSON.parse(project.fillerWords) as string[]
@@ -671,23 +637,9 @@ export function registerIpcHandlers(): void {
   handle(
     "project:set-filler-words",
     async (_event, { projectId, fillerList }: { projectId: string; fillerList: string[] }) => {
-      const db = getDb(join(app.getPath("userData"), "db.sqlite"))
-      const wordRows = db.select().from(words).where(eq(words.projectId, projectId)).all()
+      const wordRows = getWords(db, projectId)
       const fillerSegs = detectFillerWords(wordRows, projectId, new Set(fillerList))
-      // Whole read-modify-write as one transaction — a failure partway through the batched
-      // reinsert would otherwise leave the filler word list updated but segments half-written.
-      db.transaction((tx) => {
-        tx.update(projects)
-          .set({ fillerWords: JSON.stringify(fillerList), updatedAt: now() })
-          .where(eq(projects.id, projectId))
-          .run()
-        tx.delete(segments)
-          .where(and(eq(segments.projectId, projectId), eq(segments.type, "filler")))
-          .run()
-        if (fillerSegs.length > 0) {
-          insertBatched((batch) => tx.insert(segments).values(batch).run(), fillerSegs, 5)
-        }
-      })
+      setFillerWords(db, projectId, JSON.stringify(fillerList), fillerSegs)
     },
   )
 
