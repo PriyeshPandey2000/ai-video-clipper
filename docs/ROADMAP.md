@@ -68,7 +68,7 @@
 - [x] Mac DMG build (`electron-builder`, dmg + zip targets)
 - [x] Code signing + notarization — hardened runtime, `xcrun notarytool`, stapled dmg/zip
 - [x] Tag-triggered release pipeline (`.github/workflows/release.yml`) — build, sign, notarize, draft GitHub Release with assets
-- [ ] Auto-update via `electron-updater`
+- [x] Auto-update via `electron-updater` — check on launch, top-right toast, never restarts while a transcription/export is active
 - [ ] Onboarding flow (first-run walkthrough: drop video → pick model → transcribe)
 
 ## Phase 7 — Creator features ✅ Done
@@ -87,19 +87,19 @@
 - [ ] Direct publish to TikTok / Instagram Reels / YouTube Shorts
 - [ ] Natural language clip search ("find where I mention pricing")
 
-## Phase 9 — Smarter clip selection ❌ Not started
+## Phase 9 — Smarter clip selection 🔄 Mostly done (see `docs/CLIP-DETECTION-RESEARCH.md` for the real wave-by-wave record; this section was stale — most of it already shipped)
 
-- [ ] Semantic block preprocessing — group word-level timestamps into silence-bounded blocks with metadata (filler density, WPM, speaker) before LLM call; reduces token usage 50–70%
-- [ ] Block-ID-based LLM output — LLM returns `start_block_id` / `end_block_id` instead of raw milliseconds; backend resolves precise timestamps from DB, eliminating hallucination
-- [ ] Code-level timestamp validation — clamp LLM output to `[0, durationMs]`, snap to nearest word boundary, cap clip at 90s
-- [ ] FFmpeg audio energy scoring — extract per-second RMS amplitude, compute energy level per block, pass as `Energy: High/Low` signal to LLM
-- [ ] Content type detection — separate LLM call before scoring classifies video as podcast / interview / tutorial / vlog + density (sparse/dense); main prompt tuned per type
-- [ ] Explicit virality criteria in prompt — replace generic "find engaging segments" with ranked signal list: hook moments, emotional peaks, opinion bombs, revelation moments, conflict, quotable one-liners, story peaks, practical value
-- [ ] Hook sentence per clip — LLM returns the single opening line that makes someone stop scrolling; shown on clip card alongside reason
-- [ ] Duration guidance in prompt — 45–90s sweet spot, shorter only for standalone one-liner, longer only when story arc needs full context
-- [ ] Retry on bad LLM JSON — up to 3 attempts with progressively stricter instruction before failing; prevents pipeline crash on malformed output
-- [ ] Dedupe overlapping clips — after scoring, drop any clip that overlaps >50% with a higher-scored one
-- [ ] Long video chunking — transcripts >30 min split into 20-min chunks with 60s overlap, scored per chunk then deduped across chunks
+- [x] Semantic block preprocessing — `buildSentences` groups word-level timestamps into sentences at punctuation/pause boundaries before the LLM call (sentence-level, not a separate metadata-tagged "block" concept, but same purpose)
+- [x] Block-ID-based LLM output — LLM returns `startSentence`/`endSentence` sentence indices, never raw milliseconds; every ms in the final output is resolved from our own word table, making a hallucinated timestamp structurally impossible
+- [x] Code-level timestamp validation — `refineClipBoundaries` snaps to word edges, clamps to `[MIN_CLIP_MS, MAX_CLIP_MS]` (15–90s)
+- [x] FFmpeg audio energy scoring — `measureArousal` extracts per-second RMS, surfaced as `{loud}`/`{fast}`/`{slow}`/`{burst}` signal tags in the prompt (arousal-based rather than a literal `Energy: High/Low` field, same purpose)
+- [~] Content type detection — `detectContentType` classifies interview/tutorial/solo/generic and swaps the rubric per type; narrower taxonomy than podcast/interview/tutorial/vlog, and no sparse/dense density signal
+- [x] Explicit virality criteria in prompt — the exact ranked signal list (hook, emotional peak, opinion bomb, revelation, conflict, quotable line, story peak, practical value) is in the system prompt
+- [ ] Hook sentence per clip — not shipped; `hookText` in the export path is just the clip's title reused, not a separate LLM-returned opening line
+- [~] Duration guidance in prompt — hard 15–90s clamp is enforced, but the tiered "45–90s sweet spot, shorter only for standalone one-liners" guidance isn't in the prompt
+- [x] Retry on bad LLM JSON — implemented (issue #73)
+- [x] Dedupe overlapping clips — drops any candidate overlapping >50% with a higher-ranked one
+- [x] Long video chunking — >30min transcripts split into 20-min chunks with overlap (150s, not the originally planned 60s), scored per chunk and deduped across chunks; topic-coherent chunking (the primary path) and the fixed-time fallback both carry the overlap correctly as of the chunk-cross-boundary fix
 
 ## Polish backlog ✅ Done
 
