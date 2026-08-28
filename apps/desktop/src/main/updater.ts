@@ -56,8 +56,19 @@ export function initUpdater(): void {
     emit("updater:downloaded", { readyToInstall }, { kind: "downloaded", readyToInstall })
     if (readyToInstall) {
       setTimeout(() => {
-        // Re-check — a job may have started during the grace period.
-        if (!isBusy()) autoUpdater.quitAndInstall()
+        // Re-check — a job may have started during the grace period. If so, correct the state
+        // we already emitted as readyToInstall:true — otherwise the toast is stuck saying
+        // "restarting…" forever even though nothing happens, and a fresh updater:get-state
+        // query would report a restart that was never actually going to happen.
+        if (isBusy()) {
+          emit(
+            "updater:downloaded",
+            { readyToInstall: false },
+            { kind: "downloaded", readyToInstall: false },
+          )
+          return
+        }
+        autoUpdater.quitAndInstall()
       }, AUTO_RESTART_DELAY_MS)
     }
   })
