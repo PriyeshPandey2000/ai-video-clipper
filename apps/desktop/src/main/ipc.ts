@@ -69,7 +69,7 @@ import { sanitizeName, buildSrt, remapWordsToEpisodeTimeline } from "@video-edit
 import { saveGroqApiKey } from "./config"
 import log from "./logger"
 import { beginActivity, endActivity } from "./activity"
-import { downloadUpdate, restartAndInstall } from "./updater"
+import { downloadUpdate, restartAndInstall, getUpdaterState } from "./updater"
 import { buildAssFile } from "@video-editor/captions"
 import type { CaptionStyle } from "@video-editor/types"
 
@@ -693,6 +693,10 @@ export function registerIpcHandlers(): void {
 
   handle("updater:restart-now", async () => {
     restartAndInstall()
+  })
+
+  handle("updater:get-state", async () => {
+    return getUpdaterState()
   })
 
   handle(

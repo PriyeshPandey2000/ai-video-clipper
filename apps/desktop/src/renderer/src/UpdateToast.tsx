@@ -1,14 +1,10 @@
 import { useEffect, useState } from "react"
+import type { UpdaterState } from "@video-editor/types"
 import { Button } from "@video-editor/ui"
 import { Progress } from "@video-editor/ui"
 import { Download, X, RefreshCw, AlertTriangle } from "lucide-react"
 
-type UpdateState =
-  | { kind: "idle" }
-  | { kind: "available"; version: string }
-  | { kind: "downloading"; percent: number }
-  | { kind: "downloaded"; readyToInstall: boolean }
-  | { kind: "error"; message: string }
+type UpdateState = UpdaterState
 
 export function UpdateToast(): React.ReactElement | null {
   const [state, setState] = useState<UpdateState>({ kind: "idle" })
@@ -28,6 +24,18 @@ export function UpdateToast(): React.ReactElement | null {
     const unsubError = window.api.on("updater:error", ({ message }) => {
       setState({ kind: "error", message })
     })
+
+    // Backfill: checkForUpdates() runs 5s after launch and webContents.send() silently drops
+    // an event if nothing's listening yet — if this component mounts late (slow renderer boot)
+    // it could otherwise miss "available" for the rest of the session. Only apply if a live
+    // event above hasn't already moved state past idle while this was in flight.
+    window.api
+      .invoke("updater:get-state")
+      .then((backfilled) => {
+        setState((current) => (current.kind === "idle" ? backfilled : current))
+      })
+      .catch(() => {})
+
     return () => {
       unsubAvailable()
       unsubProgress()

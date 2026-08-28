@@ -100,7 +100,10 @@ YML="$RELEASE_DIR/latest-mac.yml"
 if [ -f "$YML" ]; then
   node "$(dirname "$0")/fix-update-manifest.js" "$ZIP" "$YML"
 else
-  echo "Warning: $YML not found — auto-update manifest not generated, skipping patch." >&2
+  # A missing manifest means auto-update is silently broken for this entire release — that's a
+  # release-blocking problem, not a warning to scroll past in CI logs.
+  echo "Error: $YML not found — auto-update manifest was not generated for this build." >&2
+  exit 1
 fi
 
 echo "Done. Verify with: spctl -a -vvv -t execute \"$APP\""

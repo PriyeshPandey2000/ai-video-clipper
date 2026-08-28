@@ -1,6 +1,6 @@
 import { app, BrowserWindow } from "electron"
 import { autoUpdater } from "electron-updater"
-import type { IpcEventChannels } from "@video-editor/types"
+import type { IpcEventChannels, UpdaterState } from "@video-editor/types"
 import log from "./logger"
 import { isBusy } from "./activity"
 
@@ -9,7 +9,22 @@ import { isBusy } from "./activity"
 const AUTO_RESTART_DELAY_MS = 3000
 const CHECK_DELAY_MS = 5000
 
-function send<K extends keyof IpcEventChannels>(channel: K, data: IpcEventChannels[K]): void {
+// Mirrors whatever was last sent over IpcEventChannels — webContents.send() silently drops an
+// event if the renderer isn't listening yet, so a toast that mounts after checkForUpdates()
+// already fired would otherwise miss it for the rest of the session. UpdateToast reads this via
+// updater:get-state on mount to catch up on anything it missed.
+let currentState: UpdaterState = { kind: "idle" }
+
+export function getUpdaterState(): UpdaterState {
+  return currentState
+}
+
+function emit<K extends keyof IpcEventChannels>(
+  channel: K,
+  data: IpcEventChannels[K],
+  state: UpdaterState,
+): void {
+  currentState = state
   const win = BrowserWindow.getAllWindows()[0]
   if (win) win.webContents.send(channel, data)
 }
@@ -24,16 +39,21 @@ export function initUpdater(): void {
   autoUpdater.logger = log
 
   autoUpdater.on("update-available", (info) => {
-    send("updater:available", { version: info.version })
+    emit(
+      "updater:available",
+      { version: info.version },
+      { kind: "available", version: info.version },
+    )
   })
 
   autoUpdater.on("download-progress", (progress) => {
-    send("updater:progress", { percent: Math.round(progress.percent) })
+    const percent = Math.round(progress.percent)
+    emit("updater:progress", { percent }, { kind: "downloading", percent })
   })
 
   autoUpdater.on("update-downloaded", () => {
     const readyToInstall = !isBusy()
-    send("updater:downloaded", { readyToInstall })
+    emit("updater:downloaded", { readyToInstall }, { kind: "downloaded", readyToInstall })
     if (readyToInstall) {
       setTimeout(() => {
         // Re-check — a job may have started during the grace period.
@@ -44,7 +64,7 @@ export function initUpdater(): void {
 
   autoUpdater.on("error", (err) => {
     log.error("Auto-update error", err)
-    send("updater:error", { message: err.message })
+    emit("updater:error", { message: err.message }, { kind: "error", message: err.message })
   })
 
   setTimeout(() => {
