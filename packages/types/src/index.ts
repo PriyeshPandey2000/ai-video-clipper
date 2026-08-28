@@ -114,6 +114,17 @@ export interface ModelInfo {
   sizeOnDisk: number | null
 }
 
+// Mirrors the events fired over IpcEventChannels below, plus "idle" for before anything has
+// happened — lets a late-mounting subscriber (e.g. UpdateToast after a fast update-available)
+// catch up on whatever it missed via updater:get-state, rather than relying on
+// webContents.send() to a not-yet-listening renderer (which just silently drops the message).
+export type UpdaterState =
+  | { kind: "idle" }
+  | { kind: "available"; version: string }
+  | { kind: "downloading"; percent: number }
+  | { kind: "downloaded"; readyToInstall: boolean }
+  | { kind: "error"; message: string }
+
 // ─── IPC channel type map ──────────────────────────────────────────────────
 // Renderer → main (invoke): { args, result }
 // Main → renderer (on): payload only
@@ -185,6 +196,9 @@ export interface IpcInvokeChannels {
   "models:download": { args: { model: WhisperModel }; result: void }
   "settings:get-api-key": { args: void; result: { configured: boolean; preview: string | null } }
   "settings:set-api-key": { args: { groqApiKey: string }; result: void }
+  "updater:download": { args: void; result: void }
+  "updater:restart-now": { args: void; result: void }
+  "updater:get-state": { args: void; result: UpdaterState }
 }
 
 // Main → renderer (send/on): payload only, no args/result envelope.
@@ -201,4 +215,8 @@ export interface IpcEventChannels {
     clipId?: string
     progress: number
   }
+  "updater:available": { version: string }
+  "updater:progress": { percent: number }
+  "updater:downloaded": { readyToInstall: boolean }
+  "updater:error": { message: string }
 }

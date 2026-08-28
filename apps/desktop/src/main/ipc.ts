@@ -68,6 +68,8 @@ import { createAiClient, selectClips, generateSocialCaptions } from "@video-edit
 import { sanitizeName, buildSrt, remapWordsToEpisodeTimeline } from "@video-editor/export"
 import { saveGroqApiKey } from "./config"
 import log from "./logger"
+import { beginActivity, endActivity } from "./activity"
+import { downloadUpdate, restartAndInstall, getUpdaterState } from "./updater"
 import { buildAssFile } from "@video-editor/captions"
 import type { CaptionStyle } from "@video-editor/types"
 
@@ -150,6 +152,8 @@ export function registerIpcHandlers(): void {
     const proxyPath = join(dir, "proxy.mp4")
     const audioPath = join(dir, "audio.wav")
 
+    // beginActivity() was already called by project:create, before the media copy — this
+    // closes that same scope once the whole background pipeline (not just the copy) finishes.
     try {
       sendProgress(projectId, "analyzing", 0.1, "Generating proxy video")
       await generateProxy({ binaryPath: ffmpegBin, inputPath: sourcePath, outputPath: proxyPath })
@@ -167,6 +171,8 @@ export function registerIpcHandlers(): void {
       log.error(`Import pipeline failed for project ${projectId}`, err)
       setProjectStatus(db, projectId, "error")
       send("pipeline:error", { projectId, error: String(err) })
+    } finally {
+      endActivity()
     }
   }
 
@@ -195,8 +201,13 @@ export function registerIpcHandlers(): void {
 
       const ext = mediaPath.split(".").pop() ?? "mp4"
       const destPath = join(dir, `original.${ext}`)
-      await copyFile(mediaPath, destPath)
 
+      // Opened here, before the media copy, closed inside runImportPipeline once the whole
+      // background pipeline finishes — copyFile and the async import both count as "busy" so
+      // the auto-updater can't restart mid-copy or mid-import. If anything up to and including
+      // insertProject throws, runImportPipeline never runs to close it, so close it here instead
+      // — otherwise a failed insert would leak the scope open forever.
+      beginActivity()
       const proj = {
         id,
         name,
@@ -207,8 +218,13 @@ export function registerIpcHandlers(): void {
         createdAt: now(),
         updatedAt: now(),
       }
-
-      insertProject(db, proj)
+      try {
+        await copyFile(mediaPath, destPath)
+        insertProject(db, proj)
+      } catch (err) {
+        endActivity()
+        throw err
+      }
 
       // Fire-and-forget: proxy + audio extraction happens in background.
       // Progress arrives via pipeline:progress events. IPC returns immediately.
@@ -229,6 +245,7 @@ export function registerIpcHandlers(): void {
       }
 
       setProjectStatus(db, projectId, "transcribing")
+      beginActivity()
 
       try {
         const modelsDir = join(app.getPath("userData"), "models")
@@ -349,6 +366,8 @@ export function registerIpcHandlers(): void {
         log.error(`Transcription pipeline failed for project ${projectId}`, err)
         setProjectStatus(db, projectId, "error")
         send("pipeline:error", { projectId, error: String(err) })
+      } finally {
+        endActivity()
       }
     },
   )
@@ -426,90 +445,98 @@ export function registerIpcHandlers(): void {
       const project = getProject(db, projectId)
       if (!project) throw new Error("Project not found")
 
-      const clipRows = getClipsByIds(db, clipIds)
-
-      const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
-      const fontsDir = join(getResourcesPath(), "fonts")
-      const outDir = outputDir ?? join(app.getPath("downloads"), sanitizeName(project.name))
-      await mkdir(outDir, { recursive: true })
-
-      const useAnimated = burnSubtitles && captionStyle && captionStyle.preset !== "none"
-      const wordRows = burnSubtitles ? getWords(db, projectId) : []
-
-      // D7 — query segments once; subtractSegments computes keep intervals per clip.
-      const allSegs = getSegments(db, projectId)
-
       const exportedPaths: string[] = []
-      for (let ci = 0; ci < clipRows.length; ci++) {
-        const clip = clipRows[ci]!
-        const outPath = join(outDir, `${sanitizeName(clip.title)}.mp4`)
 
-        // Segments that fall inside this clip's range. Individual clip export can opt out of
-        // filler/silence removal (unlike episode cleanup, aggressive cutting can hurt a short
-        // clip's rhythm — see docs/IMPROVEMENTS.md).
-        const clipSegs = removeFillers
-          ? allSegs.filter((s) => s.startMs < clip.endMs && s.endMs > clip.startMs)
-          : []
-        const keepIntervals =
-          clipSegs.length > 0
-            ? subtractSegments(clip.startMs, clip.endMs, clipSegs)
-            : [{ startMs: clip.startMs, endMs: clip.endMs }]
+      // Before any await — directory creation and file writes below are real work too, not
+      // just the ffmpeg calls, and the updater must not restart during any of it.
+      beginActivity()
+      try {
+        const clipRows = getClipsByIds(db, clipIds)
 
-        // Remap subtitle words to the output timeline accounting for removed segments.
-        const clipWords = burnSubtitles
-          ? remapWordsToEpisodeTimeline(
-              wordRows.filter((w) => w.endMs > clip.startMs && w.startMs < clip.endMs),
-              keepIntervals,
-            )
-          : []
+        const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
+        const fontsDir = join(getResourcesPath(), "fonts")
+        const outDir = outputDir ?? join(app.getPath("downloads"), sanitizeName(project.name))
+        await mkdir(outDir, { recursive: true })
 
-        let srtPath: string | undefined
-        let assPath: string | undefined
-        if (useAnimated && clipWords.length > 0) {
-          assPath = join(tmpdir(), `clip-${clip.id}.ass`)
-          await writeFile(assPath, buildAssFile(clipWords, captionStyle!), "utf-8")
-        } else if (burnSubtitles && clipWords.length > 0) {
-          srtPath = join(tmpdir(), `clip-${clip.id}.srt`)
-          await writeFile(srtPath, buildSrt(clipWords), "utf-8")
-        }
+        const useAnimated = burnSubtitles && captionStyle && captionStyle.preset !== "none"
+        const wordRows = burnSubtitles ? getWords(db, projectId) : []
 
-        try {
-          await exportClip({
-            binaryPath: ffmpegBin,
-            inputPath: project.mediaPath,
-            outputPath: outPath,
-            startMs: clip.startMs,
-            endMs: clip.endMs,
-            ...(clipSegs.length > 0 ? { removeSegments: clipSegs } : {}),
-            ...(assPath ? { assPath, fontsDir } : {}),
-            ...(srtPath ? { srtPath } : {}),
-            ...(reframe ? { reframe: true, cropX: clip.cropX, blurBg } : {}),
-            hookText: clip.title,
-            normalizeLoudness: true,
-            onProgress: (progress) =>
-              send("export:progress", {
-                projectId,
-                stage: "clips",
-                clipIndex: ci,
-                clipTotal: clipRows.length,
-                clipId: clip.id,
-                progress,
-              }),
-          })
-        } catch (err) {
-          if (err instanceof EmptyClipError) {
-            // Filler/silence removal consumed the whole clip — nothing to export, leave it
-            // unmarked so it doesn't show up as a broken "exported" path.
-            continue
+        // D7 — query segments once; subtractSegments computes keep intervals per clip.
+        const allSegs = getSegments(db, projectId)
+
+        for (let ci = 0; ci < clipRows.length; ci++) {
+          const clip = clipRows[ci]!
+          const outPath = join(outDir, `${sanitizeName(clip.title)}.mp4`)
+
+          // Segments that fall inside this clip's range. Individual clip export can opt out of
+          // filler/silence removal (unlike episode cleanup, aggressive cutting can hurt a short
+          // clip's rhythm — see docs/IMPROVEMENTS.md).
+          const clipSegs = removeFillers
+            ? allSegs.filter((s) => s.startMs < clip.endMs && s.endMs > clip.startMs)
+            : []
+          const keepIntervals =
+            clipSegs.length > 0
+              ? subtractSegments(clip.startMs, clip.endMs, clipSegs)
+              : [{ startMs: clip.startMs, endMs: clip.endMs }]
+
+          // Remap subtitle words to the output timeline accounting for removed segments.
+          const clipWords = burnSubtitles
+            ? remapWordsToEpisodeTimeline(
+                wordRows.filter((w) => w.endMs > clip.startMs && w.startMs < clip.endMs),
+                keepIntervals,
+              )
+            : []
+
+          let srtPath: string | undefined
+          let assPath: string | undefined
+          if (useAnimated && clipWords.length > 0) {
+            assPath = join(tmpdir(), `clip-${clip.id}.ass`)
+            await writeFile(assPath, buildAssFile(clipWords, captionStyle!), "utf-8")
+          } else if (burnSubtitles && clipWords.length > 0) {
+            srtPath = join(tmpdir(), `clip-${clip.id}.srt`)
+            await writeFile(srtPath, buildSrt(clipWords), "utf-8")
           }
-          throw err
-        } finally {
-          if (assPath) await unlink(assPath).catch(() => {})
-          if (srtPath) await unlink(srtPath).catch(() => {})
-        }
 
-        markClipExported(db, clip.id)
-        exportedPaths.push(outPath)
+          try {
+            await exportClip({
+              binaryPath: ffmpegBin,
+              inputPath: project.mediaPath,
+              outputPath: outPath,
+              startMs: clip.startMs,
+              endMs: clip.endMs,
+              ...(clipSegs.length > 0 ? { removeSegments: clipSegs } : {}),
+              ...(assPath ? { assPath, fontsDir } : {}),
+              ...(srtPath ? { srtPath } : {}),
+              ...(reframe ? { reframe: true, cropX: clip.cropX, blurBg } : {}),
+              hookText: clip.title,
+              normalizeLoudness: true,
+              onProgress: (progress) =>
+                send("export:progress", {
+                  projectId,
+                  stage: "clips",
+                  clipIndex: ci,
+                  clipTotal: clipRows.length,
+                  clipId: clip.id,
+                  progress,
+                }),
+            })
+          } catch (err) {
+            if (err instanceof EmptyClipError) {
+              // Filler/silence removal consumed the whole clip — nothing to export, leave it
+              // unmarked so it doesn't show up as a broken "exported" path.
+              continue
+            }
+            throw err
+          } finally {
+            if (assPath) await unlink(assPath).catch(() => {})
+            if (srtPath) await unlink(srtPath).catch(() => {})
+          }
+
+          markClipExported(db, clip.id)
+          exportedPaths.push(outPath)
+        }
+      } finally {
+        endActivity()
       }
       return exportedPaths
     },
@@ -540,23 +567,26 @@ export function registerIpcHandlers(): void {
 
       const segs = getSegments(db, projectId)
       const keepIntervals = subtractSegments(0, project.durationMs, segs)
-
       const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
       const outDir = outputDir ?? join(app.getPath("downloads"), sanitizeName(project.name))
-      await mkdir(outDir, { recursive: true })
       const outPath = join(outDir, `${sanitizeName(project.name)}_episode.mp4`)
 
       let srtPath: string | undefined
-      if (burnSubtitles) {
-        const wordRows = getWords(db, projectId)
-        if (wordRows.length > 0) {
-          const remappedWords = remapWordsToEpisodeTimeline(wordRows, keepIntervals)
-          srtPath = join(tmpdir(), `episode-${projectId}.srt`)
-          await writeFile(srtPath, buildSrt(remappedWords), "utf-8")
-        }
-      }
-
+      // Before any await — directory creation and the SRT write below are real work too, not
+      // just the ffmpeg call, and the updater must not restart during any of it.
+      beginActivity()
       try {
+        await mkdir(outDir, { recursive: true })
+
+        if (burnSubtitles) {
+          const wordRows = getWords(db, projectId)
+          if (wordRows.length > 0) {
+            const remappedWords = remapWordsToEpisodeTimeline(wordRows, keepIntervals)
+            srtPath = join(tmpdir(), `episode-${projectId}.srt`)
+            await writeFile(srtPath, buildSrt(remappedWords), "utf-8")
+          }
+        }
+
         await exportEpisode({
           binaryPath: ffmpegBin,
           inputPath: project.mediaPath,
@@ -578,6 +608,7 @@ export function registerIpcHandlers(): void {
         })
       } finally {
         if (srtPath) await unlink(srtPath).catch(() => {})
+        endActivity()
       }
       return outPath
     },
@@ -591,11 +622,16 @@ export function registerIpcHandlers(): void {
 
       const wordRows = getWords(db, projectId)
       const srtContent = buildSrt(wordRows)
-
       const outDir = outputDir ?? join(app.getPath("downloads"), sanitizeName(project.name))
-      await mkdir(outDir, { recursive: true })
       const outPath = join(outDir, `${sanitizeName(project.name)}.srt`)
-      await writeFile(outPath, srtContent, "utf-8")
+
+      beginActivity()
+      try {
+        await mkdir(outDir, { recursive: true })
+        await writeFile(outPath, srtContent, "utf-8")
+      } finally {
+        endActivity()
+      }
       return outPath
     },
   )
@@ -649,6 +685,18 @@ export function registerIpcHandlers(): void {
 
   handle("shell:open-logs", async () => {
     await shell.openPath(app.getPath("logs"))
+  })
+
+  handle("updater:download", async () => {
+    downloadUpdate()
+  })
+
+  handle("updater:restart-now", async () => {
+    restartAndInstall()
+  })
+
+  handle("updater:get-state", async () => {
+    return getUpdaterState()
   })
 
   handle(

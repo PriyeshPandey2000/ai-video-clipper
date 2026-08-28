@@ -68,6 +68,12 @@ jobs:
       # Signs but does NOT notarize (mac.notarize:false in package.json) — electron-builder's
       # built-in auto-notarize has no timeout control. We wait for the real Apple response
       # ourselves, below, with an explicit bounded timeout instead.
+      #
+      # package:mac passes --publish=never explicitly. package.json's build.publish config exists
+      # only so electron-builder generates latest-mac.yml and bundles app-update.yml (both needed
+      # by electron-updater at runtime) — not to let electron-builder auto-publish to GitHub
+      # itself, which would race the manual draft-release step below and could upload without
+      # the notarization/staple/checksum-fix steps having run yet.
       - name: Build + sign dmg/zip
         run: pnpm --filter @video-editor/desktop package:mac
         env:
@@ -124,6 +130,10 @@ jobs:
       # assets, then publish it yourself when ready (`gh release edit <tag> --draft=false`, or
       # the "Publish release" button in the GitHub UI). --generate-notes auto-fills release notes
       # from merged PRs since the previous tag, so this doubles as the changelog.
+      #
+      # latest-mac.yml is electron-updater's manifest (version, checksum, download URL) — without
+      # it uploaded, autoUpdater.checkForUpdates() has nothing to read. notarize-check.sh already
+      # patches its checksum to match the post-staple rebuilt zip before this step runs.
       - name: Create draft release
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -134,7 +144,8 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             apps/desktop/release/*.dmg \
-            apps/desktop/release/*.zip
+            apps/desktop/release/*.zip \
+            apps/desktop/release/latest-mac.yml
 
       # Manual/test runs (workflow_dispatch) don't create a release — a temporary artifact
       # instead, so testing the pipeline never collides with or clutters real release history.

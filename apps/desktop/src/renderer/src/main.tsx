@@ -2,6 +2,7 @@ import React from "react"
 import ReactDOM from "react-dom/client"
 import App from "./App"
 import { ErrorBoundary } from "./ErrorBoundary"
+import { UpdateToast } from "./UpdateToast"
 import "./index.css"
 
 window.addEventListener("error", (event) => {
@@ -34,6 +35,9 @@ ReactDOM.createRoot(root).render(
   <React.StrictMode>
     <ErrorBoundary label="Clipper">
       <App />
+    </ErrorBoundary>
+    <ErrorBoundary label="Update notification">
+      <UpdateToast />
     </ErrorBoundary>
   </React.StrictMode>,
 )
