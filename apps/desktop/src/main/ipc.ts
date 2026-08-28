@@ -152,7 +152,8 @@ export function registerIpcHandlers(): void {
     const proxyPath = join(dir, "proxy.mp4")
     const audioPath = join(dir, "audio.wav")
 
-    beginActivity()
+    // beginActivity() was already called by project:create, before the media copy — this
+    // closes that same scope once the whole background pipeline (not just the copy) finishes.
     try {
       sendProgress(projectId, "analyzing", 0.1, "Generating proxy video")
       await generateProxy({ binaryPath: ffmpegBin, inputPath: sourcePath, outputPath: proxyPath })
@@ -200,7 +201,18 @@ export function registerIpcHandlers(): void {
 
       const ext = mediaPath.split(".").pop() ?? "mp4"
       const destPath = join(dir, `original.${ext}`)
-      await copyFile(mediaPath, destPath)
+
+      // Opened here, before the media copy, closed inside runImportPipeline once the whole
+      // background pipeline finishes — copyFile and the async import both count as "busy" so
+      // the auto-updater can't restart mid-copy or mid-import. If the copy itself throws,
+      // runImportPipeline never runs to close it, so close it here instead.
+      beginActivity()
+      try {
+        await copyFile(mediaPath, destPath)
+      } catch (err) {
+        endActivity()
+        throw err
+      }
 
       const proj = {
         id,
