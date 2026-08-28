@@ -57,5 +57,12 @@ export function downloadUpdate(): void {
 }
 
 export function restartAndInstall(): void {
+  // Not reachable from the current UI (the toast never shows a manual restart button while
+  // busy), but this is exposed over IPC — guard it here, not just at the call site, so any
+  // future caller gets the same protection by construction.
+  if (isBusy()) {
+    log.warn("restartAndInstall ignored — a job is currently running")
+    return
+  }
   autoUpdater.quitAndInstall()
 }

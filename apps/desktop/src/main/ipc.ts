@@ -204,16 +204,10 @@ export function registerIpcHandlers(): void {
 
       // Opened here, before the media copy, closed inside runImportPipeline once the whole
       // background pipeline finishes — copyFile and the async import both count as "busy" so
-      // the auto-updater can't restart mid-copy or mid-import. If the copy itself throws,
-      // runImportPipeline never runs to close it, so close it here instead.
+      // the auto-updater can't restart mid-copy or mid-import. If anything up to and including
+      // insertProject throws, runImportPipeline never runs to close it, so close it here instead
+      // — otherwise a failed insert would leak the scope open forever.
       beginActivity()
-      try {
-        await copyFile(mediaPath, destPath)
-      } catch (err) {
-        endActivity()
-        throw err
-      }
-
       const proj = {
         id,
         name,
@@ -224,8 +218,13 @@ export function registerIpcHandlers(): void {
         createdAt: now(),
         updatedAt: now(),
       }
-
-      insertProject(db, proj)
+      try {
+        await copyFile(mediaPath, destPath)
+        insertProject(db, proj)
+      } catch (err) {
+        endActivity()
+        throw err
+      }
 
       // Fire-and-forget: proxy + audio extraction happens in background.
       // Progress arrives via pipeline:progress events. IPC returns immediately.
@@ -446,22 +445,25 @@ export function registerIpcHandlers(): void {
       const project = getProject(db, projectId)
       if (!project) throw new Error("Project not found")
 
-      const clipRows = getClipsByIds(db, clipIds)
-
-      const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
-      const fontsDir = join(getResourcesPath(), "fonts")
-      const outDir = outputDir ?? join(app.getPath("downloads"), sanitizeName(project.name))
-      await mkdir(outDir, { recursive: true })
-
-      const useAnimated = burnSubtitles && captionStyle && captionStyle.preset !== "none"
-      const wordRows = burnSubtitles ? getWords(db, projectId) : []
-
-      // D7 — query segments once; subtractSegments computes keep intervals per clip.
-      const allSegs = getSegments(db, projectId)
-
       const exportedPaths: string[] = []
+
+      // Before any await — directory creation and file writes below are real work too, not
+      // just the ffmpeg calls, and the updater must not restart during any of it.
       beginActivity()
       try {
+        const clipRows = getClipsByIds(db, clipIds)
+
+        const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
+        const fontsDir = join(getResourcesPath(), "fonts")
+        const outDir = outputDir ?? join(app.getPath("downloads"), sanitizeName(project.name))
+        await mkdir(outDir, { recursive: true })
+
+        const useAnimated = burnSubtitles && captionStyle && captionStyle.preset !== "none"
+        const wordRows = burnSubtitles ? getWords(db, projectId) : []
+
+        // D7 — query segments once; subtractSegments computes keep intervals per clip.
+        const allSegs = getSegments(db, projectId)
+
         for (let ci = 0; ci < clipRows.length; ci++) {
           const clip = clipRows[ci]!
           const outPath = join(outDir, `${sanitizeName(clip.title)}.mp4`)
@@ -565,24 +567,26 @@ export function registerIpcHandlers(): void {
 
       const segs = getSegments(db, projectId)
       const keepIntervals = subtractSegments(0, project.durationMs, segs)
-
       const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
       const outDir = outputDir ?? join(app.getPath("downloads"), sanitizeName(project.name))
-      await mkdir(outDir, { recursive: true })
       const outPath = join(outDir, `${sanitizeName(project.name)}_episode.mp4`)
 
       let srtPath: string | undefined
-      if (burnSubtitles) {
-        const wordRows = getWords(db, projectId)
-        if (wordRows.length > 0) {
-          const remappedWords = remapWordsToEpisodeTimeline(wordRows, keepIntervals)
-          srtPath = join(tmpdir(), `episode-${projectId}.srt`)
-          await writeFile(srtPath, buildSrt(remappedWords), "utf-8")
-        }
-      }
-
+      // Before any await — directory creation and the SRT write below are real work too, not
+      // just the ffmpeg call, and the updater must not restart during any of it.
       beginActivity()
       try {
+        await mkdir(outDir, { recursive: true })
+
+        if (burnSubtitles) {
+          const wordRows = getWords(db, projectId)
+          if (wordRows.length > 0) {
+            const remappedWords = remapWordsToEpisodeTimeline(wordRows, keepIntervals)
+            srtPath = join(tmpdir(), `episode-${projectId}.srt`)
+            await writeFile(srtPath, buildSrt(remappedWords), "utf-8")
+          }
+        }
+
         await exportEpisode({
           binaryPath: ffmpegBin,
           inputPath: project.mediaPath,
@@ -618,11 +622,16 @@ export function registerIpcHandlers(): void {
 
       const wordRows = getWords(db, projectId)
       const srtContent = buildSrt(wordRows)
-
       const outDir = outputDir ?? join(app.getPath("downloads"), sanitizeName(project.name))
-      await mkdir(outDir, { recursive: true })
       const outPath = join(outDir, `${sanitizeName(project.name)}.srt`)
-      await writeFile(outPath, srtContent, "utf-8")
+
+      beginActivity()
+      try {
+        await mkdir(outDir, { recursive: true })
+        await writeFile(outPath, srtContent, "utf-8")
+      } finally {
+        endActivity()
+      }
       return outPath
     },
   )
