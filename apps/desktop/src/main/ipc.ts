@@ -309,7 +309,7 @@ export function registerIpcHandlers(): void {
           log.info(`[arousal] ${arousalPerSec.length} seconds measured`)
 
           sendProgress(projectId, "generating_clips", 0.1, "Analyzing transcript for clips")
-          const { clips: clipSuggestions, rejected } = await selectClips(
+          const selection = await selectClips(
             client,
             wordRows,
             sentences,
@@ -317,13 +317,20 @@ export function registerIpcHandlers(): void {
             10,
             arousalPerSec,
           )
+          const { clips: clipSuggestions, rejected } = selection
           if (rejected.length > 0) {
             log.info(
               `[clips] ${clipSuggestions.length} kept, ${rejected.length} dropped by quality gate:`,
               rejected.map((r) => `${r.title} (${r.reasons.join(", ")})`).join(" | "),
             )
           }
-          const clipRows = clipSuggestions.map((c) => ({
+          log.info(
+            `[clips] pipeline ${selection.pipelineVersion} hash=${selection.pipelineHash.slice(0, 12)} model=${selection.model} type=${selection.contentType}`,
+          )
+          // aiRank is the position in the ranked output, and original{Start,End}Ms a copy of what we
+          // are about to write — the user's trim in setClipTimes will overwrite startMs/endMs, and
+          // these are the only surviving record of what the model actually chose (#89).
+          const clipRows = clipSuggestions.map((c, rank) => ({
             id: generateId(),
             projectId,
             title: c.title,
@@ -334,6 +341,13 @@ export function registerIpcHandlers(): void {
             status: "suggested" as const,
             platform: c.platform,
             createdAt: now(),
+            originalStartMs: c.startMs,
+            originalEndMs: c.endMs,
+            aiRank: rank,
+            pipelineVersion: selection.pipelineVersion,
+            pipelineHash: selection.pipelineHash,
+            aiModel: selection.model,
+            contentType: selection.contentType,
           }))
           if (clipRows.length > 0) {
             insertClips(db, clipRows)

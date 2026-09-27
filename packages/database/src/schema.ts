@@ -57,8 +57,31 @@ export const clips = sqliteTable(
     }),
     cropX: real("crop_x").notNull().default(0.5),
     createdAt: integer("created_at").notNull(),
+    // ── Provenance (#89) ──────────────────────────────────────────────────────
+    // The AI's cut as first written, preserved across user trims. setClipTimes overwrites
+    // startMs/endMs in place, so without these the only record of what the model chose is lost
+    // on the first drag. Null on rows written before this migration — the pre-migration value is
+    // not knowable, and guessing would poison boundary-error stats with fabricated provenance.
+    originalStartMs: integer("original_start_ms"),
+    originalEndMs: integer("original_end_ms"),
+    /** 0-based position in the ranked output the model produced. */
+    aiRank: integer("ai_rank"),
+    /** Hand-bumped label for the selection code, e.g. "v1-unmeasured". See PIPELINE_VERSION. */
+    pipelineVersion: text("pipeline_version"),
+    /** sha256 of every prompt template and threshold the selection path reads. Source of truth. */
+    pipelineHash: text("pipeline_hash"),
+    /** Model that served the structured clip-selection calls, e.g. "openai/gpt-oss-120b". */
+    aiModel: text("ai_model"),
+    /** Rubric the prompt was swapped to, so "does the tutorial rubric help?" is answerable. */
+    contentType: text("content_type", {
+      enum: ["interview", "tutorial", "solo", "generic"],
+    }),
   },
-  (table) => ({ clipsProjectIdIdx: index("clips_project_id_idx").on(table.projectId) }),
+  (table) => ({
+    clipsProjectIdIdx: index("clips_project_id_idx").on(table.projectId),
+    // Provenance reports (#46 taste tier, #89) aggregate across projects by hash and rank.
+    clipsPipelineHashIdx: index("clips_pipeline_hash_idx").on(table.pipelineHash),
+  }),
 )
 
 export const segments = sqliteTable(

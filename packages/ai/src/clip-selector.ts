@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import type { AiClient } from "./client"
 import type { z } from "zod"
 import { z as zod } from "zod"
@@ -26,7 +27,25 @@ export interface ClipRejection {
   reasons: string[]
 }
 
-export interface ClipSelectionResult {
+/**
+ * Provenance for one clip-selection run, so a stored clip can be traced back to the
+ * configuration that produced it. Written to `clips` on insert; see #89.
+ *
+ * `pipelineHash` is the source of truth — it is a fingerprint of every prompt template and
+ * heuristic threshold the selection path reads, so it changes automatically when any of them
+ * change. `pipelineVersion` is a human-readable label for the surrounding *code*, which the
+ * fingerprint cannot see: a logic change in `refineClipBoundaries` that touches no constant
+ * leaves the hash identical. Bump it by hand in that case.
+ */
+export interface ClipSelectionProvenance {
+  pipelineVersion: string
+  pipelineHash: string
+  /** The model that served the structured (clip-selection) calls. */
+  model: string
+  contentType: ContentType
+}
+
+export interface ClipSelectionResult extends ClipSelectionProvenance {
   clips: ClipSuggestion[]
   /** Candidates dropped by the quality gate — surfaced so "only 2 clips" is explainable. */
   rejected: ClipRejection[]
@@ -272,6 +291,17 @@ const FILLER_SET = new Set([
 ])
 const WPS_WINDOW = 5
 
+// Signal-tag thresholds. Named rather than inlined so the pipeline fingerprint can cover them —
+// they steer the prompt as much as any wording does, and an unnamed `> baseline + 3` is untunable.
+const WPS_FAST_RATIO = 1.3
+const WPS_SLOW_RATIO = 0.7
+/** Raw RMS delta above the rolling mean, NOT decibels — measureArousal emits linear amplitude. */
+const LOUD_RMS_DELTA = 3
+const BURST_GAP_MS = 800
+const FILLER_DENSITY_RATIO = 0.15
+/** Overlap fraction above which a lower-ranked candidate is dropped as a duplicate. */
+const DEDUPE_OVERLAP_RATIO = 0.5
+
 function buildAnnotatedPrompt(
   chunk: Sentence[],
   words: Word[],
@@ -310,22 +340,22 @@ function buildAnnotatedPrompt(
               : meanRms
           rmsHistory.push(meanRms)
           if (rmsHistory.length > WPS_WINDOW) rmsHistory.shift()
-          if (meanRms > rmsBaseline + 3) loudTag = "loud"
+          if (meanRms > rmsBaseline + LOUD_RMS_DELTA) loudTag = "loud"
         }
       }
 
       // B6: burst tag — sentence follows a notable silence (>800ms gap)
       const gapMs = s.startMs - prevEndMs
-      const burstTag = gapMs > 800 ? "burst" : ""
+      const burstTag = gapMs > BURST_GAP_MS ? "burst" : ""
       prevEndMs = s.endMs
 
       const tags = [
         HOOK_RE.test(s.text) ? "hook" : "",
-        wps > wpsBaseline * 1.3 ? "fast" : "",
-        wps < wpsBaseline * 0.7 ? "slow" : "",
+        wps > wpsBaseline * WPS_FAST_RATIO ? "fast" : "",
+        wps < wpsBaseline * WPS_SLOW_RATIO ? "slow" : "",
         loudTag,
         burstTag,
-        wordCount > 0 && fillerCount / wordCount > 0.15 ? "filler:high" : "",
+        wordCount > 0 && fillerCount / wordCount > FILLER_DENSITY_RATIO ? "filler:high" : "",
       ].filter(Boolean)
 
       const tagStr = tags.length > 0 ? ` {${tags.join(",")}}` : ""
@@ -392,6 +422,73 @@ async function reRankWithBorda(client: AiClient, candidates: Candidate[]): Promi
     .map(({ c }) => c)
 }
 
+const USER_PROMPT_TEMPLATE = `Sentences #{{FIRST}} to #{{LAST}}.
+
+{{TRANSCRIPT}}
+
+Select every clip worth posting, best first. Each clip should span roughly {{MIN_SEC}}–{{MAX_SEC}} seconds of transcript time.
+Only use sentence indices between {{FIRST}} and {{LAST}}.
+Return fewer clips — or an empty array — rather than padding with weak ones.`
+
+function renderUserPrompt(chunk: Sentence[], words: Word[], arousalPerSec: number[]): string {
+  return USER_PROMPT_TEMPLATE.replaceAll("{{FIRST}}", String(chunk[0]!.index))
+    .replaceAll("{{LAST}}", String(chunk[chunk.length - 1]!.index))
+    .replaceAll("{{TRANSCRIPT}}", buildAnnotatedPrompt(chunk, words, arousalPerSec))
+    .replaceAll("{{MIN_SEC}}", String(MIN_CLIP_MS / 1000))
+    .replaceAll("{{MAX_SEC}}", String(MAX_CLIP_MS / 1000))
+}
+
+// ─── Pipeline fingerprint (#89) ─────────────────────────────────────────────
+
+/**
+ * Human-readable label for the clip-selection *code*. Bump by hand when a change alters output
+ * without touching any constant below — a logic edit in `refineClipBoundaries` or
+ * `hookFirstAdjust` is invisible to PIPELINE_FINGERPRINT by construction.
+ */
+export const PIPELINE_VERSION = "v1-unmeasured"
+
+/**
+ * sha256 over every prompt template and heuristic threshold the selection path reads, so a stored
+ * clip can be traced to the exact configuration that produced it.
+ *
+ * Deliberately EXCLUDES `PIPELINE_VERSION`: the two are independent axes. The hash answers "what
+ * config was this?", the version answers "what code was this?". Folding the version in would make
+ * every manual bump look like a configuration change.
+ *
+ * What it cannot see, and why `PIPELINE_VERSION` still exists: a behavioural change in code that
+ * reads none of these constants. The fingerprint covers what gets edited most (prompts, regexes,
+ * thresholds); the version covers the rest, by hand.
+ *
+ * Not included: the model. It is recorded per-run on the clip row instead, because the same
+ * fingerprint is legitimately paired with different models and that comparison is the point of
+ * storing it.
+ */
+export const PIPELINE_FINGERPRINT: string = createHash("sha256")
+  .update(
+    [
+      `system:${SYSTEM_PROMPT}`,
+      // Sorted by key so insertion order in the record can't change the hash.
+      ...Object.keys(CONTENT_TYPE_SUFFIX)
+        .sort()
+        .map((k) => `suffix:${k}=${CONTENT_TYPE_SUFFIX[k as ContentType]}`),
+      `user:${USER_PROMPT_TEMPLATE}`,
+      `rerank:${RERANK_SYSTEM}`,
+      `hookRe:${HOOK_RE.source}`,
+      // Sorted: FILLER_SET is a Set, and its iteration order is not a stable thing to hash.
+      `filler:${[...FILLER_SET].sort().join(",")}`,
+      `wpsWindow:${WPS_WINDOW}`,
+      `wpsFast:${WPS_FAST_RATIO}`,
+      `wpsSlow:${WPS_SLOW_RATIO}`,
+      `loudRmsDelta:${LOUD_RMS_DELTA}`,
+      `burstGapMs:${BURST_GAP_MS}`,
+      `fillerDensity:${FILLER_DENSITY_RATIO}`,
+      `minClipMs:${MIN_CLIP_MS}`,
+      `maxClipMs:${MAX_CLIP_MS}`,
+      `dedupeOverlap:${DEDUPE_OVERLAP_RATIO}`,
+    ].join("\n "),
+  )
+  .digest("hex")
+
 async function selectFromChunk(
   client: AiClient,
   chunk: Sentence[],
@@ -402,13 +499,7 @@ async function selectFromChunk(
   const schema = zod.object({ clips: zod.array(CandidateSchema).max(20) })
   const firstIndex = chunk[0]!.index
   const lastIndex = chunk[chunk.length - 1]!.index
-  const prompt = `Sentences #${firstIndex} to #${lastIndex}.
-
-${buildAnnotatedPrompt(chunk, words, arousalPerSec)}
-
-Select every clip worth posting, best first. Each clip should span roughly ${MIN_CLIP_MS / 1000}–${MAX_CLIP_MS / 1000} seconds of transcript time.
-Only use sentence indices between ${firstIndex} and ${lastIndex}.
-Return fewer clips — or an empty array — rather than padding with weak ones.`
+  const prompt = renderUserPrompt(chunk, words, arousalPerSec)
 
   // C4 — append content-type rubric suffix to base system prompt.
   const system = SYSTEM_PROMPT + (CONTENT_TYPE_SUFFIX[contentType] ?? "")
@@ -432,10 +523,18 @@ export async function selectClips(
   maxClips = 10,
   arousalPerSec: number[] = [],
 ): Promise<ClipSelectionResult> {
-  if (sentences.length === 0) return { clips: [], rejected: [] }
+  const provenance: ClipSelectionProvenance = {
+    pipelineVersion: PIPELINE_VERSION,
+    pipelineHash: PIPELINE_FINGERPRINT,
+    // Clip selection goes through generateObject, so the structured model is the one that served it.
+    model: client.structuredModel,
+    contentType: "generic",
+  }
+  if (sentences.length === 0) return { ...provenance, clips: [], rejected: [] }
 
   // C4 — detect content type once; each chunk uses the same type-specific rubric.
   const contentType = detectContentType(sentences)
+  provenance.contentType = contentType
   console.log(`[content-type] ${contentType}`)
 
   // D5 — fast lookup for hook-first check in the candidate loop below.
@@ -501,7 +600,8 @@ export async function selectClips(
     }
 
     // Chunk overlap intentionally produces duplicates at the seams; keep the better-ranked one.
-    if (clips.some((existing) => overlapRatio(existing, suggestion) > 0.5)) continue
+    if (clips.some((existing) => overlapRatio(existing, suggestion) > DEDUPE_OVERLAP_RATIO))
+      continue
 
     clips.push(suggestion)
     if (clips.length >= maxClips) break
@@ -513,5 +613,5 @@ export async function selectClips(
     clip.score = total <= 1 ? 1 : Number((1 - i / total).toFixed(2))
   })
 
-  return { clips, rejected }
+  return { ...provenance, clips, rejected }
 }
