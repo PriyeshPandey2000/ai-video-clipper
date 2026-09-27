@@ -309,6 +309,50 @@ describe("hostile input", () => {
     expect(prompt).toContain("The minimum is {{MIN_SEC}} seconds flat.")
   })
 
+  it("renders rerank lines with literal braces in a title left untouched", async () => {
+    // Regression: the rerank line used to be built by `.replace`-ing {ID}/{TITLE}/{REASON}
+    // placeholders, so a model-authored title containing the literal text "{REASON}" made the
+    // trailing replace consume the placeholder inside the title — the reason landed in the title
+    // and a bare "{REASON}" was stranded at the end of the line.
+    const hostile: Handler = (prompt) => {
+      const r = range(prompt)
+      if (!r) return { ranking: [0, 1] }
+      const [lo, hi] = r
+      return {
+        clips: [
+          {
+            startSentence: lo,
+            endSentence: Math.min(lo + 12, hi),
+            title: "Use {REASON} and $' and $$ here",
+            reason: "REAL-REASON",
+            strong: true,
+            platform: "shorts",
+          },
+          {
+            startSentence: Math.min(lo + 40, hi),
+            endSentence: Math.min(lo + 52, hi),
+            title: "second",
+            reason: "r2",
+            strong: true,
+            platform: "shorts",
+          },
+        ],
+      }
+    }
+
+    const prompts: string[] = []
+    await selectClips(mockClient(hostile, prompts), words, sentences)
+
+    // The rerank call is the one whose payload is bare `id=N` lines, not a "Sentences #x to #y" header.
+    const rerank = prompts.find((p) => /id=\d+ "/.test(p) && !/Sentences #/.test(p))
+    expect(rerank).toBeDefined()
+    // Braces, dollar-quote and doubled-dollar all survive as literal text...
+    expect(rerank).toContain('"Use {REASON} and $\' and $$ here"')
+    // ...and the real reason is present exactly once, in its own position after the dash.
+    expect(rerank).toContain('" — REAL-REASON')
+    expect(rerank!.match(/REAL-REASON/g) ?? []).toHaveLength(1)
+  })
+
   it("survives out-of-range and reversed sentence indices", async () => {
     const insane: Handler = () => ({
       clips: [

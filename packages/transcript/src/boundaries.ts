@@ -29,8 +29,12 @@ export const MAX_BACKWARD_SENTENCES = 3
  * so false positives are cheap: they widen the clip slightly. Contractions are deliberately
  * absent, which is why legitimate hooks like "That's why I stopped taking meetings" pass:
  * the token is `that's`, not `that`.
+ *
+ * Typed `ReadonlySet` because this is now exported (#89 hashes it), and an exported mutable Set is
+ * a live binding any importer could `.add()` to — silently changing what the check matches, and so
+ * what the fingerprint claims to describe.
  */
-export const DANGLING_OPENERS = new Set([
+export const DANGLING_OPENERS: ReadonlySet<string> = new Set([
   "he",
   "she",
   "they",
