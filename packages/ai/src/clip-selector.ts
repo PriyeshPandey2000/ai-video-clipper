@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import type { AiClient } from "./client"
+import { STRUCTURED_OUTPUT_SUFFIX, type AiClient } from "./client"
 import type { z } from "zod"
 import { z as zod } from "zod"
 import type { Word, Sentence } from "@video-editor/types"
@@ -8,6 +8,12 @@ import {
   passesQualityGate,
   MIN_CLIP_MS,
   MAX_CLIP_MS,
+  LEAD_IN_MS,
+  TAIL_MS,
+  END_SEARCH_MS,
+  COMPLETE_THOUGHT_PAUSE_MS,
+  MAX_BACKWARD_SENTENCES,
+  DANGLING_OPENERS,
 } from "@video-editor/transcript"
 import type { TopicSegment } from "@video-editor/transcript"
 
@@ -250,6 +256,13 @@ HARD RULE: never clip a partial step. A clip that starts or ends mid-instruction
 
 // ─── D5 — hook-first check ───────────────────────────────────────────────────
 
+/** D5 — how many sentences forward hook-first trim may move a clip's start. */
+const HOOK_FIRST_MAX_TRIM = 2
+/** Ceiling on candidates requested per chunk, independent of how many survive the gate. */
+const MAX_CANDIDATES_PER_CHUNK = 20
+/** Default clip count per video. Overridable per call, so the effective value is hashed per run. */
+const DEFAULT_MAX_CLIPS = 10
+
 /**
  * Tries to advance the clip's start sentence to the first sentence with a hook marker.
  * Trims at most `maxTrim` sentences forward. Returns the original start if no hook is
@@ -259,7 +272,7 @@ function hookFirstAdjust(
   sentenceByIndex: Map<number, Sentence>,
   startSentence: number,
   endSentence: number,
-  maxTrim = 2,
+  maxTrim = HOOK_FIRST_MAX_TRIM,
 ): { adjustedStart: number; noHook: boolean } {
   for (let i = 0; i <= maxTrim; i++) {
     const idx = startSentence + i
@@ -372,6 +385,20 @@ const RERANK_SYSTEM =
   'shown with an explicit "id=N" field. Return a JSON object with a "ranking" array containing ' +
   "every id value — not list positions — in your preferred order, best first."
 
+/**
+ * How each candidate is presented to the rerank pass. It only ever sees the model's own title and
+ * reason — never the transcript — so this format is part of what the fingerprint must cover.
+ */
+const RERANK_LINE_FORMAT = `id={ID} "{TITLE}" — {REASON}`
+
+function renderRerankLine(id: number, c: Candidate): string {
+  // Function replacements, for the same reason as renderUserPrompt: a model-authored title or
+  // reason is untrusted text and must never be re-scanned for placeholders or `$` patterns.
+  return RERANK_LINE_FORMAT.replace("{ID}", () => String(id))
+    .replace("{TITLE}", () => c.title)
+    .replace("{REASON}", () => c.reason)
+}
+
 function shuffle<T>(arr: T[]): T[] {
   const out = [...arr]
   for (let i = out.length - 1; i > 0; i--) {
@@ -391,7 +418,7 @@ async function reRankWithBorda(client: AiClient, candidates: Candidate[]): Promi
 
   const shuffled = shuffle(indexed)
   const schema = zod.object({ ranking: zod.array(zod.number().int()) })
-  const prompt = shuffled.map(({ c, id }) => `id=${id} "${c.title}" — ${c.reason}`).join("\n")
+  const prompt = shuffled.map(({ c, id }) => renderRerankLine(id, c)).join("\n")
 
   let pass2Ranking: number[]
   try {
@@ -430,64 +457,108 @@ Select every clip worth posting, best first. Each clip should span roughly {{MIN
 Only use sentence indices between {{FIRST}} and {{LAST}}.
 Return fewer clips — or an empty array — rather than padding with weak ones.`
 
+// The transcript goes in LAST, and via a function replacement. Two reasons, both load-bearing:
+//
+// 1. Order. Substituting the transcript before the other placeholders means transcript text that
+//    happens to contain "{{MIN_SEC}}" gets substituted again, corrupting spoken words.
+// 2. `$` handling. In a string replacement `$$` collapses to `$` and `$'` inserts the remainder of
+//    the template. A transcript containing "$$1M" or a dollar-quote came out garbled — `$$1M`
+//    became `$1M`, and `$'` spliced the rest of the prompt into the middle of the sentence. A
+//    function replacement treats its argument as literal text and skips all of that.
 function renderUserPrompt(chunk: Sentence[], words: Word[], arousalPerSec: number[]): string {
   return USER_PROMPT_TEMPLATE.replaceAll("{{FIRST}}", String(chunk[0]!.index))
     .replaceAll("{{LAST}}", String(chunk[chunk.length - 1]!.index))
-    .replaceAll("{{TRANSCRIPT}}", buildAnnotatedPrompt(chunk, words, arousalPerSec))
     .replaceAll("{{MIN_SEC}}", String(MIN_CLIP_MS / 1000))
     .replaceAll("{{MAX_SEC}}", String(MAX_CLIP_MS / 1000))
+    .replace("{{TRANSCRIPT}}", () => buildAnnotatedPrompt(chunk, words, arousalPerSec))
 }
 
 // ─── Pipeline fingerprint (#89) ─────────────────────────────────────────────
 
 /**
  * Human-readable label for the clip-selection *code*. Bump by hand when a change alters output
- * without touching any constant below — a logic edit in `refineClipBoundaries` or
- * `hookFirstAdjust` is invisible to PIPELINE_FINGERPRINT by construction.
+ * without touching any constant in the fingerprint — a logic edit in `refineClipBoundaries` or
+ * `hookFirstAdjust` is invisible to the hash by construction.
  */
 export const PIPELINE_VERSION = "v1-unmeasured"
 
 /**
- * sha256 over every prompt template and heuristic threshold the selection path reads, so a stored
- * clip can be traced to the exact configuration that produced it.
+ * sha256 over every prompt template and heuristic threshold the clip-selection path reads, so a
+ * stored clip can be traced to the exact configuration that produced it.
  *
- * Deliberately EXCLUDES `PIPELINE_VERSION`: the two are independent axes. The hash answers "what
- * config was this?", the version answers "what code was this?". Folding the version in would make
- * every manual bump look like a configuration change.
+ * Coverage is deliberately broad, and the boundary constants matter most: `LEAD_IN_MS`, `TAIL_MS`,
+ * `END_SEARCH_MS` and friends decide the exact startMs/endMs that #89 stores as a clip's original
+ * boundaries. If tuning one of them moved stored boundary-error numbers while the hash stayed
+ * identical, the metric would be unattributable — which is the one thing this column exists to
+ * prevent.
  *
- * What it cannot see, and why `PIPELINE_VERSION` still exists: a behavioural change in code that
- * reads none of these constants. The fingerprint covers what gets edited most (prompts, regexes,
- * thresholds); the version covers the rest, by hand.
+ * Two things are deliberately NOT folded in:
+ * - `PIPELINE_VERSION`. The two answer different questions: the hash says "what config was this?",
+ *   the version says "what code was this?". Folding the version in would make every manual bump
+ *   look like a configuration change.
+ * - The model. It is recorded per-run on the clip row, because the same fingerprint is
+ *   legitimately paired with different models and comparing those is the point of storing it.
  *
- * Not included: the model. It is recorded per-run on the clip row instead, because the same
- * fingerprint is legitimately paired with different models and that comparison is the point of
- * storing it.
+ * Known remaining gap: a behavioural change in code that reads none of these constants — a logic
+ * edit inside `refineClipBoundaries` or `hookFirstAdjust`. That is what `PIPELINE_VERSION` is for.
+ * The zod candidate schema is not hashed either: it is sent to the SDK, not to the model as text,
+ * so in `json_object` mode a schema edit does not change the prompt.
+ *
+ * `maxClips` is a per-call argument rather than a constant, so the fingerprint is computed from
+ * the effective value. Hashing a package-level default would silently mislabel any caller that
+ * overrode it.
  */
-export const PIPELINE_FINGERPRINT: string = createHash("sha256")
-  .update(
-    [
-      `system:${SYSTEM_PROMPT}`,
-      // Sorted by key so insertion order in the record can't change the hash.
-      ...Object.keys(CONTENT_TYPE_SUFFIX)
-        .sort()
-        .map((k) => `suffix:${k}=${CONTENT_TYPE_SUFFIX[k as ContentType]}`),
-      `user:${USER_PROMPT_TEMPLATE}`,
-      `rerank:${RERANK_SYSTEM}`,
-      `hookRe:${HOOK_RE.source}`,
-      // Sorted: FILLER_SET is a Set, and its iteration order is not a stable thing to hash.
-      `filler:${[...FILLER_SET].sort().join(",")}`,
-      `wpsWindow:${WPS_WINDOW}`,
-      `wpsFast:${WPS_FAST_RATIO}`,
-      `wpsSlow:${WPS_SLOW_RATIO}`,
-      `loudRmsDelta:${LOUD_RMS_DELTA}`,
-      `burstGapMs:${BURST_GAP_MS}`,
-      `fillerDensity:${FILLER_DENSITY_RATIO}`,
-      `minClipMs:${MIN_CLIP_MS}`,
-      `maxClipMs:${MAX_CLIP_MS}`,
-      `dedupeOverlap:${DEDUPE_OVERLAP_RATIO}`,
-    ].join("\n "),
-  )
-  .digest("hex")
+export function computePipelineFingerprint(maxClips: number): string {
+  return createHash("sha256")
+    .update(
+      [
+        `system:${SYSTEM_PROMPT}`,
+        // Sorted by key so insertion order in the record can't change the hash.
+        ...Object.keys(CONTENT_TYPE_SUFFIX)
+          .sort()
+          .map((k) => `suffix:${k}=${CONTENT_TYPE_SUFFIX[k as ContentType]}`),
+        `user:${USER_PROMPT_TEMPLATE}`,
+        `structuredSuffix:${STRUCTURED_OUTPUT_SUFFIX}`,
+        `rerankSystem:${RERANK_SYSTEM}`,
+        `rerankLineFormat:${RERANK_LINE_FORMAT}`,
+        `hookRe:${HOOK_RE.source}`,
+        // Sorted: FILLER_SET is a Set, and its iteration order is not a stable thing to hash.
+        `filler:${[...FILLER_SET].sort().join(",")}`,
+        `danglingOpeners:${[...DANGLING_OPENERS].sort().join(",")}`,
+        // Boundary refinement — these set the stored original_start_ms/original_end_ms.
+        `leadInMs:${LEAD_IN_MS}`,
+        `tailMs:${TAIL_MS}`,
+        `endSearchMs:${END_SEARCH_MS}`,
+        `completeThoughtPauseMs:${COMPLETE_THOUGHT_PAUSE_MS}`,
+        `maxBackwardSentences:${MAX_BACKWARD_SENTENCES}`,
+        // Chunking — decides which sentences the model ever sees on long videos.
+        `chunkThresholdMs:${CHUNK_THRESHOLD_MS}`,
+        `chunkSizeMs:${CHUNK_SIZE_MS}`,
+        `chunkOverlapMs:${CHUNK_OVERLAP_MS}`,
+        // Signal tags.
+        `wpsWindow:${WPS_WINDOW}`,
+        `wpsFast:${WPS_FAST_RATIO}`,
+        `wpsSlow:${WPS_SLOW_RATIO}`,
+        `loudRmsDelta:${LOUD_RMS_DELTA}`,
+        `burstGapMs:${BURST_GAP_MS}`,
+        `fillerDensity:${FILLER_DENSITY_RATIO}`,
+        // Gates and selection shape.
+        `minClipMs:${MIN_CLIP_MS}`,
+        `maxClipMs:${MAX_CLIP_MS}`,
+        `dedupeOverlap:${DEDUPE_OVERLAP_RATIO}`,
+        `hookFirstMaxTrim:${HOOK_FIRST_MAX_TRIM}`,
+        `maxCandidatesPerChunk:${MAX_CANDIDATES_PER_CHUNK}`,
+        `maxClips:${maxClips}`,
+        // NUL separator: it cannot occur in any prompt, regex source or word list above, so no
+        // field boundary can be forged by content. (Escaped, not a raw byte — a literal NUL in
+        // source makes the file binary to grep and friends.)
+      ].join("\n\u0000"),
+    )
+    .digest("hex")
+}
+
+/** Fingerprint for a run using the default clip budget. See computePipelineFingerprint. */
+export const PIPELINE_FINGERPRINT = computePipelineFingerprint(DEFAULT_MAX_CLIPS)
 
 async function selectFromChunk(
   client: AiClient,
@@ -496,7 +567,7 @@ async function selectFromChunk(
   arousalPerSec: number[] = [],
   contentType: ContentType = "generic",
 ): Promise<Candidate[]> {
-  const schema = zod.object({ clips: zod.array(CandidateSchema).max(20) })
+  const schema = zod.object({ clips: zod.array(CandidateSchema).max(MAX_CANDIDATES_PER_CHUNK) })
   const firstIndex = chunk[0]!.index
   const lastIndex = chunk[chunk.length - 1]!.index
   const prompt = renderUserPrompt(chunk, words, arousalPerSec)
@@ -520,12 +591,14 @@ export async function selectClips(
   words: Word[],
   sentences: Sentence[],
   topics: TopicSegment[] = [],
-  maxClips = 10,
+  maxClips = DEFAULT_MAX_CLIPS,
   arousalPerSec: number[] = [],
 ): Promise<ClipSelectionResult> {
   const provenance: ClipSelectionProvenance = {
     pipelineVersion: PIPELINE_VERSION,
-    pipelineHash: PIPELINE_FINGERPRINT,
+    // Fingerprint the *effective* clip budget, not the default — ipc.ts passes maxClips
+    // explicitly, so hashing a package constant would mislabel any override.
+    pipelineHash: computePipelineFingerprint(maxClips),
     // Clip selection goes through generateObject, so the structured model is the one that served it.
     model: client.structuredModel,
     contentType: "generic",

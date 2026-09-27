@@ -58,6 +58,12 @@ export function createAiClient(config?: AiClientConfig): AiClient {
   throw new Error(`Unsupported provider: ${provider}`)
 }
 
+// Appended to every structured-output prompt. Exported because it is part of what the model
+// actually receives, so the pipeline fingerprint must cover it (#89) — editing this changes clip
+// output as surely as editing a system prompt does.
+export const STRUCTURED_OUTPUT_SUFFIX =
+  "\n\nReturn ONLY valid JSON. No explanation, no markdown, no code fences."
+
 // A malformed/truncated JSON response from the model is common enough with json_object mode
 // (no schema enforcement server-side) that a single attempt regularly loses an entire chunk's
 // worth of clip candidates. Retrying a few times with backoff turns a transient bad response
@@ -92,7 +98,7 @@ function createGroqClient(
         try {
           const { output } = await generateText({
             model: groq(structuredModel),
-            prompt: `${prompt}\n\nReturn ONLY valid JSON. No explanation, no markdown, no code fences.`,
+            prompt: `${prompt}${STRUCTURED_OUTPUT_SUFFIX}`,
             ...(system ? { system } : {}),
             output: Output.object({ schema: _schema }),
             providerOptions: {

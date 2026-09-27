@@ -8,6 +8,15 @@ export {
   startsWithDanglingReference,
   MIN_CLIP_MS,
   MAX_CLIP_MS,
+  // Exported for the pipeline fingerprint in @video-editor/ai (#89). These decide the exact
+  // startMs/endMs that #89 records as a clip's original boundaries, so a change to any of them
+  // must change the fingerprint or stored boundary-error numbers become unattributable.
+  LEAD_IN_MS,
+  TAIL_MS,
+  END_SEARCH_MS,
+  COMPLETE_THOUGHT_PAUSE_MS,
+  MAX_BACKWARD_SENTENCES,
+  DANGLING_OPENERS,
 } from "./boundaries"
 export type { RefinedBoundary, QualityGateResult } from "./boundaries"
 export { segmentTopics } from "./topics"

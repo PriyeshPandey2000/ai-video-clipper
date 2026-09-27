@@ -1,6 +1,11 @@
 export { createAiClient, SUPPORTED_PROVIDERS } from "./client"
 export type { AiClient, AiClientConfig, AiProvider } from "./client"
-export { selectClips, PIPELINE_VERSION, PIPELINE_FINGERPRINT } from "./clip-selector"
+export {
+  selectClips,
+  computePipelineFingerprint,
+  PIPELINE_VERSION,
+  PIPELINE_FINGERPRINT,
+} from "./clip-selector"
 export type {
   ClipSuggestion,
   ClipSelectionResult,
