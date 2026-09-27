@@ -1,7 +1,17 @@
 export { createAiClient, SUPPORTED_PROVIDERS } from "./client"
 export type { AiClient, AiClientConfig, AiProvider } from "./client"
-export { selectClips } from "./clip-selector"
-export type { ClipSuggestion, ClipSelectionResult, ClipRejection } from "./clip-selector"
+export {
+  selectClips,
+  computePipelineFingerprint,
+  PIPELINE_VERSION,
+  PIPELINE_FINGERPRINT,
+} from "./clip-selector"
+export type {
+  ClipSuggestion,
+  ClipSelectionResult,
+  ClipSelectionProvenance,
+  ClipRejection,
+} from "./clip-selector"
 export { generateBlogPost } from "./blog-generator"
 export { generateSocialCaptions } from "./caption-generator"
 export type { SocialCaption } from "./caption-generator"

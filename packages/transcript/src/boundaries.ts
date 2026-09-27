@@ -5,11 +5,11 @@ export const MIN_CLIP_MS = 15_000
 export const MAX_CLIP_MS = 90_000
 
 /** D3 — breathing room. Placed inside the pause, never past its midpoint. */
-const LEAD_IN_MS = 180
-const TAIL_MS = 300
+export const LEAD_IN_MS = 180
+export const TAIL_MS = 300
 
 /** D4 — how far past the chosen end we may search for a complete thought. */
-const END_SEARCH_MS = 5_000
+export const END_SEARCH_MS = 5_000
 /**
  * A pause this long counts as a thought ending even without punctuation.
  *
@@ -17,10 +17,10 @@ const END_SEARCH_MS = 5_000
  * exists because a pause split it, so any threshold at or below the split gap marks every such
  * sentence "complete" and D4's forward search never fires.
  */
-const COMPLETE_THOUGHT_PAUSE_MS = 900
+export const COMPLETE_THOUGHT_PAUSE_MS = 900
 
 /** D2 — cap on backward expansion, so one dangling word can't drag in a whole topic. */
-const MAX_BACKWARD_SENTENCES = 3
+export const MAX_BACKWARD_SENTENCES = 3
 
 /**
  * Openers that signal the sentence depends on something before it.
@@ -30,7 +30,7 @@ const MAX_BACKWARD_SENTENCES = 3
  * absent, which is why legitimate hooks like "That's why I stopped taking meetings" pass:
  * the token is `that's`, not `that`.
  */
-const DANGLING_OPENERS = new Set([
+export const DANGLING_OPENERS = new Set([
   "he",
   "she",
   "they",

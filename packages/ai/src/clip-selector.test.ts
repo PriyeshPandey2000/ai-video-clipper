@@ -3,7 +3,12 @@ import type { Word, Sentence } from "@video-editor/types"
 import { buildSentences } from "@video-editor/transcript"
 import type { TopicSegment } from "@video-editor/transcript"
 import type { AiClient } from "./client"
-import { selectClips } from "./clip-selector"
+import {
+  selectClips,
+  computePipelineFingerprint,
+  PIPELINE_FINGERPRINT,
+  PIPELINE_VERSION,
+} from "./clip-selector"
 
 function transcript(count: number): Word[] {
   const words: Word[] = []
@@ -233,6 +238,77 @@ describe("B13 — variable clip count", () => {
 })
 
 describe("hostile input", () => {
+  it("passes the transcript through verbatim when it contains $ and template syntax", async () => {
+    // Regression: the transcript used to be substituted with String.replace, so replacement
+    // patterns inside the *spoken* text were interpreted. "$$" collapsed to "$", and "$'"
+    // spliced the remainder of the template into the middle of the sentence, silently handing the
+    // model a garbled transcript. The transcript is now substituted last, via a function.
+    const hostile: string[] = [
+      "Revenue",
+      "went",
+      "from",
+      "$0",
+      "to",
+      "$$1.4M",
+      "and",
+      "the",
+      "growth",
+      "was",
+      "real.",
+      "She",
+      "said",
+      "it's",
+      "fine",
+      "and",
+      "left.",
+      "The",
+      "minimum",
+      "is",
+      "{{MIN_SEC}}",
+      "seconds",
+      "flat.",
+    ]
+    const w: Word[] = []
+    let ms = 0
+    for (const token of hostile) {
+      w.push({
+        id: `h${w.length}`,
+        projectId: "p",
+        text: token,
+        startMs: ms,
+        endMs: ms + 300,
+        confidence: 0.9,
+        speakerLabel: null,
+      })
+      ms += 350
+    }
+
+    const prompts: string[] = []
+    await selectClips(
+      mockClient(() => ({ clips: [] }), prompts),
+      w,
+      buildSentences(w),
+    )
+
+    const prompt = prompts[0]!
+    // Every hostile token survives exactly as written.
+    for (const token of hostile) {
+      expect(prompt).toContain(token)
+    }
+    // "$$" must not have collapsed to "$"...
+    expect(prompt).toContain("$$1.4M")
+    expect(prompt).not.toContain(" to $1.4M ")
+    // ...and "$'" must not have spliced the rest of the template in after the transcript.
+    // The template's tail ("Select every clip worth posting") belongs at the very end, once.
+    expect(prompt.match(/Select every clip worth posting/g) ?? []).toHaveLength(1)
+    expect(prompt).not.toMatch(
+      /it's fine and left\.[\s\S]*Select every clip worth posting[\s\S]*Select every clip worth posting/,
+    )
+    // The real placeholders were still substituted — spoken "{{MIN_SEC}}" must not become "15".
+    expect(prompt).toContain("roughly 15")
+    expect(prompt).toContain("The minimum is {{MIN_SEC}} seconds flat.")
+  })
+
   it("survives out-of-range and reversed sentence indices", async () => {
     const insane: Handler = () => ({
       clips: [
@@ -290,5 +366,88 @@ describe("chunk failure isolation", () => {
     // First chunk's candidates are lost, but later chunks still produced clips — selectClips
     // didn't abort the whole run when one chunk failed.
     expect(clips.length).toBeGreaterThan(0)
+  })
+})
+
+// ─── Pipeline fingerprint (#89) ─────────────────────────────────────────────
+// The fingerprint is what makes a stored clip traceable to the config that produced it, so these
+// tests are about it not going stale rather than about any particular digest value.
+describe("pipeline provenance (#89)", () => {
+  const stubClient = (structuredModel = "test/model") =>
+    ({
+      provider: "groq",
+      textModel: "test/model",
+      structuredModel,
+      complete: async () => "",
+      generateObject: async () => ({ clips: [] }),
+    }) as unknown as AiClient
+
+  it("is a sha256 hex digest", () => {
+    expect(PIPELINE_FINGERPRINT).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it("exposes a hand-bumped version label", () => {
+    expect(PIPELINE_VERSION).toMatch(/^v\d/)
+  })
+
+  it("returns provenance on the empty-transcript path, not just when clips exist", async () => {
+    // A zero-sentence video returns early. If provenance were assembled after that early return,
+    // the fields would be missing exactly when a caller is easiest to get wrong.
+    const result = await selectClips(stubClient(), [], [])
+    expect(result.clips).toEqual([])
+    expect(result.pipelineHash).toBe(PIPELINE_FINGERPRINT)
+    expect(result.pipelineVersion).toBe(PIPELINE_VERSION)
+    expect(result.model).toBe("test/model")
+    expect(result.contentType).toBe("generic")
+  })
+
+  it("records the structured model, not the text model", async () => {
+    // Clip selection goes through generateObject, so the structured model is the one that served
+    // it. Attributing a clip to the text model would make model comparisons meaningless.
+    const result = await selectClips(stubClient("structured-only"), [], [])
+    expect(result.model).toBe("structured-only")
+  })
+
+  it("fingerprint tracks the effective clip budget, not just the default", async () => {
+    // ipc.ts passes maxClips explicitly, so a run with a different budget is a different
+    // configuration and must not be filed under the default's hash.
+    const words = transcript(120)
+    const sentences = buildSentences(words)
+    const at5 = await selectClips(stubClient(), words, sentences, [], 5)
+    const at10 = await selectClips(stubClient(), words, sentences, [], 10)
+    expect(at5.pipelineHash).not.toBe(at10.pipelineHash)
+    expect(at10.pipelineHash).toBe(PIPELINE_FINGERPRINT)
+    expect(at5.pipelineHash).toBe(computePipelineFingerprint(5))
+  })
+
+  it("detects the content type from the transcript rather than asserting the type is valid", async () => {
+    // The previous version of this test asserted the result was one of the four ContentType
+    // values, which the type system already guarantees — it could not fail. This feeds a
+    // transcript with explicit step-by-step language and asserts the classifier commits to it.
+    const words: Word[] = []
+    let ms = 0
+    const lines = [
+      "Step one is to open the settings panel.",
+      "Step two is to pick the model you want.",
+      "Step three is to wait for the download.",
+      "By the end of this video you will have it working.",
+    ]
+    for (const line of lines) {
+      for (const token of line.split(" ")) {
+        words.push({
+          id: `t${words.length}`,
+          projectId: "p",
+          text: token,
+          startMs: ms,
+          endMs: ms + 300,
+          confidence: 0.9,
+          speakerLabel: null,
+        })
+        ms += 350
+      }
+      ms += 400
+    }
+    const result = await selectClips(stubClient(), words, buildSentences(words))
+    expect(result.contentType).toBe("tutorial")
   })
 })
