@@ -388,16 +388,21 @@ const RERANK_SYSTEM =
 /**
  * How each candidate is presented to the rerank pass. It only ever sees the model's own title and
  * reason — never the transcript — so this format is part of what the fingerprint must cover.
+ *
+ * Interpolation, not `.replace` on a placeholder template. An earlier version built this from
+ * `{ID}`/`{TITLE}`/`{REASON}` placeholders so the format could be hashed as a literal, but that
+ * traded one injection bug for another: a model-authored title containing the literal text
+ * `{REASON}` made the trailing `.replace` consume the placeholder *inside the title*, splicing the
+ * reason into it and stranding `{REASON}` at the end of the line. The fingerprint no longer needs
+ * the raw format for that — see `RERANK_FORMAT_SAMPLE` below.
  */
-const RERANK_LINE_FORMAT = `id={ID} "{TITLE}" — {REASON}`
-
-function renderRerankLine(id: number, c: Candidate): string {
-  // Function replacements, for the same reason as renderUserPrompt: a model-authored title or
-  // reason is untrusted text and must never be re-scanned for placeholders or `$` patterns.
-  return RERANK_LINE_FORMAT.replace("{ID}", () => String(id))
-    .replace("{TITLE}", () => c.title)
-    .replace("{REASON}", () => c.reason)
+function renderRerankLine(id: number, c: Pick<Candidate, "title" | "reason">): string {
+  return `id=${id} "${c.title}" — ${c.reason}`
 }
+
+// Sample rendering of the line above, hashed into the fingerprint so the format still counts as
+// covered. A change to the format changes this string; nothing is parsed to get there.
+const RERANK_FORMAT_SAMPLE = renderRerankLine(0, { title: "T", reason: "R" })
 
 function shuffle<T>(arr: T[]): T[] {
   const out = [...arr]
@@ -520,7 +525,7 @@ export function computePipelineFingerprint(maxClips: number): string {
         `user:${USER_PROMPT_TEMPLATE}`,
         `structuredSuffix:${STRUCTURED_OUTPUT_SUFFIX}`,
         `rerankSystem:${RERANK_SYSTEM}`,
-        `rerankLineFormat:${RERANK_LINE_FORMAT}`,
+        `rerankLineFormat:${RERANK_FORMAT_SAMPLE}`,
         `hookRe:${HOOK_RE.source}`,
         // Sorted: FILLER_SET is a Set, and its iteration order is not a stable thing to hash.
         `filler:${[...FILLER_SET].sort().join(",")}`,
