@@ -12,3 +12,4 @@ release/
 electron-builder.env
 resources/ffmpeg/
 resources/whisper/
+prompt-bench-*.md

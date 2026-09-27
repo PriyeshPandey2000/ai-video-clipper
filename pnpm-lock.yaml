@@ -11,6 +11,15 @@ importers:
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.43
+      '@video-editor/ai':
+        specifier: workspace:*
+        version: link:packages/ai
+      '@video-editor/transcript':
+        specifier: workspace:*
+        version: link:packages/transcript
+      '@video-editor/types':
+        specifier: workspace:*
+        version: link:packages/types
       eslint:
         specifier: ^9.0.0
         version: 9.39.4(jiti@2.7.0)

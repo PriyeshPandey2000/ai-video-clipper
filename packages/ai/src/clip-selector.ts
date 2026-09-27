@@ -398,6 +398,7 @@ async function selectFromChunk(
   words: Word[],
   arousalPerSec: number[] = [],
   contentType: ContentType = "generic",
+  systemPromptOverride?: string,
 ): Promise<Candidate[]> {
   const schema = zod.object({ clips: zod.array(CandidateSchema).max(20) })
   const firstIndex = chunk[0]!.index
@@ -411,7 +412,7 @@ Only use sentence indices between ${firstIndex} and ${lastIndex}.
 Return fewer clips — or an empty array — rather than padding with weak ones.`
 
   // C4 — append content-type rubric suffix to base system prompt.
-  const system = SYSTEM_PROMPT + (CONTENT_TYPE_SUFFIX[contentType] ?? "")
+  const system = (systemPromptOverride ?? SYSTEM_PROMPT) + (CONTENT_TYPE_SUFFIX[contentType] ?? "")
 
   const result = await client.generateObject({
     prompt,
@@ -431,6 +432,9 @@ export async function selectClips(
   topics: TopicSegment[] = [],
   maxClips = 10,
   arousalPerSec: number[] = [],
+  // Bench/eval hook (scripts/prompt-bench.ts) — lets a caller swap the base system prompt
+  // without touching the shipped default. Never set by the app itself.
+  systemPromptOverride?: string,
 ): Promise<ClipSelectionResult> {
   if (sentences.length === 0) return { clips: [], rejected: [] }
 
@@ -448,7 +452,16 @@ export async function selectClips(
     // chunk still fails after that, drop just this chunk's candidates rather than aborting clip
     // selection for the whole video — other chunks' clips are still worth surfacing.
     try {
-      perChunk.push(await selectFromChunk(client, chunk, words, arousalPerSec, contentType))
+      perChunk.push(
+        await selectFromChunk(
+          client,
+          chunk,
+          words,
+          arousalPerSec,
+          contentType,
+          systemPromptOverride,
+        ),
+      )
     } catch (err) {
       console.error(
         `[clip-selector] chunk (sentences #${chunk[0]?.index}-#${chunk[chunk.length - 1]?.index}) failed after retries, skipping:`,
