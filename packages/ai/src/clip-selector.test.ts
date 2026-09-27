@@ -3,7 +3,7 @@ import type { Word, Sentence } from "@video-editor/types"
 import { buildSentences } from "@video-editor/transcript"
 import type { TopicSegment } from "@video-editor/transcript"
 import type { AiClient } from "./client"
-import { selectClips } from "./clip-selector"
+import { selectClips, PIPELINE_FINGERPRINT, PIPELINE_VERSION } from "./clip-selector"
 
 function transcript(count: number): Word[] {
   const words: Word[] = []
@@ -290,5 +290,52 @@ describe("chunk failure isolation", () => {
     // First chunk's candidates are lost, but later chunks still produced clips — selectClips
     // didn't abort the whole run when one chunk failed.
     expect(clips.length).toBeGreaterThan(0)
+  })
+})
+
+// ─── Pipeline fingerprint (#89) ─────────────────────────────────────────────
+// The fingerprint is what makes a stored clip traceable to the config that produced it, so these
+// tests are about it not going stale rather than about any particular digest value.
+describe("pipeline provenance (#89)", () => {
+  const stubClient = (structuredModel = "test/model") =>
+    ({
+      provider: "groq",
+      textModel: "test/model",
+      structuredModel,
+      complete: async () => "",
+      generateObject: async () => ({ clips: [] }),
+    }) as unknown as AiClient
+
+  it("is a sha256 hex digest", () => {
+    expect(PIPELINE_FINGERPRINT).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it("exposes a hand-bumped version label", () => {
+    expect(PIPELINE_VERSION).toMatch(/^v\d/)
+  })
+
+  it("returns provenance on the empty-transcript path, not just when clips exist", async () => {
+    // A zero-sentence video returns early. If provenance were assembled after that early return,
+    // the fields would be missing exactly when a caller is easiest to get wrong.
+    const result = await selectClips(stubClient(), [], [])
+    expect(result.clips).toEqual([])
+    expect(result.pipelineHash).toBe(PIPELINE_FINGERPRINT)
+    expect(result.pipelineVersion).toBe(PIPELINE_VERSION)
+    expect(result.model).toBe("test/model")
+    expect(result.contentType).toBe("generic")
+  })
+
+  it("records the structured model, not the text model", async () => {
+    // Clip selection goes through generateObject, so the structured model is the one that served
+    // it. Attributing a clip to the text model would make model comparisons meaningless.
+    const result = await selectClips(stubClient("structured-only"), [], [])
+    expect(result.model).toBe("structured-only")
+  })
+
+  it("records the content type the rubric was actually swapped to", async () => {
+    const words = transcript(120)
+    const sentences = buildSentences(words)
+    const result = await selectClips(stubClient(), words, sentences)
+    expect(["interview", "tutorial", "solo", "generic"]).toContain(result.contentType)
   })
 })

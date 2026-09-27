@@ -241,6 +241,68 @@ describeSqlite("repository", () => {
     expect(getClipsByIds(db, ["c1"])[0]?.status).toBe("rejected")
   })
 
+  // The whole point of #89: a user trim must not destroy the record of what the AI chose.
+  // Without this, boundary error and precision@5 (#46 taste tier) are uncomputable forever.
+  it("setClipTimes preserves the AI's original boundaries and provenance", () => {
+    const db = testDb()
+    insertProject(db, baseProject)
+    insertClips(db, [
+      {
+        ...baseClip("p1"),
+        originalStartMs: 0,
+        originalEndMs: 5000,
+        aiRank: 0,
+        pipelineVersion: "v1-unmeasured",
+        pipelineHash: "abc123",
+        aiModel: "openai/gpt-oss-120b",
+        contentType: "solo" as const,
+      },
+    ])
+
+    setClipTimes(db, "c1", 1200, 4300)
+
+    expect(getClipsByIds(db, ["c1"])[0]).toMatchObject({
+      startMs: 1200,
+      endMs: 4300,
+      originalStartMs: 0,
+      originalEndMs: 5000,
+      aiRank: 0,
+      pipelineVersion: "v1-unmeasured",
+      pipelineHash: "abc123",
+      aiModel: "openai/gpt-oss-120b",
+      contentType: "solo",
+    })
+  })
+
+  it("repeated trims still report the same original boundary", () => {
+    const db = testDb()
+    insertProject(db, baseProject)
+    insertClips(db, [{ ...baseClip("p1"), originalStartMs: 10, originalEndMs: 5000 }])
+
+    setClipTimes(db, "c1", 1200, 4300)
+    setClipTimes(db, "c1", 2000, 3000)
+    setClipTimes(db, "c1", 10, 5000)
+
+    const clip = getClipsByIds(db, ["c1"])[0]
+    expect(clip?.startMs).toBe(10)
+    expect([clip?.originalStartMs, clip?.originalEndMs]).toEqual([10, 5000])
+  })
+
+  it("leaves provenance null for clips written without it, rather than backfilling a guess", () => {
+    const db = testDb()
+    insertProject(db, baseProject)
+    insertClips(db, [baseClip("p1")])
+    setClipTimes(db, "c1", 900, 4000)
+
+    const clip = getClipsByIds(db, ["c1"])[0]
+    expect(clip?.startMs).toBe(900)
+    // A pre-migration clip may well have been trimmed already, so the original is unknowable.
+    // Inventing one would report fabricated precision as if it were a measurement.
+    expect(clip?.originalStartMs).toBeNull()
+    expect(clip?.originalEndMs).toBeNull()
+    expect(clip?.pipelineHash).toBeNull()
+  })
+
   it("setFillerWords atomically replaces filler segments", () => {
     const db = testDb()
     insertProject(db, baseProject)
