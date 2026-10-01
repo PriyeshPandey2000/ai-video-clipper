@@ -18,7 +18,11 @@ permissions:
 
 jobs:
   build-mac:
-    runs-on: macos-latest
+    # Pinned, not macos-latest: a macOS point-release bump under macos-latest (25.5.0 -> 25.6.0)
+    # broke electron-builder's temp-keychain unlock ("SecKeychainUnlock: incorrect passphrase")
+    # with no change on our side. Pin so GitHub can't silently move the OS under the signing
+    # pipeline again; bump deliberately when there's a reason to.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
         with:
