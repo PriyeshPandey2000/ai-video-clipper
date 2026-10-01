@@ -106,6 +106,15 @@ export interface PipelineProgress {
   stage: PipelineStage
   progress: number // 0–1
   message?: string
+  /**
+   * Which entry point started this run. Absent means the transcription pipeline.
+   *
+   * "reselection" matters to the renderer: a re-run re-reads a transcript that is already
+   * complete, so the project must not be treated as returning to "analyzing". Doing that unmounts
+   * the clip panel that is displaying the progress, which discards its state — including the
+   * failure message, since a rejected run is the case where the user most needs to read it.
+   */
+  run?: "transcription" | "reselection"
 }
 
 export interface ModelInfo {

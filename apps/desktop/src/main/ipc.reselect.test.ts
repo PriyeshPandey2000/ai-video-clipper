@@ -46,6 +46,7 @@ const {
   mockComplete,
   userDataRoot,
   testDbHandle,
+  emitted,
 } = vi.hoisted(() => ({
   mockClipSelector: vi.fn(),
   mockWriteReport: vi.fn(),
@@ -56,6 +57,7 @@ const {
   // the per-test temp dir and database instance, which do not exist yet when they are defined.
   userDataRoot: { value: "" },
   testDbHandle: { value: null as unknown },
+  emitted: [] as { channel: string; data: unknown }[],
 }))
 
 vi.mock("electron", () => ({
@@ -66,7 +68,16 @@ vi.mock("electron", () => ({
     isPackaged: false,
     getVersion: () => "0.0.0-test",
   },
-  BrowserWindow: { getAllWindows: () => [] },
+  BrowserWindow: {
+    // Captures what the main process pushes at the renderer. The re-selection flow is only
+    // correct because of these payloads: App decides whether to flip the project out of "ready"
+    // from them, and that decision is what keeps the clip panel mounted.
+    getAllWindows: () => [
+      {
+        webContents: { send: (channel: string, data: unknown) => emitted.push({ channel, data }) },
+      },
+    ],
+  },
   ipcMain: {
     handle: (channel: string, listener: (event: unknown, args: unknown) => Promise<unknown>) =>
       registered.set(channel, listener),
@@ -236,6 +247,7 @@ describeSqlite("clip:reselect (#97)", () => {
 
   beforeEach(async () => {
     registered.clear()
+    emitted.length = 0
     mockClipSelector.mockReset()
     mockMeasureArousal.mockReset().mockResolvedValue([0.1, 0.2])
     mockWriteReport.mockReset().mockImplementation(async (dir: string) => ({
@@ -443,6 +455,32 @@ describeSqlite("clip:reselect (#97)", () => {
     release()
     await first
     expect(mockClipSelector).toHaveBeenCalledTimes(1)
+  })
+
+  it("marks its progress as a re-selection so the renderer keeps the clip panel mounted", async () => {
+    mockClipSelector.mockResolvedValue(selection([{ title: "Clip", startMs: 0, endMs: 30000 }]))
+    await invoke("clip:reselect", { projectId: PROJECT_ID })
+
+    const progress = emitted.filter((e) => e.channel === "pipeline:progress")
+    expect(progress.length).toBeGreaterThan(0)
+    // Without this marker App maps "generating_clips" to status "analyzing", which unmounts the
+    // very panel reporting the progress — dropping its progress text, and silently swallowing the
+    // error message when the run fails, since React 19 discards state set on an unmounted tree.
+    for (const e of progress) {
+      expect((e.data as { run?: string }).run).toBe("reselection")
+    }
+    // ...and the run still has to announce its own end, or the progress state never clears.
+    expect(emitted.some((e) => e.channel === "pipeline:complete")).toBe(true)
+  })
+
+  it("reports a failed re-selection on the error channel too", async () => {
+    mockClipSelector.mockRejectedValue(new Error("boom"))
+    await expect(invoke("clip:reselect", { projectId: PROJECT_ID })).rejects.toThrow()
+
+    // The in-panel message comes from the rejected invoke; this event is what clears the global
+    // progress state. Without either, a failed re-run leaves the app showing a permanent spinner.
+    expect(emitted.some((e) => e.channel === "pipeline:error")).toBe(true)
+    expect(emitted.some((e) => e.channel === "pipeline:complete")).toBe(false)
   })
 
   it("restores the project status after a failure", async () => {

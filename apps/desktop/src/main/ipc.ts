@@ -139,9 +139,11 @@ export function registerIpcHandlers(): void {
     stage: PipelineStage,
     progress: number,
     message?: string,
+    run?: PipelineProgress["run"],
   ): void {
     const p: PipelineProgress = { projectId, stage, progress }
     if (message !== undefined) p.message = message
+    if (run !== undefined) p.run = run
     send("pipeline:progress", p)
   }
 
@@ -298,7 +300,7 @@ export function registerIpcHandlers(): void {
 
         // AI content generation — failure here is non-fatal, transcript is still saved
         try {
-          await runClipSelection(projectId)
+          await runClipSelection(projectId, { run: "transcription" })
         } catch (err) {
           log.warn("AI stage failed (GROQ_API_KEY missing or AI error) — transcript saved:", err)
         }
@@ -335,7 +337,7 @@ export function registerIpcHandlers(): void {
    */
   async function runClipSelection(
     projectId: string,
-    opts?: { replaceExisting?: boolean },
+    opts?: { replaceExisting?: boolean; run?: PipelineProgress["run"] },
   ): Promise<{
     selection: ClipSelectionResult
     reportJsonPath: string
@@ -348,6 +350,11 @@ export function registerIpcHandlers(): void {
     // completion time would order a slow run's report after a later run that started earlier.
     const startedAtMs = Date.now()
 
+    // Stamped on every progress event from this stage. The renderer uses it to avoid flipping a
+    // project that is already analyzed back to "analyzing", which would unmount the panel showing
+    // this progress.
+    const run = opts?.run
+
     const client = createAiClient()
     const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
     const modelsDir = join(app.getPath("userData"), "models")
@@ -356,17 +363,17 @@ export function registerIpcHandlers(): void {
     const wordRows = getWords(db, projectId)
     const sentences = buildSentences(wordRows)
 
-    sendProgress(projectId, "generating_clips", 0.05, "Segmenting topics")
+    sendProgress(projectId, "generating_clips", 0.05, "Segmenting topics", run)
     const topics = await segmentTopics(sentences, modelsDir)
     log.info(`[topics] ${topics.length} segment(s) found`)
 
-    sendProgress(projectId, "generating_clips", 0.07, "Measuring audio arousal")
+    sendProgress(projectId, "generating_clips", 0.07, "Measuring audio arousal", run)
     // measureArousal already resolves to [] on any ffmpeg failure, so a missing audio.wav
     // degrades to "no {loud} tags" rather than aborting selection.
     const arousalPerSec = await measureArousal(ffmpegBin, audioPath)
     log.info(`[arousal] ${arousalPerSec.length} seconds measured`)
 
-    sendProgress(projectId, "generating_clips", 0.1, "Analyzing transcript for clips")
+    sendProgress(projectId, "generating_clips", 0.1, "Analyzing transcript for clips", run)
     const selection = await selectClips(client, wordRows, sentences, topics, 10, arousalPerSec)
     const { clips: clipSuggestions, rejected } = selection
     if (rejected.length > 0) {
@@ -463,7 +470,7 @@ export function registerIpcHandlers(): void {
     // and the report is already on disk. In particular it must not surface as a failed re-run
     // after the previous suggestions were replaced.
     if (clipSuggestions.length > 0) {
-      sendProgress(projectId, "generating_content", 0.7, "Generating social captions")
+      sendProgress(projectId, "generating_content", 0.7, "Generating social captions", run)
       const topClip = clipSuggestions[0]!
       const clipWords = wordRows.filter(
         (w) => w.startMs >= topClip.startMs && w.endMs <= topClip.endMs,
@@ -512,6 +519,7 @@ export function registerIpcHandlers(): void {
     try {
       const { selection, reportJsonPath, reportMarkdownPath } = await runClipSelection(projectId, {
         replaceExisting: true,
+        run: "reselection",
       })
       log.info(`[selection-report] ${reportMarkdownPath}`)
       // Emitted because runClipSelection sends pipeline:progress, and App holds the global
