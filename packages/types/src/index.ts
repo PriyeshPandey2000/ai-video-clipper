@@ -106,6 +106,15 @@ export interface PipelineProgress {
   stage: PipelineStage
   progress: number // 0–1
   message?: string
+  /**
+   * Which entry point started this run. Absent means the transcription pipeline.
+   *
+   * "reselection" matters to the renderer: a re-run re-reads a transcript that is already
+   * complete, so the project must not be treated as returning to "analyzing". Doing that unmounts
+   * the clip panel that is displaying the progress, which discards its state — including the
+   * failure message, since a rejected run is the case where the user most needs to read it.
+   */
+  run?: "transcription" | "reselection"
 }
 
 export interface ModelInfo {
@@ -150,6 +159,19 @@ export interface IpcInvokeChannels {
   "clip:update-status": { args: { clipId: string; status: Clip["status"] }; result: void }
   "clip:update-times": { args: { clipId: string; startMs: number; endMs: number }; result: void }
   "clip:update-crop-x": { args: { clipId: string; cropX: number }; result: void }
+  /**
+   * Re-runs only the AI stage on an already-transcribed project (#97). Swaps this project's
+   * `suggested`/`rejected` clips for a fresh set; `approved`/`exported` are left alone.
+   *
+   * Returns the paths of the debug report written for the run so the renderer can offer to open
+   * it. Non-null on success: a run that could not write a report does not count as a run.
+   */
+  "clip:reselect": {
+    args: { projectId: string }
+    result: { reportJsonPath: string; reportMarkdownPath: string; clipCount: number }
+  }
+  /** Most recent selection report for this project, or null if it has never been re-run. */
+  "clip:last-report": { args: { projectId: string }; result: string | null }
   "export:clips": {
     args: {
       projectId: string

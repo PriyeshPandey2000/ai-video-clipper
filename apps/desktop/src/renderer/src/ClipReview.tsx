@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react"
 import type { Clip } from "@video-editor/types"
 import type { CaptionStyle } from "@video-editor/types"
-import { Spinner, Badge, Progress } from "@video-editor/ui"
+import { Spinner, Badge, Progress, Button } from "@video-editor/ui"
 
 interface ExportSettings {
   outputDir: string
@@ -19,6 +19,17 @@ interface ClipReviewProps {
   refreshTrigger?: number
   /** True once the pipeline has finished — distinguishes "not run yet" from "found nothing". */
   analysisComplete?: boolean
+  /**
+   * Set while a pipeline run is active for this project. Gates the re-run button, because
+   * `clip:reselect` refuses to run alongside a transcription and the user should not have to
+   * discover that by reading an error.
+   */
+  pipelineRunning?: boolean
+  /**
+   * Bumped by the parent when a run completes, so this panel reloads clips after a re-selection
+   * it did not itself trigger.
+   */
+  onReselectComplete?: () => void
 }
 
 function formatDuration(ms: number): string {
@@ -61,12 +72,18 @@ export function ClipReview({
   exportSettings,
   refreshTrigger,
   analysisComplete,
+  pipelineRunning,
+  onReselectComplete,
 }: ClipReviewProps): React.ReactElement | null {
   const [clips, setClips] = useState<Clip[] | null>(null)
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [exportingIds, setExportingIds] = useState<Set<string>>(new Set())
   const [clipProgress, setClipProgress] = useState<Record<string, number>>({})
+  const [reselecting, setReselecting] = useState(false)
+  const [lastReportPath, setLastReportPath] = useState<string | null>(null)
+  const [reselectError, setReselectError] = useState<string | null>(null)
+  const [progressMessage, setProgressMessage] = useState<string | null>(null)
 
   const loadClips = useCallback(async () => {
     try {
@@ -89,6 +106,55 @@ export function ClipReview({
       setClipProgress((p) => ({ ...p, [data.clipId!]: data.progress }))
     })
   }, [projectId])
+
+  // Reuse the pipeline's progress events rather than inventing a second channel: the messages
+  // ("Analyzing transcript for clips") are already written for this stage, and a separate event
+  // would be a second thing to keep in sync with the main-process flow.
+  useEffect(() => {
+    return window.api.on("pipeline:progress", (data) => {
+      if (data.projectId !== projectId) return
+      setProgressMessage(data.message ?? null)
+    })
+  }, [projectId])
+
+  const loadLastReport = useCallback(async () => {
+    try {
+      setLastReportPath(await window.api.invoke("clip:last-report", { projectId }))
+    } catch {
+      setLastReportPath(null)
+    }
+  }, [projectId])
+
+  useEffect(() => {
+    loadLastReport()
+  }, [loadLastReport])
+
+  const handleReselect = useCallback(async () => {
+    setReselecting(true)
+    setReselectError(null)
+    try {
+      const result = await window.api.invoke("clip:reselect", { projectId })
+      setLastReportPath(result.reportMarkdownPath)
+      // Reload from the DB rather than trusting the returned count — approved/exported clips
+      // survive the replace, so the visible list is not only the new suggestions.
+      await loadClips()
+      onReselectComplete?.()
+    } catch (err) {
+      setReselectError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setReselecting(false)
+      setProgressMessage(null)
+    }
+  }, [projectId, loadClips, onReselectComplete])
+
+  const handleOpenReport = useCallback(async () => {
+    if (!lastReportPath) return
+    try {
+      await window.api.invoke("shell:show-item", { path: lastReportPath })
+    } catch (err) {
+      console.error("Failed to open selection report:", err)
+    }
+  }, [lastReportPath])
 
   const handleSelect = useCallback(
     (clip: Clip) => {
@@ -163,12 +229,57 @@ export function ClipReview({
     )
   }
 
+  const reselectDisabled = reselecting || loading || Boolean(pipelineRunning)
+
+  // Rendered above both the empty and populated states: a project that found no clips is exactly
+  // the case where re-running is most worth trying, so hiding the button there would remove the
+  // only control that can act on it.
+  const toolbar = (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={reselectDisabled}
+          loading={reselecting}
+          onClick={() => void handleReselect()}
+          title={
+            pipelineRunning
+              ? "Wait for the current pipeline run to finish"
+              : "Re-run clip selection from the stored transcript, without transcribing again"
+          }
+        >
+          {reselecting ? "Re-running..." : "Re-run clip selection"}
+        </Button>
+        {lastReportPath && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void handleOpenReport()}
+            title={lastReportPath}
+          >
+            Open last report
+          </Button>
+        )}
+      </div>
+      {reselecting && progressMessage && (
+        <p className="text-[11px] text-neutral-500">{progressMessage}…</p>
+      )}
+      {reselectError && (
+        <p className="text-[11px] text-red-400">
+          Re-run failed: {reselectError}. Your existing suggestions were left unchanged.
+        </p>
+      )}
+    </div>
+  )
+
   if (!clips || clips.length === 0) {
     return (
       <div className="space-y-2">
         <h3 className="text-xs font-medium text-neutral-400 uppercase tracking-wider">
           Suggested Clips
         </h3>
+        {toolbar}
         <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 p-4 text-center">
           {analysisComplete ? (
             <>
@@ -195,6 +306,7 @@ export function ClipReview({
 
   return (
     <div className="space-y-3">
+      {toolbar}
       <div className="space-y-2">
         {sorted.map((clip) => {
           const isSelected = clip.id === selectedId

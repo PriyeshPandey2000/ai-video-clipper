@@ -168,6 +168,14 @@ export default function App(): React.ReactElement {
 
   const liveProjects = useMemo(() => {
     if (!pipelineProgress) return projects
+    // A re-selection is not this project returning to "analyzing". Its transcript is already
+    // complete and its clips are still on screen — the user is regenerating suggestions for a
+    // project they can already work with. Overriding the status here would flip the project to
+    // "analyzing", which unmounts the clip panel that is rendering this very progress, throwing
+    // away its progress text and — because a rejected run's error is set on that same unmounted
+    // component — its failure message too. The re-run would then look like it silently did
+    // nothing.
+    if (pipelineProgress.run === "reselection") return projects
     return projects.map((p) =>
       p.id === pipelineProgress.projectId
         ? { ...p, status: STAGE_TO_STATUS[pipelineProgress.stage] ?? p.status }
@@ -1622,6 +1630,8 @@ function ProjectView({
                   }}
                   refreshTrigger={clipRefreshTrigger}
                   analysisComplete={project.status === "ready"}
+                  pipelineRunning={pipelineProgress?.projectId === project.id}
+                  onReselectComplete={() => setClipRefreshTrigger((n) => n + 1)}
                 />
               </ErrorBoundary>
             ) : (

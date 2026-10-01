@@ -9,6 +9,7 @@
     "noEmit": true,
     "rootDir": "../../",
     "skipLibCheck": true,
+    "esModuleInterop": true,
     "paths": {
       "@main/*": ["./src/main/*"],
       "@video-editor/*": ["../../packages/*/dist/index.d.ts"]

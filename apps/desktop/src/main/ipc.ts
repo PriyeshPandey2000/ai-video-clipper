@@ -15,12 +15,13 @@ import {
   insertWords,
   insertSegments,
   insertClips,
-  insertAiOutput,
   getWords,
   getSegments,
   getClips,
   getClipsByIds,
   getAiOutputs,
+  replaceAiOutputByType,
+  replaceClipsByStatus,
   setClipStatus,
   setClipTimes,
   setClipCropX,
@@ -65,12 +66,14 @@ import {
   DEFAULT_FILLER_WORDS,
 } from "@video-editor/transcript"
 import { createAiClient, selectClips, generateSocialCaptions } from "@video-editor/ai"
+import type { ClipSelectionResult } from "@video-editor/ai"
 import { sanitizeName, buildSrt, remapWordsToEpisodeTimeline } from "@video-editor/export"
 import { saveGroqApiKey } from "./config"
 import log from "./logger"
 import { beginActivity, endActivity } from "./activity"
 import { downloadUpdate, restartAndInstall, getUpdaterState } from "./updater"
 import { buildAssFile } from "@video-editor/captions"
+import { findLastReport, writeSelectionReport } from "./selection-report"
 import type { CaptionStyle } from "@video-editor/types"
 
 // Typed wrapper around ipcMain.handle — channel and callback args are checked against
@@ -136,9 +139,11 @@ export function registerIpcHandlers(): void {
     stage: PipelineStage,
     progress: number,
     message?: string,
+    run?: PipelineProgress["run"],
   ): void {
     const p: PipelineProgress = { projectId, stage, progress }
     if (message !== undefined) p.message = message
+    if (run !== undefined) p.run = run
     send("pipeline:progress", p)
   }
 
@@ -295,80 +300,7 @@ export function registerIpcHandlers(): void {
 
         // AI content generation — failure here is non-fatal, transcript is still saved
         try {
-          const client = createAiClient()
-          const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
-
-          const sentences = buildSentences(wordRows)
-
-          sendProgress(projectId, "generating_clips", 0.05, "Segmenting topics")
-          const topics = await segmentTopics(sentences, modelsDir)
-          log.info(`[topics] ${topics.length} segment(s) found`)
-
-          sendProgress(projectId, "generating_clips", 0.07, "Measuring audio arousal")
-          const arousalPerSec = await measureArousal(ffmpegBin, audioPath)
-          log.info(`[arousal] ${arousalPerSec.length} seconds measured`)
-
-          sendProgress(projectId, "generating_clips", 0.1, "Analyzing transcript for clips")
-          const selection = await selectClips(
-            client,
-            wordRows,
-            sentences,
-            topics,
-            10,
-            arousalPerSec,
-          )
-          const { clips: clipSuggestions, rejected } = selection
-          if (rejected.length > 0) {
-            log.info(
-              `[clips] ${clipSuggestions.length} kept, ${rejected.length} dropped by quality gate:`,
-              rejected.map((r) => `${r.title} (${r.reasons.join(", ")})`).join(" | "),
-            )
-          }
-          log.info(
-            `[clips] pipeline ${selection.pipelineVersion} hash=${selection.pipelineHash.slice(0, 12)} model=${selection.model} type=${selection.contentType}`,
-          )
-          // aiRank is the position in the ranked output, and original{Start,End}Ms a copy of what we
-          // are about to write — the user's trim in setClipTimes will overwrite startMs/endMs, and
-          // these are the only surviving record of what the model actually chose (#89).
-          const clipRows = clipSuggestions.map((c, rank) => ({
-            id: generateId(),
-            projectId,
-            title: c.title,
-            startMs: c.startMs,
-            endMs: c.endMs,
-            aiScore: c.score,
-            aiReason: c.reason,
-            status: "suggested" as const,
-            platform: c.platform,
-            createdAt: now(),
-            originalStartMs: c.startMs,
-            originalEndMs: c.endMs,
-            aiRank: rank,
-            pipelineVersion: selection.pipelineVersion,
-            pipelineHash: selection.pipelineHash,
-            aiModel: selection.model,
-            contentType: selection.contentType,
-          }))
-          if (clipRows.length > 0) {
-            insertClips(db, clipRows)
-          }
-
-          if (clipSuggestions.length > 0) {
-            sendProgress(projectId, "generating_content", 0.7, "Generating social captions")
-            const topClip = clipSuggestions[0]!
-            const clipWords = wordRows.filter(
-              (w) => w.startMs >= topClip.startMs && w.endMs <= topClip.endMs,
-            )
-            const clipText = wordsToPlainText(clipWords)
-            const captions = await generateSocialCaptions(client, topClip.title, clipText)
-            insertAiOutput(db, {
-              id: generateId(),
-              projectId,
-              type: "social_caption",
-              content: JSON.stringify(captions),
-              createdAt: now(),
-            })
-          }
+          await runClipSelection(projectId, { run: "transcription" })
         } catch (err) {
           log.warn("AI stage failed (GROQ_API_KEY missing or AI error) — transcript saved:", err)
         }
@@ -386,8 +318,259 @@ export function registerIpcHandlers(): void {
     },
   )
 
+  /**
+   * The AI stage of the pipeline (#97), extracted so `clip:reselect` can run it on an
+   * already-transcribed project.
+   *
+   * Deliberately the minimum extraction #97 asks for: it still takes a projectId and re-derives
+   * everything from the database rather than from an in-memory transcript, which is what makes it
+   * callable on a project whose Whisper pass finished minutes or days ago. #79 is the larger
+   * refactor that splits the handler itself.
+   *
+   * Reads words from the DB rather than accepting them so the two call sites cannot diverge — the
+   * bug this replaces was the AI block reading `wordRows` from the enclosing transcription scope,
+   * which only existed because the two stages were one function.
+   *
+   * `replaceExisting` swaps this project's own prior output for the new one. It is false for
+   * the first run of a fresh transcript (there is nothing to replace, and `clearDerivedData` has
+   * already run) and true for a re-selection.
+   */
+  async function runClipSelection(
+    projectId: string,
+    opts?: { replaceExisting?: boolean; run?: PipelineProgress["run"] },
+  ): Promise<{
+    selection: ClipSelectionResult
+    reportJsonPath: string
+    reportMarkdownPath: string
+  }> {
+    const project = getProject(db, projectId)
+    if (!project) throw new Error(`Project ${projectId} not found`)
+
+    // Taken before any work, not at report-writing time: it names the report file, so using the
+    // completion time would order a slow run's report after a later run that started earlier.
+    const startedAtMs = Date.now()
+
+    // Stamped on every progress event from this stage. The renderer uses it to avoid flipping a
+    // project that is already analyzed back to "analyzing", which would unmount the panel showing
+    // this progress.
+    const run = opts?.run
+
+    const client = createAiClient()
+    const ffmpegBin = resolveFfmpegBinary(getResourcesPath())
+    const modelsDir = join(app.getPath("userData"), "models")
+    const audioPath = join(projectDir(projectId), "audio.wav")
+
+    const wordRows = getWords(db, projectId)
+    const sentences = buildSentences(wordRows)
+
+    sendProgress(projectId, "generating_clips", 0.05, "Segmenting topics", run)
+    const topics = await segmentTopics(sentences, modelsDir)
+    log.info(`[topics] ${topics.length} segment(s) found`)
+
+    sendProgress(projectId, "generating_clips", 0.07, "Measuring audio arousal", run)
+    // measureArousal already resolves to [] on any ffmpeg failure, so a missing audio.wav
+    // degrades to "no {loud} tags" rather than aborting selection.
+    const arousalPerSec = await measureArousal(ffmpegBin, audioPath)
+    log.info(`[arousal] ${arousalPerSec.length} seconds measured`)
+
+    sendProgress(projectId, "generating_clips", 0.1, "Analyzing transcript for clips", run)
+    const selection = await selectClips(client, wordRows, sentences, topics, 10, arousalPerSec)
+    const { clips: clipSuggestions, rejected } = selection
+    if (rejected.length > 0) {
+      log.info(
+        `[clips] ${clipSuggestions.length} kept, ${rejected.length} dropped by quality gate:`,
+        rejected.map((r) => `${r.title} (${r.reasons.join(", ")})`).join(" | "),
+      )
+    }
+    log.info(
+      `[clips] pipeline ${selection.pipelineVersion} hash=${selection.pipelineHash.slice(0, 12)} model=${selection.model} temp=${selection.trace?.temperature ?? "?"} type=${selection.contentType}`,
+    )
+
+    // aiRank is the position in the ranked output, and original{Start,End}Ms a copy of what we
+    // are about to write — the user's trim in setClipTimes will overwrite startMs/endMs, and
+    // these are the only surviving record of what the model actually chose (#89).
+    const clipRows = clipSuggestions.map((c, rank) => ({
+      id: generateId(),
+      projectId,
+      title: c.title,
+      startMs: c.startMs,
+      endMs: c.endMs,
+      aiScore: c.score,
+      aiReason: c.reason,
+      status: "suggested" as const,
+      platform: c.platform,
+      createdAt: now(),
+      originalStartMs: c.startMs,
+      originalEndMs: c.endMs,
+      aiRank: rank,
+      pipelineVersion: selection.pipelineVersion,
+      pipelineHash: selection.pipelineHash,
+      aiModel: selection.model,
+      contentType: selection.contentType,
+      // Every row on this path came out of selectClips. Stated explicitly rather than
+      // relying on a column default, because the default is NULL on purpose — NULL means
+      // "origin unknown, i.e. written before this column existed" and must not be
+      // conflated with "the model chose this" (#46 precision@5 denominators).
+      source: "ai" as const,
+    }))
+
+    // Defence in depth at the swap's own front door. selectClips already refuses to return when
+    // every chunk failed, but the destructive step below should not depend on that caller having
+    // done its job: "all chunks failed" and "the model found nothing" must never both arrive
+    // here as an empty clip list.
+    const allChunksFailed =
+      (selection.trace?.chunks.length ?? 0) > 0 && selection.trace!.chunks.every((c) => c.failed)
+    if (allChunksFailed) {
+      throw new Error(
+        `Clip selection failed for all ${selection.trace!.chunks.length} chunk(s). Nothing was replaced.`,
+      )
+    }
+
+    if (!selection.trace) {
+      // Checked before anything is written. selectClips always returns a trace, so this is a
+      // "this build is inconsistent" guard rather than a runtime condition — but if it ever
+      // fired after the swap, the user would have lost their previous suggestions to a run
+      // that produced no report explaining why.
+      throw new Error(
+        "Clip selection returned no trace, so this run cannot be reported. Nothing was written.",
+      )
+    }
+
+    const report = await writeSelectionReport(projectDir(projectId), {
+      header: {
+        projectId,
+        projectName: project.name,
+        durationMs: project.durationMs,
+        startedAtMs,
+      },
+      provenance: {
+        pipelineVersion: selection.pipelineVersion,
+        pipelineHash: selection.pipelineHash,
+        model: selection.model,
+        contentType: selection.contentType,
+      },
+      trace: selection.trace,
+      // Built from the trace's own kept entries rather than from clipSuggestions, so the
+      // report's ranked list and its candidate table are the same facts by construction.
+      finalRanked: selection.trace.candidates
+        .filter((c) => c.outcome === "kept" && c.startMs !== null && c.endMs !== null)
+        .map((c) => ({
+          rank: c.finalRank ?? 0,
+          title: c.title,
+          reason: c.reason,
+          platform: c.platform,
+          startTimecode: c.startTimecode ?? "—",
+          endTimecode: c.endTimecode ?? "—",
+          durationMs: (c.endMs ?? 0) - (c.startMs ?? 0),
+          text: c.text,
+        })),
+    })
+
+    // Everything above is derived purely from the selection result, so it can only fail before
+    // a single row is touched. This is the one destructive step in the function, and it is
+    // atomic: approved/exported clips are outside the deleted statuses, so the user's decisions
+    // survive a re-run untouched.
+    if (opts?.replaceExisting) {
+      // Only `suggested`, not `rejected`. A rejection is the user's decision ("this moment is
+      // not a clip"), so deleting it on the next run both discards that decision (#104 keeps
+      // this data) and lets the same moment come straight back as a fresh suggestion.
+      const removed = replaceClipsByStatus(db, projectId, ["suggested"], clipRows)
+      log.info(`[clips] replaced ${removed} previous suggestion(s)`)
+    } else {
+      insertClips(db, clipRows)
+    }
+
+    // Social captions are the last step and are non-fatal by design. A failure here must not
+    // retroactively invalidate the run the user is waiting on — the clips are already correct
+    // and the report is already on disk. In particular it must not surface as a failed re-run
+    // after the previous suggestions were replaced.
+    if (clipSuggestions.length > 0) {
+      sendProgress(projectId, "generating_content", 0.7, "Generating social captions", run)
+      const topClip = clipSuggestions[0]!
+      const clipWords = wordRows.filter(
+        (w) => w.startMs >= topClip.startMs && w.endMs <= topClip.endMs,
+      )
+      try {
+        const captions = await generateSocialCaptions(
+          client,
+          topClip.title,
+          wordsToPlainText(clipWords),
+        )
+        // Replaced, not appended: these captions describe the previous run's top clip, which no
+        // longer exists. Leaving both rows would let the panel show one or the other.
+        const replacedCaptions = replaceAiOutputByType(db, projectId, "social_caption", {
+          id: generateId(),
+          projectId,
+          type: "social_caption",
+          content: JSON.stringify(captions),
+          createdAt: now(),
+        })
+        if (replacedCaptions > 0) {
+          log.info(`[captions] replaced ${replacedCaptions} stale caption set(s)`)
+        }
+      } catch (err) {
+        log.warn(`[captions] social captions failed for project ${projectId}:`, err)
+      }
+    }
+
+    return { selection, ...report }
+  }
+
   handle("clip:list", async (_event, { projectId }) => {
     return getClips(db, projectId)
+  })
+
+  handle("clip:reselect", async (_event, { projectId }: { projectId: string }) => {
+    const project = getProject(db, projectId)
+    if (!project) throw new Error(`Project ${projectId} not found`)
+
+    // Guard on the same statuses pipeline:start refuses, so a re-selection can't race a
+    // transcription that's rewriting this project's words underneath it.
+    if (project.status === "transcribing" || project.status === "analyzing") {
+      throw new Error(
+        `Cannot re-run clip selection while the project is ${project.status}. Wait for the current run to finish.`,
+      )
+    }
+    const previousStatus = project.status
+    setProjectStatus(db, projectId, "analyzing")
+    // Selection is several LLM calls; an auto-update restart mid-run would leave the project's
+    // status stuck at "analyzing" with half its suggestions replaced.
+    beginActivity()
+    try {
+      const { selection, reportJsonPath, reportMarkdownPath } = await runClipSelection(projectId, {
+        replaceExisting: true,
+        run: "reselection",
+      })
+      log.info(`[selection-report] ${reportMarkdownPath}`)
+      // Emitted because runClipSelection sends pipeline:progress, and App holds the global
+      // progress state those events set. Without this the project stays pinned at "analyzing"
+      // in the UI and the re-run button stays disabled until the app is restarted.
+      send("pipeline:complete", { projectId })
+      return {
+        reportJsonPath,
+        reportMarkdownPath,
+        clipCount: selection.clips.length,
+      }
+    } catch (err) {
+      log.error(`clip:reselect failed for project ${projectId}`, err)
+      send("pipeline:error", { projectId, error: String(err) })
+      throw err
+    } finally {
+      // Restore the previous status on both paths. Leaving it as "analyzing" after a successful
+      // run would make the guard above refuse every future re-selection for this project, and
+      // after a failure it would misreport a broken run as one still running.
+      //
+      // This status is also what makes a concurrent second call safe: it is written
+      // synchronously before the first await, so a second invocation always reads "analyzing"
+      // and is refused above. No separate in-flight flag is needed, and adding one would only
+      // create a second piece of state that has to agree with this one.
+      setProjectStatus(db, projectId, previousStatus)
+      endActivity()
+    }
+  })
+
+  handle("clip:last-report", async (_event, { projectId }: { projectId: string }) => {
+    return findLastReport(projectDir(projectId))
   })
 
   handle(

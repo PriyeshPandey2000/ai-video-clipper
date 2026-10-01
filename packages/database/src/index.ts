@@ -209,8 +209,40 @@ export function getSegments(db: Db, projectId: string): SegmentRow[] {
   return db.select().from(segments).where(eq(segments.projectId, projectId)).all()
 }
 
+// Ordered newest-first. Without the ORDER BY, "the most recent social captions" is whatever
+// SQLite happens to return first, so a re-run that appends a newer row can surface the older
+// one. The panel picks with `.find`, so ordering is load-bearing, not cosmetic.
 export function getAiOutputs(db: Db, projectId: string): AiOutputRow[] {
-  return db.select().from(aiOutputs).where(eq(aiOutputs.projectId, projectId)).all()
+  return db
+    .select()
+    .from(aiOutputs)
+    .where(eq(aiOutputs.projectId, projectId))
+    .orderBy(desc(aiOutputs.createdAt))
+    .all()
+}
+
+/**
+ * Replaces this project's rows of one output type with `row` (#97).
+ *
+ * A re-run regenerates the social captions for its new top clip, so the previous ones describe a
+ * clip that no longer exists. Appending instead would leave the panel reading whichever row it
+ * finds first. Returns the number of rows replaced, for logging.
+ */
+export function replaceAiOutputByType(
+  db: Db,
+  projectId: string,
+  type: AiOutputRow["type"],
+  row: NewAiOutput,
+): number {
+  let replaced = 0
+  db.transaction((tx) => {
+    replaced = tx
+      .delete(aiOutputs)
+      .where(and(eq(aiOutputs.projectId, projectId), eq(aiOutputs.type, type)))
+      .run().changes
+    tx.insert(aiOutputs).values(row).run()
+  })
+  return replaced
 }
 
 // Everything regenerated when a transcript is re-run: derived data, never source media. One
@@ -257,6 +289,46 @@ export function getClipsByIds(db: Db, ids: string[]): ClipRow[] {
 
 export function setClipStatus(db: Db, clipId: string, status: ClipStatus): void {
   db.update(clips).set({ status }).where(eq(clips.id, clipId)).run()
+}
+
+/**
+ * Swaps the clips in `statuses` for `rows` in one transaction (#97).
+ *
+ * This is the only delete-a-project's-clips operation the app has, and it is transactional
+ * because a re-run replaces its own output: with two separate statements the project can be
+ * observed with neither the old suggestions nor the new ones — a throw between them (an SQLite
+ * write error, a disk that fills up) would leave the user with an empty clip list and a report
+ * of a successful run. Inside a transaction the swap either lands whole or not at all, so the
+ * previous suggestions are still intact whenever a re-run fails.
+ *
+ * Clips in statuses the caller did not name — the user's approved and exported decisions — are
+ * outside the delete, so they survive the swap untouched by the insert.
+ *
+ * An empty `statuses` inserts `rows` without deleting anything: a run that legitimately found
+ * no prior rows must not abort. An empty `rows` deletes without inserting, which is what makes
+ * "the model found nothing this time" a real outcome rather than a silent no-op.
+ *
+ * Returns the number of rows removed, for logging.
+ */
+export function replaceClipsByStatus(
+  db: Db,
+  projectId: string,
+  statuses: ClipStatus[],
+  rows: NewClip[],
+): number {
+  let removed = 0
+  db.transaction((tx) => {
+    if (statuses.length > 0) {
+      removed = tx
+        .delete(clips)
+        .where(and(eq(clips.projectId, projectId), inArray(clips.status, statuses)))
+        .run().changes
+    }
+    if (rows.length > 0) {
+      tx.insert(clips).values(rows).run()
+    }
+  })
+  return removed
 }
 
 // Resizing an exported clip demotes it back to approved so it re-exports cleanly.

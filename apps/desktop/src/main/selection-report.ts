@@ -1,0 +1,305 @@
+// Writes the per-run clip-selection debug report (#97).
+//
+// Two files land in `<projectDir>/selection-reports/`: the raw trace as JSON (for diffing two
+// runs mechanically) and a Markdown rendering of the same data (for reading one by eye). Both are
+// written from the same `ClipSelectionTrace`, so they cannot disagree — a divergence here would
+// mean someone hand-edited one format's fields and not the other's.
+//
+// This lives in the desktop app rather than `packages/ai` because `packages/ai` deliberately
+// knows nothing about files: `selectClips` returns trace data, the caller decides to persist it.
+
+import { mkdir, readdir, writeFile } from "node:fs/promises"
+import { join } from "node:path"
+import type { ClipSelectionProvenance, ClipSelectionTrace, TraceEntry } from "@video-editor/ai"
+
+export const SELECTION_REPORTS_DIR = "selection-reports"
+
+/** Header context the package cannot know: the video itself and this app's run metadata. */
+export interface SelectionReportHeader {
+  projectId: string
+  projectName: string
+  /** Media duration in ms. Distinguishes "the model found nothing" from "there was nothing there". */
+  durationMs: number
+  /** ms at which the run started — the report filename is derived from this too. */
+  startedAtMs: number
+}
+
+export interface SelectionReport {
+  header: SelectionReportHeader
+  provenance: ClipSelectionProvenance
+  trace: ClipSelectionTrace
+  /** mm:ss start→end for each kept clip, in final rank order. The report's headline answer. */
+  finalRanked: {
+    rank: number
+    title: string
+    reason: string
+    platform: string
+    startTimecode: string
+    endTimecode: string
+    durationMs: number
+    text: string | null
+  }[]
+}
+
+/**
+ * Filenames sort chronologically because they lead with a zero-padded, lexicographically
+ * ordered timestamp. A `Date#toISOString` string cannot be used verbatim — it contains colons,
+ * which are illegal in filenames on Windows, and the app ships a Windows build.
+ */
+export function reportFileStamp(startedAtMs: number): string {
+  const d = new Date(startedAtMs)
+  const pad = (n: number, width = 2): string => String(n).padStart(width, "0")
+  return (
+    `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}` +
+    `T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}` +
+    `${pad(d.getUTCMilliseconds(), 3)}Z`
+  )
+}
+
+export function reportsDirFor(projectDir: string): string {
+  return join(projectDir, SELECTION_REPORTS_DIR)
+}
+
+export async function writeSelectionReport(
+  projectDir: string,
+  report: SelectionReport,
+): Promise<{ reportJsonPath: string; reportMarkdownPath: string }> {
+  const dir = reportsDirFor(projectDir)
+  await mkdir(dir, { recursive: true })
+
+  const stamp = reportFileStamp(report.header.startedAtMs)
+  const reportJsonPath = join(dir, `${stamp}.json`)
+  const reportMarkdownPath = join(dir, `${stamp}.md`)
+
+  // The JSON carries the header/provenance/trace verbatim. The `clipCount` and outcome tally are
+  // derived here rather than in the package because they are properties of this report, not of
+  // selection — and a reader scanning the file should not have to run the trace to get them.
+  const json = {
+    ...report,
+    summary: summarise(report),
+  }
+  await writeFile(reportJsonPath, `${JSON.stringify(json, null, 2)}\n`, "utf-8")
+  await writeFile(reportMarkdownPath, renderMarkdown(report), "utf-8")
+
+  return { reportJsonPath, reportMarkdownPath }
+}
+
+/**
+ * Most recent report for a project, or null.
+ *
+ * Sorted by filename rather than by mtime: filename order is the run's own start time, so it
+ * survives a file copy or a sync that scrambles mtimes. The `.md` is preferred over the `.json`
+ * because it is what a human opens.
+ */
+export async function findLastReport(projectDir: string): Promise<string | null> {
+  let entries: string[]
+  try {
+    entries = await readdir(reportsDirFor(projectDir))
+  } catch {
+    // No reports dir at all — the project has never been re-run through #97's path.
+    return null
+  }
+  const latest = entries
+    .filter((f) => f.endsWith(".md"))
+    .sort()
+    .at(-1)
+  if (!latest) return null
+  return join(reportsDirFor(projectDir), latest)
+}
+
+function summarise(report: SelectionReport): {
+  clipCount: number
+  candidateCount: number
+  outcomes: Record<string, number>
+  chunkCount: number
+  failedChunkCount: number
+} {
+  const outcomes: Record<string, number> = {}
+  for (const c of report.trace.candidates) {
+    outcomes[c.outcome] = (outcomes[c.outcome] ?? 0) + 1
+  }
+  return {
+    clipCount: report.finalRanked.length,
+    candidateCount: report.trace.candidates.length,
+    outcomes,
+    chunkCount: report.trace.chunks.length,
+    failedChunkCount: report.trace.chunks.filter((c) => c.failed).length,
+  }
+}
+
+/** mm:ss, or a dash when there is no boundary — an invalid range has no place on a clock. */
+function tc(value: string | null): string {
+  return value ?? "—"
+}
+
+function fence(text: string | null): string {
+  // Transcript text is plain speech, but a model-authored title or reason could contain a
+  // backtick run that would break out of the inline code span. Fenced blocks can't be escaped
+  // into by content, so the text goes in one verbatim.
+  return ["```text", text ?? "", "```"].join("\n")
+}
+
+/** Escapes the pipe-heavy characters a title or reason can contain in a Markdown table cell. */
+function cell(text: string): string {
+  return text.replace(/\|/g, "\\|").replace(/\n/g, " ")
+}
+
+const OUTCOME_LABEL: Record<TraceEntry["outcome"], string> = {
+  kept: "kept",
+  "gate-rejected": "gate-rejected",
+  "invalid-range": "invalid range",
+  duplicate: "duplicate",
+  "over-budget": "over budget",
+}
+
+function renderMarkdown(report: SelectionReport): string {
+  const { header, provenance, trace } = report
+  const s = summarise(report)
+  const kept = trace.candidates.filter((c) => c.outcome === "kept")
+  const dropped = trace.candidates.filter((c) => c.outcome !== "kept")
+  const lines: string[] = []
+
+  lines.push(`# Clip selection report — ${header.projectName}`)
+  lines.push("")
+  lines.push(`Run started ${new Date(header.startedAtMs).toISOString()}`)
+  lines.push("")
+
+  lines.push("## Run")
+  lines.push("")
+  lines.push("| field | value |")
+  lines.push("| --- | --- |")
+  lines.push(`| pipeline version | \`${provenance.pipelineVersion}\` |`)
+  lines.push(`| pipeline hash | \`${provenance.pipelineHash}\` |`)
+  lines.push(`| model | \`${provenance.model}\` |`)
+  lines.push(`| temperature | ${trace.temperature} |`)
+  lines.push(`| content type | ${provenance.contentType} |`)
+  lines.push(`| video duration | ${formatDuration(header.durationMs)} |`)
+  lines.push(`| sentences | ${trace.sentenceCount} |`)
+  lines.push(
+    `| chunks | ${s.chunkCount}${
+      s.failedChunkCount > 0 ? ` (**${s.failedChunkCount} failed**) ` : ""
+    }|`,
+  )
+  lines.push(
+    `| candidates returned | ${s.candidateCount} (${Object.entries(s.outcomes)
+      .map(([k, v]) => `${v} ${OUTCOME_LABEL[k as TraceEntry["outcome"]] ?? k}`)
+      .join(", ")}) |`,
+  )
+  lines.push(`| clips kept | ${s.clipCount} |`)
+  lines.push("")
+
+  lines.push("## Chunks")
+  lines.push("")
+  if (trace.chunks.length === 0) {
+    lines.push("_No chunks — the transcript had no sentences._")
+  } else {
+    lines.push("| # | sentences | candidates | result |")
+    lines.push("| --- | --- | --- | --- |")
+    for (const c of trace.chunks) {
+      // "0 candidates" and "the call failed" are different answers to why a chunk contributed
+      // nothing, and this report is the only place either is visible.
+      lines.push(
+        `| ${c.index} | #${c.firstSentence}–#${c.lastSentence} | ${c.candidateCount} | ${
+          c.failed ? `**failed**${c.error ? `: ${c.error}` : ""}` : "answered"
+        } |`,
+      )
+    }
+  }
+  lines.push("")
+
+  lines.push("## Final ranked clips")
+  lines.push("")
+  if (report.finalRanked.length === 0) {
+    lines.push("_No clips survived selection. The candidate table below says why._")
+  } else {
+    lines.push("| # | title | timecode | length | platform |")
+    lines.push("| --- | --- | --- | --- | --- |")
+    for (const clip of report.finalRanked) {
+      lines.push(
+        `| ${clip.rank} | ${cell(clip.title)} | ${clip.startTimecode}–${clip.endTimecode} | ${formatDuration(clip.durationMs)} | ${clip.platform} |`,
+      )
+    }
+    lines.push("")
+    for (const clip of report.finalRanked) {
+      lines.push(`### ${clip.rank}. ${clip.title}`)
+      lines.push("")
+      lines.push(`_${clip.reason}_`)
+      lines.push("")
+      lines.push(fence(clip.text))
+      lines.push("")
+    }
+  }
+
+  if (dropped.length > 0) {
+    lines.push("## Dropped candidates")
+    lines.push("")
+    for (const c of dropped) {
+      lines.push(`### ${OUTCOME_LABEL[c.outcome]} — ${cell(c.title)}`)
+      lines.push("")
+      lines.push(`- chunk: ${c.chunk}`)
+      lines.push(`- model range: #${c.startSentence}–#${c.endSentence}`)
+      lines.push(
+        `- after hook trim: ${c.trimmedStartSentence === null ? "—" : `#${c.trimmedStartSentence}–#${c.endSentence}`}`,
+      )
+      lines.push(`- strong: ${c.strong}`)
+      lines.push(`- reason: ${cell(c.reason)}`)
+      if (c.startMs !== null && c.endMs !== null) {
+        lines.push(`- refined: ${tc(c.startTimecode)}–${tc(c.endTimecode)}`)
+      } else {
+        lines.push("- refined: — (no boundary produced)")
+      }
+      if (c.boundary) {
+        lines.push(
+          `- boundary flags: danglingUnresolved=${c.boundary.danglingUnresolved}, ` +
+            `endedOnCompleteThought=${c.boundary.endedOnCompleteThought}, tooShort=${c.boundary.tooShort}`,
+        )
+      }
+      if (c.gate.reasons.length > 0) {
+        lines.push(`- gate: ${c.gate.reasons.join("; ")}`)
+      }
+      if (c.gate.warnings.length > 0) {
+        lines.push(`- warnings: ${c.gate.warnings.join("; ")}`)
+      }
+      if (c.duplicateOf) {
+        lines.push(`- duplicate of: ${cell(c.duplicateOf)}`)
+      }
+      lines.push("")
+    }
+  }
+
+  if (kept.length > 0) {
+    lines.push("## Kept candidates (full detail)")
+    lines.push("")
+    for (const c of kept) {
+      lines.push(`### ${c.finalRank}. ${cell(c.title)}`)
+      lines.push("")
+      lines.push(`- chunk: ${c.chunk}`)
+      lines.push(`- model range: #${c.startSentence}–#${c.endSentence}`)
+      lines.push(
+        `- after hook trim: ${c.trimmedStartSentence === null ? "—" : `#${c.trimmedStartSentence}–#${c.endSentence}`}`,
+      )
+      lines.push(`- refined: ${tc(c.startTimecode)}–${tc(c.endTimecode)}`)
+      if (c.boundary) {
+        lines.push(
+          `- boundary flags: danglingUnresolved=${c.boundary.danglingUnresolved}, ` +
+            `endedOnCompleteThought=${c.boundary.endedOnCompleteThought}, tooShort=${c.boundary.tooShort}`,
+        )
+      }
+      if (c.gate.warnings.length > 0) {
+        lines.push(`- warnings: ${c.gate.warnings.join("; ")}`)
+      }
+      lines.push("")
+      lines.push(fence(c.text))
+      lines.push("")
+    }
+  }
+
+  return `${lines.join("\n")}\n`
+}
+
+function formatDuration(ms: number): string {
+  const totalSec = Math.round(ms / 1000)
+  const min = Math.floor(totalSec / 60)
+  const sec = totalSec % 60
+  return min > 0 ? `${min}m ${sec}s` : `${sec}s`
+}
