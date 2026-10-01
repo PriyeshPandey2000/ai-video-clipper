@@ -112,6 +112,7 @@ function summarise(report: SelectionReport): {
   candidateCount: number
   outcomes: Record<string, number>
   chunkCount: number
+  failedChunkCount: number
 } {
   const outcomes: Record<string, number> = {}
   for (const c of report.trace.candidates) {
@@ -122,6 +123,7 @@ function summarise(report: SelectionReport): {
     candidateCount: report.trace.candidates.length,
     outcomes,
     chunkCount: report.trace.chunks.length,
+    failedChunkCount: report.trace.chunks.filter((c) => c.failed).length,
   }
 }
 
@@ -173,7 +175,11 @@ function renderMarkdown(report: SelectionReport): string {
   lines.push(`| content type | ${provenance.contentType} |`)
   lines.push(`| video duration | ${formatDuration(header.durationMs)} |`)
   lines.push(`| sentences | ${trace.sentenceCount} |`)
-  lines.push(`| chunks | ${s.chunkCount} |`)
+  lines.push(
+    `| chunks | ${s.chunkCount}${
+      s.failedChunkCount > 0 ? ` (**${s.failedChunkCount} failed**) ` : ""
+    }|`,
+  )
   lines.push(
     `| candidates returned | ${s.candidateCount} (${Object.entries(s.outcomes)
       .map(([k, v]) => `${v} ${OUTCOME_LABEL[k as TraceEntry["outcome"]] ?? k}`)
@@ -187,10 +193,16 @@ function renderMarkdown(report: SelectionReport): string {
   if (trace.chunks.length === 0) {
     lines.push("_No chunks — the transcript had no sentences._")
   } else {
-    lines.push("| # | sentences | candidates |")
-    lines.push("| --- | --- | --- |")
+    lines.push("| # | sentences | candidates | result |")
+    lines.push("| --- | --- | --- | --- |")
     for (const c of trace.chunks) {
-      lines.push(`| ${c.index} | #${c.firstSentence}–#${c.lastSentence} | ${c.candidateCount} |`)
+      // "0 candidates" and "the call failed" are different answers to why a chunk contributed
+      // nothing, and this report is the only place either is visible.
+      lines.push(
+        `| ${c.index} | #${c.firstSentence}–#${c.lastSentence} | ${c.candidateCount} | ${
+          c.failed ? `**failed**${c.error ? `: ${c.error}` : ""}` : "answered"
+        } |`,
+      )
     }
   }
   lines.push("")

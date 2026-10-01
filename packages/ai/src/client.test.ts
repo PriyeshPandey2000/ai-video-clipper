@@ -102,4 +102,19 @@ describe("CLIP_MODEL override (#97)", () => {
     const client = createAiClient({ apiKey: "test-key" })
     expect(client.structuredModel).toBe("openai/gpt-oss-120b")
   })
+
+  it("falls back to the default when the variable is set but empty", () => {
+    // `CLIP_MODEL=` with no value is a typo, not an instruction to use the empty model. With
+    // `??` the blank name was passed through and every call failed, which — before the
+    // all-chunks-failed fix — meant an API error silently replaced the user's suggestions.
+    process.env["CLIP_MODEL"] = ""
+    const client = createAiClient({ apiKey: "test-key" })
+    expect(client.structuredModel).toBe("openai/gpt-oss-120b")
+  })
+
+  it("does not let a blank CLIP_MODEL win over explicit config", () => {
+    process.env["CLIP_MODEL"] = ""
+    const client = createAiClient({ apiKey: "test-key", structuredModel: "from-config" })
+    expect(client.structuredModel).toBe("from-config")
+  })
 })

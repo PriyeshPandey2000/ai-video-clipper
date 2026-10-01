@@ -17,7 +17,7 @@ function trace(overrides: Partial<ClipSelectionTrace> = {}): ClipSelectionTrace 
   return {
     temperature: 0,
     sentenceCount: 2,
-    chunks: [{ index: 0, firstSentence: 0, lastSentence: 41, candidateCount: 2 }],
+    chunks: [{ index: 0, firstSentence: 0, lastSentence: 41, candidateCount: 2, failed: false }],
     candidates: [],
     ...overrides,
   }

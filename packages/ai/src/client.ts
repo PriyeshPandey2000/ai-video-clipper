@@ -55,12 +55,15 @@ function envKey(provider: AiProvider): string | undefined {
 
 export function createAiClient(config?: AiClientConfig): AiClient {
   const provider = config?.provider ?? "groq"
+  // `||` not `??`: an empty `CLIP_MODEL=` in .env is a far likelier accident than a deliberately
+  // blank model, and `??` would pass "" straight through as the model name, failing every call
+  // with a 404 that reads like a model bug instead of the typo it is.
   const textModel = config?.textModel ?? DEFAULT_TEXT_MODEL
   // CLIP_MODEL overrides the structured model without a code edit, so the 5-video comparison in
   // #97 can switch models by restarting the app rather than by rebuilding. Precedence is
   // explicit config > env > default, matching every other config field in this function.
   const structuredModel =
-    config?.structuredModel ?? process.env["CLIP_MODEL"] ?? DEFAULT_STRUCTURED_MODEL
+    config?.structuredModel || process.env["CLIP_MODEL"] || DEFAULT_STRUCTURED_MODEL
   const key = config?.apiKey ?? (envKey(provider) ? process.env[envKey(provider)!] : undefined)
 
   if (!key) {

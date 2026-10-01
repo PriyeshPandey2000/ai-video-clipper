@@ -124,6 +124,18 @@ export interface TraceChunk {
   lastSentence: number
   /** Candidates the model returned for this chunk, before interleaving. */
   candidateCount: number
+  /**
+   * The chunk's model call failed even after the client's retries, so this chunk contributed
+   * nothing — as opposed to a chunk the model answered with no candidates.
+   *
+   * Without this the two are the same `candidateCount: 0`, and a run where every chunk failed
+   * (bad key, rate limit, dropped connection, misspelled CLIP_MODEL) becomes indistinguishable
+   * from a run where the model simply had nothing to offer. That distinction is what stops a
+   * failed run from being treated as a successful empty one.
+   */
+  failed: boolean
+  /** Why it failed. Present only when `failed`. */
+  error?: string
 }
 
 export interface ClipSelectionTrace {
@@ -708,7 +720,7 @@ export async function selectClips(
     pipelineVersion: PIPELINE_VERSION,
     // Fingerprint the *effective* clip budget, not the default — ipc.ts passes maxClips
     // explicitly, so hashing a package constant would mislabel any override.
-    pipelineHash: computePipelineFingerprint(maxClips),
+    pipelineHash: computePipelineFingerprint(maxClips, client.temperature),
     // Clip selection goes through generateObject, so the structured model is the one that served it.
     model: client.structuredModel,
     contentType: "generic",
@@ -716,7 +728,10 @@ export async function selectClips(
   // Present on every return path, including this one. A report that omits `trace` on a
   // zero-sentence video is indistinguishable from a report written by an older build.
   const trace: ClipSelectionTrace = {
-    temperature: CLIP_SELECTION_TEMPERATURE,
+    // From the client, not the constant: this is the temperature that was actually sent with the
+    // calls, and the client is the thing that knows. Reading the constant here would make the
+    // report assert a value about the run that the run did not necessarily use.
+    temperature: client.temperature,
     sentenceCount: sentences.length,
     chunks: [],
     candidates: [],
@@ -733,6 +748,7 @@ export async function selectClips(
 
   const chunks = topicsToChunks(sentences, topics)
   const perChunk: Candidate[][] = []
+  let failedChunks = 0
   for (const chunk of chunks) {
     // client.generateObject already retries transient/malformed-JSON failures internally. If a
     // chunk still fails after that, drop just this chunk's candidates rather than aborting clip
@@ -745,6 +761,7 @@ export async function selectClips(
         firstSentence: chunk[0]!.index,
         lastSentence: chunk[chunk.length - 1]!.index,
         candidateCount: candidates.length,
+        failed: false,
       })
     } catch (err) {
       console.error(
@@ -760,8 +777,27 @@ export async function selectClips(
         firstSentence: chunk[0]!.index,
         lastSentence: chunk[chunk.length - 1]!.index,
         candidateCount: 0,
+        failed: true,
+        error: err instanceof Error ? err.message : String(err),
       })
+      failedChunks++
     }
+  }
+
+  // A run where every chunk failed has told us nothing about the transcript — it has only told
+  // us the API was unreachable. Returning zero clips from it would be a lie the caller cannot
+  // detect: an empty result and a broken run are the same value.
+  //
+  // Throwing here is what lets a re-selection keep its previous suggestions. runClipSelection
+  // swaps suggestions for the returned clips, so "all chunks failed" must be an exception that
+  // happens *before* the swap rather than an empty list that reaches it. The partial-failure case
+  // (some chunks answered) deliberately still succeeds — those clips are real.
+  if (chunks.length > 0 && failedChunks === chunks.length) {
+    throw new Error(
+      `Clip selection failed for all ${chunks.length} chunk(s) after retries. ` +
+        `This is an API or model-configuration failure, not an absence of good clips. ` +
+        `First error: ${trace.chunks.find((c) => c.failed)?.error ?? "unknown"}`,
+    )
   }
 
   const clips: ClipSuggestion[] = []

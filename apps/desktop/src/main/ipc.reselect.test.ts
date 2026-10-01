@@ -177,7 +177,15 @@ function selection(
   const fullTrace: ClipSelectionTrace = trace ?? {
     temperature: 0,
     sentenceCount: 2,
-    chunks: [{ index: 0, firstSentence: 0, lastSentence: 1, candidateCount: clips.length }],
+    chunks: [
+      {
+        index: 0,
+        firstSentence: 0,
+        lastSentence: 1,
+        candidateCount: clips.length,
+        failed: false,
+      },
+    ],
     candidates: clips.map((c, i) =>
       traceEntry({ title: c.title, startMs: c.startMs, endMs: c.endMs, finalRank: i }),
     ),
@@ -304,7 +312,7 @@ describeSqlite("clip:reselect (#97)", () => {
     expect(mockMeasureArousal).toHaveBeenCalled()
   })
 
-  it("replaces suggested and rejected clips but keeps approved and exported ones", async () => {
+  it("replaces suggested clips but keeps rejected, approved and exported ones", async () => {
     // The acceptance criterion, and the reason the delete is status-scoped rather than
     // project-wide: a re-run must never discard the user's own decisions.
     insertClips(db, [
@@ -351,10 +359,16 @@ describeSqlite("clip:reselect (#97)", () => {
     )
     await invoke("clip:reselect", { projectId: PROJECT_ID })
 
+    // "Old rejection" survives: rejecting a moment is a user decision, not a stale suggestion.
+    // Deleting it would both discard that decision and let the same moment return as a fresh
+    // suggestion on the very next run.
     const titles = getClips(db, PROJECT_ID)
       .map((c) => c.title)
       .sort()
-    expect(titles).toEqual(["Fresh clip", "User approved", "User exported"])
+    expect(titles).toEqual(["Fresh clip", "Old rejection", "User approved", "User exported"])
+    expect(getClips(db, PROJECT_ID).find((c) => c.title === "Old rejection")?.status).toBe(
+      "rejected",
+    )
   })
 
   it("writes a report carrying the header fields a run is compared by", async () => {
@@ -400,6 +414,84 @@ describeSqlite("clip:reselect (#97)", () => {
     // A failed re-run must be a no-op, not a wipe: the swap happens only after selection
     // succeeds, so the user still has whatever they had.
     expect(getClips(db, PROJECT_ID).map((c) => c.title)).toEqual(["Old suggestion"])
+  })
+
+  // The shape a real API failure actually takes. selectClips swallows each chunk's error so one
+  // bad chunk cannot abort the whole video, which means an unreachable API arrives here as a
+  // successful empty selection — indistinguishable, before the fix, from "the AI found nothing".
+  // Swapping the user's suggestions for that empty list is data loss dressed as success.
+  it("keeps the previous suggestions when every chunk failed, and reports it", async () => {
+    insertClips(db, [
+      {
+        id: "old-sug",
+        projectId: PROJECT_ID,
+        title: "Old suggestion",
+        startMs: 0,
+        endMs: 5000,
+        status: "suggested",
+        createdAt: 1000,
+      },
+    ])
+    const apiDown = selection([])
+    apiDown.trace!.chunks = [
+      {
+        index: 0,
+        firstSentence: 0,
+        lastSentence: 12,
+        candidateCount: 0,
+        failed: true,
+        error: "401 invalid api key",
+      },
+      {
+        index: 1,
+        firstSentence: 13,
+        lastSentence: 25,
+        candidateCount: 0,
+        failed: true,
+        error: "429 rate limited",
+      },
+    ]
+    mockClipSelector.mockResolvedValue(apiDown)
+
+    await expect(invoke("clip:reselect", { projectId: PROJECT_ID })).rejects.toThrow(
+      /all \d+ chunk/,
+    )
+    expect(getClips(db, PROJECT_ID).map((c) => c.title)).toEqual(["Old suggestion"])
+  })
+
+  // Partial failure is not failure: the chunks that answered produced real clips, so the run
+  // succeeds and the trace is what records the chunk that did not.
+  it("succeeds when only some chunks failed, and the report says which", async () => {
+    const partial = selection([{ title: "Survivor", startMs: 1000, endMs: 9000 }])
+    partial.trace!.chunks = [
+      {
+        index: 0,
+        firstSentence: 0,
+        lastSentence: 12,
+        candidateCount: 1,
+        failed: false,
+      },
+      {
+        index: 1,
+        firstSentence: 13,
+        lastSentence: 25,
+        candidateCount: 0,
+        failed: true,
+        error: "504 gateway timeout",
+      },
+    ]
+    mockClipSelector.mockResolvedValue(partial)
+
+    const result = (await invoke("clip:reselect", { projectId: PROJECT_ID })) as {
+      clipCount: number
+    }
+    expect(result.clipCount).toBe(1)
+    expect(getClips(db, PROJECT_ID).map((c) => c.title)).toEqual(["Survivor"])
+    // The report is the only place the missing chunk is visible.
+    const written = mockWriteReport.mock.calls.at(-1)![1] as {
+      trace: { chunks: { failed: boolean }[] }
+    }
+    expect(written.trace.chunks.filter((c) => c.failed)).toHaveLength(1)
   })
 
   it("keeps the run successful when social-caption generation fails", async () => {

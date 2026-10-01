@@ -76,7 +76,7 @@ export const clips = sqliteTable(
     contentType: text("content_type", {
       enum: ["interview", "tutorial", "solo", "generic"],
     }),
-    // ── Clip origin (#96) ──────────────────────────────────────────────────────
+    // ── Clip origin (#46 taste tier; added in #97) ─────────────────────────────
     // Who authored this clip: the selection pipeline, or the user by hand.
     //
     // Deliberately nullable with NO default, and that is the whole point. Three states:

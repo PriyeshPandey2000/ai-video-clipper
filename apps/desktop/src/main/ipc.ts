@@ -15,12 +15,12 @@ import {
   insertWords,
   insertSegments,
   insertClips,
-  insertAiOutput,
   getWords,
   getSegments,
   getClips,
   getClipsByIds,
   getAiOutputs,
+  replaceAiOutputByType,
   replaceClipsByStatus,
   setClipStatus,
   setClipTimes,
@@ -414,6 +414,18 @@ export function registerIpcHandlers(): void {
       source: "ai" as const,
     }))
 
+    // Defence in depth at the swap's own front door. selectClips already refuses to return when
+    // every chunk failed, but the destructive step below should not depend on that caller having
+    // done its job: "all chunks failed" and "the model found nothing" must never both arrive
+    // here as an empty clip list.
+    const allChunksFailed =
+      (selection.trace?.chunks.length ?? 0) > 0 && selection.trace!.chunks.every((c) => c.failed)
+    if (allChunksFailed) {
+      throw new Error(
+        `Clip selection failed for all ${selection.trace!.chunks.length} chunk(s). Nothing was replaced.`,
+      )
+    }
+
     if (!selection.trace) {
       // Checked before anything is written. selectClips always returns a trace, so this is a
       // "this build is inconsistent" guard rather than a runtime condition — but if it ever
@@ -459,8 +471,11 @@ export function registerIpcHandlers(): void {
     // atomic: approved/exported clips are outside the deleted statuses, so the user's decisions
     // survive a re-run untouched.
     if (opts?.replaceExisting) {
-      const removed = replaceClipsByStatus(db, projectId, ["suggested", "rejected"], clipRows)
-      log.info(`[clips] replaced ${removed} previous suggestion/rejection(s)`)
+      // Only `suggested`, not `rejected`. A rejection is the user's decision ("this moment is
+      // not a clip"), so deleting it on the next run both discards that decision (#104 keeps
+      // this data) and lets the same moment come straight back as a fresh suggestion.
+      const removed = replaceClipsByStatus(db, projectId, ["suggested"], clipRows)
+      log.info(`[clips] replaced ${removed} previous suggestion(s)`)
     } else {
       insertClips(db, clipRows)
     }
@@ -481,13 +496,18 @@ export function registerIpcHandlers(): void {
           topClip.title,
           wordsToPlainText(clipWords),
         )
-        insertAiOutput(db, {
+        // Replaced, not appended: these captions describe the previous run's top clip, which no
+        // longer exists. Leaving both rows would let the panel show one or the other.
+        const replacedCaptions = replaceAiOutputByType(db, projectId, "social_caption", {
           id: generateId(),
           projectId,
           type: "social_caption",
           content: JSON.stringify(captions),
           createdAt: now(),
         })
+        if (replacedCaptions > 0) {
+          log.info(`[captions] replaced ${replacedCaptions} stale caption set(s)`)
+        }
       } catch (err) {
         log.warn(`[captions] social captions failed for project ${projectId}:`, err)
       }

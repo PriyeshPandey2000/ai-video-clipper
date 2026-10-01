@@ -209,8 +209,40 @@ export function getSegments(db: Db, projectId: string): SegmentRow[] {
   return db.select().from(segments).where(eq(segments.projectId, projectId)).all()
 }
 
+// Ordered newest-first. Without the ORDER BY, "the most recent social captions" is whatever
+// SQLite happens to return first, so a re-run that appends a newer row can surface the older
+// one. The panel picks with `.find`, so ordering is load-bearing, not cosmetic.
 export function getAiOutputs(db: Db, projectId: string): AiOutputRow[] {
-  return db.select().from(aiOutputs).where(eq(aiOutputs.projectId, projectId)).all()
+  return db
+    .select()
+    .from(aiOutputs)
+    .where(eq(aiOutputs.projectId, projectId))
+    .orderBy(desc(aiOutputs.createdAt))
+    .all()
+}
+
+/**
+ * Replaces this project's rows of one output type with `row` (#97).
+ *
+ * A re-run regenerates the social captions for its new top clip, so the previous ones describe a
+ * clip that no longer exists. Appending instead would leave the panel reading whichever row it
+ * finds first. Returns the number of rows replaced, for logging.
+ */
+export function replaceAiOutputByType(
+  db: Db,
+  projectId: string,
+  type: AiOutputRow["type"],
+  row: NewAiOutput,
+): number {
+  let replaced = 0
+  db.transaction((tx) => {
+    replaced = tx
+      .delete(aiOutputs)
+      .where(and(eq(aiOutputs.projectId, projectId), eq(aiOutputs.type, type)))
+      .run().changes
+    tx.insert(aiOutputs).values(row).run()
+  })
+  return replaced
 }
 
 // Everything regenerated when a transcript is re-run: derived data, never source media. One

@@ -582,6 +582,76 @@ describe("chunk failure isolation", () => {
 // ─── Pipeline fingerprint (#89) ─────────────────────────────────────────────
 // The fingerprint is what makes a stored clip traceable to the config that produced it, so these
 // tests are about it not going stale rather than about any particular digest value.
+// A chunk whose model call never succeeds. This is the shape every real API outage takes at the
+// loop level — a bad key, a rate limit, a dropped connection, a misspelled CLIP_MODEL — and it is
+// the case that used to be indistinguishable from a legitimately empty selection.
+describe("chunk failure is not an empty selection (#97)", () => {
+  const alwaysFails: Handler = () => {
+    throw new Error("429 rate limit reached")
+  }
+
+  it("throws when every chunk failed, rather than returning zero clips", async () => {
+    // The whole point: a caller that swaps the user's clips for this result would wipe them,
+    // and report success. Failing loudly is what makes the run a no-op instead.
+    await expect(selectClips(mockClient(alwaysFails), words, sentences)).rejects.toThrow(
+      /all \d+ chunk\(s\)/,
+    )
+  })
+
+  it("says what actually went wrong, so the error is diagnosable", async () => {
+    await expect(selectClips(mockClient(alwaysFails), words, sentences)).rejects.toThrow(
+      /rate limit/,
+    )
+  })
+
+  it("does not mistake a genuinely empty answer for a failure", async () => {
+    // The model answering "nothing here" is a real result, and an over-eager guard would turn a
+    // quiet video into an error the user cannot act on.
+    const nothing: Handler = (prompt) => (range(prompt) ? { clips: [] } : { ranking: [] })
+    const result = await selectClips(mockClient(nothing), words, sentences)
+    expect(result.clips).toEqual([])
+    expect(result.trace!.chunks.length).toBeGreaterThan(0)
+    expect(result.trace!.chunks.every((c) => !c.failed)).toBe(true)
+  })
+
+  it("succeeds when only some chunks failed, keeping the chunks that answered", async () => {
+    const seen: number[] = []
+    const flaky: Handler = (prompt) => {
+      const r = range(prompt)
+      if (!r) return { ranking: [] }
+      seen.push(r[0])
+      if (seen.length % 2 === 0) throw new Error("504 gateway timeout")
+      return twoPerChunk(prompt)
+    }
+    const result = await selectClips(mockClient(flaky), words, sentences)
+    // Partial failure is not failure — the clips that came back are real.
+    expect(result.clips.length).toBeGreaterThan(0)
+    const trace = result.trace!
+    expect(trace.chunks.some((c) => c.failed)).toBe(true)
+    expect(trace.chunks.some((c) => !c.failed)).toBe(true)
+    // Every failed chunk records why, and every successful one records that it did not fail.
+    for (const c of trace.chunks) {
+      expect(typeof c.failed).toBe("boolean")
+      if (c.failed) expect(c.error).toMatch(/timeout/)
+    }
+  })
+
+  it("distinguishes a failed chunk from an empty one in the trace", async () => {
+    // Both look like candidateCount: 0. Without the flag the report cannot answer "why did the
+    // long video yield two clips", which is the question the report exists for.
+    const flaky: Handler = (prompt) => {
+      const r = range(prompt)
+      if (!r) return { ranking: [] }
+      if (r[0] === 0) throw new Error("invalid api key")
+      return { clips: [] } // answered, with nothing
+    }
+    const result = await selectClips(mockClient(flaky), words, sentences)
+    const chunks = result.trace!.chunks
+    expect(chunks.find((c) => c.firstSentence === 0)?.failed).toBe(true)
+    expect(chunks.find((c) => c.firstSentence !== 0)?.failed).toBe(false)
+  })
+})
+
 describe("pipeline provenance (#89)", () => {
   const stubClient = (structuredModel = "test/model") =>
     ({
