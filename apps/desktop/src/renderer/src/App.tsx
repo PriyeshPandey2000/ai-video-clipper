@@ -1622,6 +1622,8 @@ function ProjectView({
                   }}
                   refreshTrigger={clipRefreshTrigger}
                   analysisComplete={project.status === "ready"}
+                  pipelineRunning={pipelineProgress?.projectId === project.id}
+                  onReselectComplete={() => setClipRefreshTrigger((n) => n + 1)}
                 />
               </ErrorBoundary>
             ) : (

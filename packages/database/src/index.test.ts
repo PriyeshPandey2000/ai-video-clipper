@@ -16,6 +16,7 @@ import {
   insertWords,
   insertSegments,
   clearDerivedData,
+  replaceClipsByStatus,
   setClipStatus,
   setClipTimes,
   markClipExported,
@@ -301,6 +302,126 @@ describeSqlite("repository", () => {
     expect(clip?.originalStartMs).toBeNull()
     expect(clip?.originalEndMs).toBeNull()
     expect(clip?.pipelineHash).toBeNull()
+  })
+
+  // `source` exists to separate model output from hand-made clips, so it has three states, not two.
+  it("distinguishes ai, user and pre-migration clips, with no default filling the third in", () => {
+    const db = testDb()
+    insertProject(db, baseProject)
+    // baseClip hardcodes id "c1", so each row overrides it. All three live under p1 — projectId has
+    // an FK, and inventing sibling projects here would test the FK rather than the point.
+    insertClips(db, [
+      { ...baseClip("p1"), id: "c-ai", source: "ai" as const, aiRank: 0, pipelineHash: "abc123" },
+      { ...baseClip("p1"), id: "c-user", source: "user" as const },
+      // No source: stands in for a row written before the column existed.
+      { ...baseClip("p1"), id: "c-legacy" },
+    ])
+
+    // getClipsByIds does not promise to preserve input order, so look each row up by id.
+    const byId = new Map(getClipsByIds(db, ["c-ai", "c-user", "c-legacy"]).map((c) => [c.id, c]))
+    expect(byId.get("c-ai")?.source).toBe("ai")
+    expect(byId.get("c-user")?.source).toBe("user")
+    expect(byId.get("c-legacy")?.source).toBeNull()
+
+    // The property that matters for #46: only clips that actually came from the model may enter a
+    // precision@5 denominator. A default of "ai" would have made the legacy row a false contributor.
+    const aiOriginated = [...byId.values()].filter((c) => c.source === "ai")
+    expect(aiOriginated).toHaveLength(1)
+    expect(aiOriginated[0]?.pipelineHash).toBe("abc123")
+
+    const unknown = [...byId.values()].filter((c) => c.source === null)
+    expect(unknown).toHaveLength(1)
+    expect(unknown[0]?.id).toBe("c-legacy")
+  })
+
+  // #97's re-selection path. The whole point is that re-running replaces the model's own output
+  // and nothing else: a re-run that deleted an approved clip would destroy the user's decision,
+  // and one that deleted an exported clip would discard work already rendered to disk.
+  it("replaceClipsByStatus removes only the statuses it is given, leaving user work intact", () => {
+    const db = testDb()
+    insertProject(db, baseProject)
+    insertClips(db, [
+      { ...baseClip("p1"), id: "c-sug", status: "suggested" },
+      { ...baseClip("p1"), id: "c-rej", status: "rejected" },
+      { ...baseClip("p1"), id: "c-app", status: "approved" },
+      { ...baseClip("p1"), id: "c-exp", status: "exported" },
+    ])
+
+    const removed = replaceClipsByStatus(
+      db,
+      "p1",
+      ["suggested", "rejected"],
+      [
+        { ...baseClip("p1"), id: "c-new-1" },
+        { ...baseClip("p1"), id: "c-new-2" },
+      ],
+    )
+    expect(removed).toBe(2)
+
+    const left = getClipsByIds(db, ["c-sug", "c-rej", "c-app", "c-exp", "c-new-1", "c-new-2"]).map(
+      (c) => c.id,
+    )
+    expect(left.sort()).toEqual(["c-app", "c-exp", "c-new-1", "c-new-2"])
+  })
+
+  it("replaceClipsByStatus is scoped to one project", () => {
+    const db = testDb()
+    insertProject(db, baseProject)
+    insertProject(db, { ...baseProject, id: "p2" })
+    insertClips(db, [
+      { ...baseClip("p1"), id: "c-p1" },
+      { ...baseClip("p2"), id: "c-p2" },
+    ])
+
+    expect(replaceClipsByStatus(db, "p1", ["suggested"], [])).toBe(1)
+    // Re-running clips on one video must never touch another's suggestions — they share the
+    // clips table and differ only by project_id.
+    expect(getClipsByIds(db, ["c-p2"]).map((c) => c.id)).toEqual(["c-p2"])
+  })
+
+  it("replaceClipsByStatus does nothing for an empty status list", () => {
+    const db = testDb()
+    insertProject(db, baseProject)
+    insertClips(db, [baseClip("p1")])
+    // An empty inArray is a malformed query that some drivers reject and others silently turn
+    // into "delete everything". Refusing it here keeps that ambiguity out of the caller, while
+    // still inserting the new rows — a run that legitimately found no old rows must not abort.
+    expect(replaceClipsByStatus(db, "p1", [], [{ ...baseClip("p1"), id: "c-new" }])).toBe(0)
+    expect(
+      getClipsByIds(db, ["c1", "c-new"])
+        .map((c) => c.id)
+        .sort(),
+    ).toEqual(["c-new", "c1"])
+  })
+
+  it("replaceClipsByStatus leaves the old set in place when the insert fails", () => {
+    const db = testDb()
+    insertProject(db, baseProject)
+    insertClips(db, [
+      { ...baseClip("p1"), id: "c-old", status: "suggested" },
+      { ...baseClip("p1"), id: "c-keep", status: "approved" },
+    ])
+
+    // A duplicate primary key aborts the insert half of the swap. The delete must roll back with
+    // it: "no old suggestions and no new ones" is the one outcome a re-run must not produce,
+    // because it looks to the user like the run silently ate their clips.
+    expect(() =>
+      replaceClipsByStatus(
+        db,
+        "p1",
+        ["suggested"],
+        [
+          { ...baseClip("p1"), id: "c-new" },
+          { ...baseClip("p1"), id: "c-new" },
+        ],
+      ),
+    ).toThrow()
+
+    expect(
+      getClipsByIds(db, ["c-old", "c-keep", "c-new"])
+        .map((c) => c.id)
+        .sort(),
+    ).toEqual(["c-keep", "c-old"])
   })
 
   it("setFillerWords atomically replaces filler segments", () => {

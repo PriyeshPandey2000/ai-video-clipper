@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { STRUCTURED_OUTPUT_SUFFIX, type AiClient } from "./client"
+import { CLIP_SELECTION_TEMPERATURE, STRUCTURED_OUTPUT_SUFFIX, type AiClient } from "./client"
 import type { z } from "zod"
 import { z as zod } from "zod"
 import type { Word, Sentence } from "@video-editor/types"
@@ -55,6 +55,83 @@ export interface ClipSelectionResult extends ClipSelectionProvenance {
   clips: ClipSuggestion[]
   /** Candidates dropped by the quality gate — surfaced so "only 2 clips" is explainable. */
   rejected: ClipRejection[]
+  /**
+   * Every candidate's full history, in the order returned (#97). Optional because a caller that
+   * only wants clips should not pay to accumulate it, and present on every run — including the
+   * empty-transcript path — so a report never silently omits the field.
+   *
+   * This is data, not a log: `selectClips` returns it and the caller decides whether to write a
+   * file. `packages/ai` does no I/O.
+   */
+  trace?: ClipSelectionTrace
+}
+
+/** One candidate as the LLM proposed it, before any of our heuristics touched it. */
+export interface TraceCandidate {
+  /** Which chunk (0-based) the candidate came from. Chunks overlap, so this is not recoverable later. */
+  chunk: number
+  /** The sentence range exactly as the model returned it. */
+  startSentence: number
+  endSentence: number
+  title: string
+  reason: string
+  /** The model's own calibrated `strong` flag — the only judgement input the gate takes. */
+  strong: boolean
+  platform: "tiktok" | "reels" | "shorts" | "generic"
+}
+
+/** What became of a candidate. Every candidate ends in exactly one of these. */
+export type TraceOutcome = "kept" | "gate-rejected" | "invalid-range" | "duplicate" | "over-budget"
+
+export interface TraceEntry extends TraceCandidate {
+  outcome: TraceOutcome
+  /**
+   * The range after the hook-first trim (D5). Differs from `startSentence` whenever a hook was
+   * found within the trim window; recording both is what makes a "the model said 40, we cut from 42"
+   * discrepancy explainable.
+   */
+  trimmedStartSentence: number | null
+  /** Final refined boundaries, or null when refinement produced nothing. */
+  startMs: number | null
+  endMs: number | null
+  /** mm:ss form of the final boundaries. The report's primary human-readable form. */
+  startTimecode: string | null
+  endTimecode: string | null
+  /** The `RefinedBoundary` flags, kept verbatim so the report can explain a gate rejection. */
+  boundary: {
+    danglingUnresolved: boolean
+    endedOnCompleteThought: boolean
+    tooShort: boolean
+  } | null
+  /** Gate verdict. Present even when refinement failed, with the reason that actually stopped it. */
+  gate: { passed: boolean; reasons: string[]; warnings: string[] }
+  /** Title of the kept clip this candidate duplicated, when `outcome` is "duplicate". */
+  duplicateOf: string | null
+  /** Rank in the final output, when kept. Null otherwise. */
+  finalRank: number | null
+  /**
+   * Exact transcript text between startMs and endMs — the words the exported clip will actually
+   * contain. This is the field that answers "what does this clip say?", which the kept-clips
+   * table cannot, because a user trim rewrites startMs/endMs in place.
+   */
+  text: string | null
+}
+
+/** Chunk layout for the run. Decides which sentences the model ever saw. */
+export interface TraceChunk {
+  index: number
+  firstSentence: number
+  lastSentence: number
+  /** Candidates the model returned for this chunk, before interleaving. */
+  candidateCount: number
+}
+
+export interface ClipSelectionTrace {
+  temperature: number
+  sentenceCount: number
+  chunks: TraceChunk[]
+  /** One entry per candidate returned, in the order they were ranked. */
+  candidates: TraceEntry[]
 }
 
 /**
@@ -181,14 +258,23 @@ function fixedChunks(sentences: Sentence[]): Sentence[][] {
   return chunks
 }
 
+/** A candidate plus the chunk it came from, carried through ranking so the trace can say which. */
+interface RankedCandidate {
+  chunk: number
+  candidate: Candidate
+}
+
 /** Round-robin by rank so a later chunk isn't starved by an earlier one. */
-function interleaveByRank(perChunk: Candidate[][]): Candidate[] {
-  const merged: Candidate[] = []
-  const depth = Math.max(0, ...perChunk.map((c) => c.length))
+function interleaveByRank(perChunk: Candidate[][]): RankedCandidate[] {
+  const tagged: RankedCandidate[][] = perChunk.map((candidates, chunk) =>
+    candidates.map((candidate) => ({ chunk, candidate })),
+  )
+  const merged: RankedCandidate[] = []
+  const depth = Math.max(0, ...tagged.map((c) => c.length))
   for (let rank = 0; rank < depth; rank++) {
-    for (const chunk of perChunk) {
-      const candidate = chunk[rank]
-      if (candidate) merged.push(candidate)
+    for (const chunk of tagged) {
+      const ranked = chunk[rank]
+      if (ranked) merged.push(ranked)
     }
   }
   return merged
@@ -199,6 +285,14 @@ function overlapRatio(a: ClipSuggestion, b: ClipSuggestion): number {
   const end = Math.min(a.endMs, b.endMs)
   if (end <= start) return 0
   return (end - start) / Math.min(a.endMs - a.startMs, b.endMs - b.startMs)
+}
+
+/** mm:ss for report output. Clips are bounded by MAX_CLIP_MS (90s) so hours never appear. */
+function toTimecode(ms: number): string {
+  const totalSec = Math.floor(ms / 1000)
+  const min = Math.floor(totalSec / 60)
+  const sec = totalSec % 60
+  return `${min}:${String(sec).padStart(2, "0")}`
 }
 
 // ─── C4 — content-type detection and rubric swap ────────────────────────────
@@ -512,8 +606,16 @@ export const PIPELINE_VERSION = "v1-unmeasured"
  * `maxClips` is a per-call argument rather than a constant, so the fingerprint is computed from
  * the effective value. Hashing a package-level default would silently mislabel any caller that
  * overrode it.
+ *
+ * `temperature` is likewise a parameter, defaulting to the constant the client actually sends.
+ * It has to be a parameter rather than an inlined read of the constant purely so a test can prove
+ * the digest moves when the temperature does — an unhashed temperature is the bug this closes,
+ * and "it is in the hash" is only a meaningful claim if that is checked.
  */
-export function computePipelineFingerprint(maxClips: number): string {
+export function computePipelineFingerprint(
+  maxClips: number,
+  temperature: number = CLIP_SELECTION_TEMPERATURE,
+): string {
   return createHash("sha256")
     .update(
       [
@@ -554,6 +656,9 @@ export function computePipelineFingerprint(maxClips: number): string {
         `hookFirstMaxTrim:${HOOK_FIRST_MAX_TRIM}`,
         `maxCandidatesPerChunk:${MAX_CANDIDATES_PER_CHUNK}`,
         `maxClips:${maxClips}`,
+        // Temperature (#97/#90). Left out, two runs differing only in temperature would share a
+        // hash — and the hash is the thing that makes a stored clip's behaviour attributable.
+        `temperature:${temperature}`,
         // NUL separator: it cannot occur in any prompt, regex source or word list above, so no
         // field boundary can be forged by content. (Escaped, not a raw byte — a literal NUL in
         // source makes the file binary to grep and friends.)
@@ -608,7 +713,15 @@ export async function selectClips(
     model: client.structuredModel,
     contentType: "generic",
   }
-  if (sentences.length === 0) return { ...provenance, clips: [], rejected: [] }
+  // Present on every return path, including this one. A report that omits `trace` on a
+  // zero-sentence video is indistinguishable from a report written by an older build.
+  const trace: ClipSelectionTrace = {
+    temperature: CLIP_SELECTION_TEMPERATURE,
+    sentenceCount: sentences.length,
+    chunks: [],
+    candidates: [],
+  }
+  if (sentences.length === 0) return { ...provenance, clips: [], rejected: [], trace }
 
   // C4 — detect content type once; each chunk uses the same type-specific rubric.
   const contentType = detectContentType(sentences)
@@ -625,13 +738,29 @@ export async function selectClips(
     // chunk still fails after that, drop just this chunk's candidates rather than aborting clip
     // selection for the whole video — other chunks' clips are still worth surfacing.
     try {
-      perChunk.push(await selectFromChunk(client, chunk, words, arousalPerSec, contentType))
+      const candidates = await selectFromChunk(client, chunk, words, arousalPerSec, contentType)
+      perChunk.push(candidates)
+      trace.chunks.push({
+        index: trace.chunks.length,
+        firstSentence: chunk[0]!.index,
+        lastSentence: chunk[chunk.length - 1]!.index,
+        candidateCount: candidates.length,
+      })
     } catch (err) {
       console.error(
         `[clip-selector] chunk (sentences #${chunk[0]?.index}-#${chunk[chunk.length - 1]?.index}) failed after retries, skipping:`,
         err,
       )
       perChunk.push([])
+      // Recorded even though it produced nothing: "chunk 3 of 5 returned no candidates at all"
+      // and "chunk 3 of 5 never ran" are very different answers to why a long video yielded two
+      // clips, and the report is the only place either is visible.
+      trace.chunks.push({
+        index: trace.chunks.length,
+        firstSentence: chunk[0]!.index,
+        lastSentence: chunk[chunk.length - 1]!.index,
+        candidateCount: 0,
+      })
     }
   }
 
@@ -639,7 +768,7 @@ export async function selectClips(
   const rejected: ClipRejection[] = []
   const ranked = interleaveByRank(perChunk)
 
-  for (const candidate of ranked) {
+  for (const { chunk, candidate } of ranked) {
     // D5 — try to trim opening forward to a hook sentence before boundary refinement.
     const { adjustedStart } = hookFirstAdjust(
       sentenceByIndex,
@@ -647,14 +776,59 @@ export async function selectClips(
       candidate.endSentence,
     )
 
+    // Every candidate gets an entry, whatever happens to it. The three ways this loop used to
+    // `continue`/`break` silently (refine-null, gate-reject, dedupe) are the exact questions the
+    // report exists to answer, so each is now an outcome rather than a bare skip.
+    const entry: TraceEntry = {
+      chunk,
+      startSentence: candidate.startSentence,
+      endSentence: candidate.endSentence,
+      title: candidate.title,
+      reason: candidate.reason,
+      strong: candidate.strong,
+      platform: candidate.platform,
+      outcome: "kept",
+      trimmedStartSentence: adjustedStart,
+      startMs: null,
+      endMs: null,
+      startTimecode: null,
+      endTimecode: null,
+      boundary: null,
+      gate: { passed: false, reasons: [], warnings: [] },
+      duplicateOf: null,
+      finalRank: null,
+      text: null,
+    }
+    trace.candidates.push(entry)
+
     const boundary = refineClipBoundaries(words, sentences, adjustedStart, candidate.endSentence)
     if (!boundary) {
+      entry.outcome = "invalid-range"
+      entry.gate.reasons = ["invalid sentence range"]
       rejected.push({ title: candidate.title, reasons: ["invalid sentence range"] })
       continue
     }
 
+    entry.startMs = boundary.startMs
+    entry.endMs = boundary.endMs
+    entry.startTimecode = toTimecode(boundary.startMs)
+    entry.endTimecode = toTimecode(boundary.endMs)
+    entry.boundary = {
+      danglingUnresolved: boundary.danglingUnresolved,
+      endedOnCompleteThought: boundary.endedOnCompleteThought,
+      tooShort: boundary.tooShort,
+    }
+    // Words inside the final boundary, not the model's requested sentence range — this is the
+    // text the exported clip will contain, which is what "what does this clip say?" means.
+    entry.text = words
+      .filter((w) => w.startMs >= boundary.startMs && w.endMs <= boundary.endMs)
+      .map((w) => w.text)
+      .join(" ")
+
     const gate = passesQualityGate(boundary, candidate.strong)
+    entry.gate = { passed: gate.passed, reasons: gate.reasons, warnings: gate.warnings }
     if (!gate.passed) {
+      entry.outcome = "gate-rejected"
       rejected.push({ title: candidate.title, reasons: gate.reasons })
       continue
     }
@@ -678,11 +852,25 @@ export async function selectClips(
     }
 
     // Chunk overlap intentionally produces duplicates at the seams; keep the better-ranked one.
-    if (clips.some((existing) => overlapRatio(existing, suggestion) > DEDUPE_OVERLAP_RATIO))
+    const duplicate = clips.find(
+      (existing) => overlapRatio(existing, suggestion) > DEDUPE_OVERLAP_RATIO,
+    )
+    if (duplicate) {
+      entry.outcome = "duplicate"
+      entry.duplicateOf = duplicate.title
       continue
+    }
+
+    // Previously a `break` — candidates past the budget were never examined at all. They are now
+    // recorded as over-budget instead, which costs nothing and stops the report from implying
+    // the model never proposed them.
+    if (clips.length >= maxClips) {
+      entry.outcome = "over-budget"
+      continue
+    }
 
     clips.push(suggestion)
-    if (clips.length >= maxClips) break
+    entry.finalRank = clips.length - 1
   }
 
   // Display score from final rank, so the UI has a number without the LLM inventing one.
@@ -691,5 +879,5 @@ export async function selectClips(
     clip.score = total <= 1 ? 1 : Number((1 - i / total).toFixed(2))
   })
 
-  return { ...provenance, clips, rejected }
+  return { ...provenance, clips, rejected, trace }
 }

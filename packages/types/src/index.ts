@@ -150,6 +150,19 @@ export interface IpcInvokeChannels {
   "clip:update-status": { args: { clipId: string; status: Clip["status"] }; result: void }
   "clip:update-times": { args: { clipId: string; startMs: number; endMs: number }; result: void }
   "clip:update-crop-x": { args: { clipId: string; cropX: number }; result: void }
+  /**
+   * Re-runs only the AI stage on an already-transcribed project (#97). Swaps this project's
+   * `suggested`/`rejected` clips for a fresh set; `approved`/`exported` are left alone.
+   *
+   * Returns the paths of the debug report written for the run so the renderer can offer to open
+   * it. Non-null on success: a run that could not write a report does not count as a run.
+   */
+  "clip:reselect": {
+    args: { projectId: string }
+    result: { reportJsonPath: string; reportMarkdownPath: string; clipCount: number }
+  }
+  /** Most recent selection report for this project, or null if it has never been re-run. */
+  "clip:last-report": { args: { projectId: string }; result: string | null }
   "export:clips": {
     args: {
       projectId: string

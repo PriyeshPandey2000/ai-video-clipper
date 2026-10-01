@@ -76,6 +76,18 @@ export const clips = sqliteTable(
     contentType: text("content_type", {
       enum: ["interview", "tutorial", "solo", "generic"],
     }),
+    // ── Clip origin (#96) ──────────────────────────────────────────────────────
+    // Who authored this clip: the selection pipeline, or the user by hand.
+    //
+    // Deliberately nullable with NO default, and that is the whole point. Three states:
+    //   "ai"    — written by selectClips
+    //   "user"  — authored manually
+    //   NULL    — written before this migration, so the origin is not knowable
+    // Defaulting to "ai" would label every pre-migration row as model output and silently inflate
+    // the denominator of precision@5 (#46's taste tier) with hand-made or legacy clips. NULL keeps
+    // "we don't know" distinguishable from "the model chose this", exactly as the nullable
+    // provenance columns above do.
+    source: text("source", { enum: ["ai", "user"] }),
   },
   (table) => ({
     clipsProjectIdIdx: index("clips_project_id_idx").on(table.projectId),

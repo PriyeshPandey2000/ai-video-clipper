@@ -259,6 +259,46 @@ export function setClipStatus(db: Db, clipId: string, status: ClipStatus): void 
   db.update(clips).set({ status }).where(eq(clips.id, clipId)).run()
 }
 
+/**
+ * Swaps the clips in `statuses` for `rows` in one transaction (#97).
+ *
+ * This is the only delete-a-project's-clips operation the app has, and it is transactional
+ * because a re-run replaces its own output: with two separate statements the project can be
+ * observed with neither the old suggestions nor the new ones — a throw between them (an SQLite
+ * write error, a disk that fills up) would leave the user with an empty clip list and a report
+ * of a successful run. Inside a transaction the swap either lands whole or not at all, so the
+ * previous suggestions are still intact whenever a re-run fails.
+ *
+ * Clips in statuses the caller did not name — the user's approved and exported decisions — are
+ * outside the delete, so they survive the swap untouched by the insert.
+ *
+ * An empty `statuses` inserts `rows` without deleting anything: a run that legitimately found
+ * no prior rows must not abort. An empty `rows` deletes without inserting, which is what makes
+ * "the model found nothing this time" a real outcome rather than a silent no-op.
+ *
+ * Returns the number of rows removed, for logging.
+ */
+export function replaceClipsByStatus(
+  db: Db,
+  projectId: string,
+  statuses: ClipStatus[],
+  rows: NewClip[],
+): number {
+  let removed = 0
+  db.transaction((tx) => {
+    if (statuses.length > 0) {
+      removed = tx
+        .delete(clips)
+        .where(and(eq(clips.projectId, projectId), inArray(clips.status, statuses)))
+        .run().changes
+    }
+    if (rows.length > 0) {
+      tx.insert(clips).values(rows).run()
+    }
+  })
+  return removed
+}
+
 // Resizing an exported clip demotes it back to approved so it re-exports cleanly.
 export function setClipTimes(db: Db, clipId: string, startMs: number, endMs: number): void {
   const clip = getClip(db, clipId)

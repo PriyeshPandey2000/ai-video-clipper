@@ -3,12 +3,14 @@ import type { Word, Sentence } from "@video-editor/types"
 import { buildSentences } from "@video-editor/transcript"
 import type { TopicSegment } from "@video-editor/transcript"
 import type { AiClient } from "./client"
+import { CLIP_SELECTION_TEMPERATURE } from "./client"
 import {
   selectClips,
   computePipelineFingerprint,
   PIPELINE_FINGERPRINT,
   PIPELINE_VERSION,
 } from "./clip-selector"
+import type { TraceEntry } from "./clip-selector"
 
 function transcript(count: number): Word[] {
   const words: Word[] = []
@@ -48,6 +50,8 @@ function mockClient(handler: Handler, prompts: string[] = []): AiClient {
     provider: "groq",
     textModel: "mock",
     structuredModel: "mock",
+    // Mirrors the real client so tests see the same determinism the pipeline now relies on.
+    temperature: CLIP_SELECTION_TEMPERATURE,
     async complete() {
       return ""
     },
@@ -393,6 +397,168 @@ describe("hostile input", () => {
   })
 })
 
+// ─── Selection trace (#97) ──────────────────────────────────────────────────
+// The trace exists so a run can be diagnosed after the fact. The property that makes it
+// trustworthy is exhaustiveness: a candidate that silently vanishes from the trace is a
+// candidate the report claims was never proposed, which is the exact misreading #97 was filed to
+// prevent. Every test below is about coverage, not about any particular field's value.
+describe("selection trace (#97)", () => {
+  it("records one entry per candidate the model returned, in ranked order", async () => {
+    const result = await selectClips(mockClient(twoPerChunk), words, sentences)
+    const trace = result.trace!
+    // twoPerChunk returns 2 candidates per chunk; the trace must account for every one.
+    expect(trace.candidates).toHaveLength(trace.chunks.length * 2)
+    expect(trace.sentenceCount).toBe(sentences.length)
+    expect(trace.temperature).toBe(0)
+  })
+
+  it("accounts for every candidate: kept, or dropped with a named reason", async () => {
+    const result = await selectClips(mockClient(twoPerChunk), words, sentences)
+    const { candidates } = result.trace!
+    const kept = candidates.filter((c) => c.outcome === "kept")
+
+    // This is the invariant the whole report rests on.
+    expect(kept).toHaveLength(result.clips.length)
+    expect(candidates).toHaveLength(
+      kept.length + result.rejected.length + dropWithoutRejection(candidates),
+    )
+  })
+
+  it("gives every kept candidate a rank that matches its position in the output", async () => {
+    const result = await selectClips(mockClient(twoPerChunk), words, sentences)
+    const kept = result.trace!.candidates.filter((c) => c.outcome === "kept")
+    expect(kept.map((c) => c.finalRank)).toEqual(kept.map((_, i) => i))
+    // And the ranks point at the same clips, so the report's ranked table cannot drift from
+    // what selectClips actually returned.
+    expect(kept.map((c) => c.title)).toEqual(result.clips.map((c) => c.title))
+  })
+
+  it("records the transcript text inside the final boundary, not the requested sentence range", async () => {
+    const result = await selectClips(mockClient(twoPerChunk), words, sentences)
+    for (const c of result.trace!.candidates.filter((c) => c.outcome === "kept")) {
+      expect(c.text).toBeTruthy()
+      expect(c.text!.length).toBeGreaterThan(0)
+      // Every word of the clip text must fall inside the boundary that was recorded for it.
+      const wordsInClip = words.filter((w) => w.startMs >= c.startMs! && w.endMs <= c.endMs!)
+      expect(c.text).toBe(wordsInClip.map((w) => w.text).join(" "))
+    }
+  })
+
+  it("records gate rejections with the gate's own reasons and the boundary flags", async () => {
+    const weak: Handler = (prompt) => {
+      const r = range(prompt)
+      if (!r) return { ranking: [] }
+      const [lo, hi] = r
+      return {
+        clips: [
+          {
+            startSentence: lo,
+            endSentence: Math.min(lo + 12, hi),
+            title: "weak",
+            reason: "r",
+            strong: false,
+            platform: "shorts",
+          },
+        ],
+      }
+    }
+    const result = await selectClips(mockClient(weak), words, sentences)
+    expect(result.clips).toHaveLength(0)
+    // The old return value said only `{title, reasons}` — no boundary, no flags, no text. These
+    // are the fields that make "why was nothing kept" answerable.
+    for (const c of result.trace!.candidates) {
+      expect(c.outcome).toBe("gate-rejected")
+      expect(c.gate.reasons).toContain("not marked strong")
+      expect(c.gate.passed).toBe(false)
+      expect(c.boundary).not.toBeNull()
+      expect(c.startTimecode).toMatch(/^\d+:\d{2}$/)
+      expect(c.text).toBeTruthy()
+      expect(c.finalRank).toBeNull()
+    }
+  })
+
+  it("names the clip a duplicate was dropped against", async () => {
+    // Chunk overlap deliberately produces duplicates at the seams. Before #97 these were a bare
+    // `continue` — a candidate that passed the gate and was then discarded left no record at all,
+    // so "the model proposed N clips" was unrecoverable.
+    const result = await selectClips(mockClient(twoPerChunk), words, sentences)
+    const dupes = result.trace!.candidates.filter((c) => c.outcome === "duplicate")
+    for (const d of dupes) {
+      expect(d.duplicateOf).toBeTruthy()
+      expect(d.gate.passed).toBe(true)
+      // The clip it lost to is a survivor, and appears before it in the ranked output.
+      expect(result.clips.find((c) => c.title === d.duplicateOf)).toBeDefined()
+    }
+  })
+
+  it("records the chunk layout and each chunk's candidate count", async () => {
+    const result = await selectClips(mockClient(twoPerChunk), words, sentences)
+    const { chunks, candidates } = result.trace!
+    expect(chunks.length).toBeGreaterThan(1)
+    chunks.forEach((c, i) => {
+      expect(c.index).toBe(i)
+      expect(c.lastSentence).toBeGreaterThanOrEqual(c.firstSentence)
+    })
+    // Chunk candidate counts must sum to the trace total — a chunk that returned candidates the
+    // trace never mentions would make the report internally inconsistent.
+    expect(chunks.reduce((n, c) => n + c.candidateCount, 0)).toBe(candidates.length)
+  })
+
+  it("records over-budget candidates instead of silently stopping at the clip cap", async () => {
+    // The loop used to `break` at maxClips, so the remaining ranked candidates were never
+    // examined. They are now recorded, which is what distinguishes "the model didn't propose it"
+    // from "we had already filled the quota".
+    const short = transcript(200)
+    const result = await selectClips(mockClient(twoPerChunk), short, buildSentences(short), [], 2)
+    expect(result.clips.length).toBeLessThanOrEqual(2)
+    const over = result.trace!.candidates.filter((c) => c.outcome === "over-budget")
+    for (const c of over) {
+      expect(c.finalRank).toBeNull()
+      expect(c.duplicateOf).toBeNull()
+    }
+  })
+
+  it("still reports on an empty transcript, rather than omitting the trace entirely", async () => {
+    const result = await selectClips(
+      mockClient(() => ({ clips: [] })),
+      [],
+      [],
+    )
+    expect(result.trace).toEqual({
+      temperature: 0,
+      sentenceCount: 0,
+      chunks: [],
+      candidates: [],
+    })
+  })
+
+  it("keeps the trace optional in the type but always present at runtime", async () => {
+    // ClipSelectionResult.trace is `?` so existing callers that only want clips compile
+    // unchanged — but selectClips must never actually omit it, or a report would quietly lose
+    // its entire candidate table.
+    const result = await selectClips(mockClient(twoPerChunk), words, sentences)
+    expect(result.trace).toBeDefined()
+  })
+
+  it("hashes the temperature, so runs differing only in it cannot share a fingerprint", async () => {
+    // The half of #90 that #97 owns. Before this, temperature was never sent and never hashed:
+    // two runs could differ purely by sampling noise and still be filed under one hash, which
+    // makes a stored clip's behaviour unattributable — the one thing the hash exists to prevent.
+    expect(CLIP_SELECTION_TEMPERATURE).toBe(0)
+    // The default parameter is the constant the client sends, so the exported fingerprint and the
+    // live call cannot drift apart.
+    expect(computePipelineFingerprint(10)).toBe(PIPELINE_FINGERPRINT)
+    expect(computePipelineFingerprint(10, CLIP_SELECTION_TEMPERATURE)).toBe(PIPELINE_FINGERPRINT)
+    // And moving it moves the digest.
+    expect(computePipelineFingerprint(10, 0.7)).not.toBe(PIPELINE_FINGERPRINT)
+  })
+})
+
+/** Candidates that left without a `rejected` entry: duplicates, invalid ranges, over-budget. */
+function dropWithoutRejection(candidates: TraceEntry[]): number {
+  return candidates.filter((c) => c.outcome !== "kept" && c.outcome !== "gate-rejected").length
+}
+
 describe("chunk failure isolation", () => {
   it("keeps clips from other chunks when one chunk's generateObject call fails every attempt", async () => {
     const flaky: Handler = (prompt) => {
@@ -422,6 +588,7 @@ describe("pipeline provenance (#89)", () => {
       provider: "groq",
       textModel: "test/model",
       structuredModel,
+      temperature: CLIP_SELECTION_TEMPERATURE,
       complete: async () => "",
       generateObject: async () => ({ clips: [] }),
     }) as unknown as AiClient
