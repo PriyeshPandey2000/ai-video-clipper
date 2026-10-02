@@ -35,6 +35,7 @@ export {
   judgeQuestionsFor,
   scoreAnswers,
   failedHardQuestions,
+  toJudgeRecord,
   UNIVERSAL_JUDGE_QUESTIONS,
 } from "./clip-judge"
 export type { ClipJudgement, JudgeGrade, JudgeQuestion } from "./clip-judge"

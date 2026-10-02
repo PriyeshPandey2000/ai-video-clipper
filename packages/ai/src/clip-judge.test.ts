@@ -7,6 +7,8 @@ import {
   UNIVERSAL_JUDGE_QUESTIONS,
   type JudgeGrade,
 } from "./clip-judge"
+import { parseClipJudge } from "@video-editor/types"
+import { toJudgeRecord } from "./clip-judge"
 import { mapPool, isRateLimitError, withRateLimitRetry, RATE_LIMIT_POLICY } from "./concurrency"
 
 const questions = UNIVERSAL_JUDGE_QUESTIONS
@@ -221,5 +223,41 @@ describe("judge output tolerance", () => {
       } as never,
     })
     expect(outside.bestOpeningSentence).toBeNull()
+  })
+})
+
+describe("stored judgement (#99)", () => {
+  const record = toJudgeRecord(
+    { answers: { hook: "yes", payoff: "no" }, note: "n", bestOpeningSentence: 7, score: 0.6 },
+    questions.slice(0, 3),
+  )
+
+  it("copies the questions in, so a stored clip survives a change to the question set", () => {
+    expect(record.questions).toEqual(
+      questions.slice(0, 3).map((q) => ({ id: q.id, text: q.text, hard: q.hard })),
+    )
+  })
+
+  it("round-trips through JSON", () => {
+    expect(parseClipJudge(JSON.stringify(record))).toEqual(record)
+  })
+
+  it("returns null for a clip with no judgement instead of inventing one", () => {
+    expect(parseClipJudge(null)).toBeNull()
+    expect(parseClipJudge(undefined)).toBeNull()
+    expect(parseClipJudge("")).toBeNull()
+  })
+
+  it("degrades unreadable or wrongly-shaped blobs to null, never throwing into the UI", () => {
+    expect(parseClipJudge("{not json")).toBeNull()
+    expect(parseClipJudge("null")).toBeNull()
+    expect(parseClipJudge(JSON.stringify({ score: "high", answers: {}, questions: [] }))).toBeNull()
+    expect(parseClipJudge(JSON.stringify({ score: 1, answers: {} }))).toBeNull()
+  })
+
+  it("tolerates a missing note or opening sentence", () => {
+    const parsed = parseClipJudge(JSON.stringify({ score: 1, answers: {}, questions: [] }))
+    expect(parsed?.note).toBe("")
+    expect(parsed?.bestOpeningSentence).toBeNull()
   })
 })

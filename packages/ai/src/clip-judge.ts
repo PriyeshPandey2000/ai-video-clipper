@@ -10,14 +10,14 @@
 
 import type { z } from "zod"
 import { z as zod } from "zod"
-import type { Sentence, Word } from "@video-editor/types"
+import type { ClipJudgeRecord, JudgeGrade, Sentence, Word } from "@video-editor/types"
 import type { AiClient } from "./client"
 import type { ClipProfile } from "./profiles"
 import { withRateLimitRetry, type Sleep, realSleep } from "./concurrency"
 
 // ─── Questions ───────────────────────────────────────────────────────────────
 
-export type JudgeGrade = "yes" | "partly" | "no"
+export type { JudgeGrade }
 
 /** Value of each grade in the score. Three levels, not booleans, so scores do not tie in bunches. */
 export const GRADE_VALUE: Record<JudgeGrade, number> = { yes: 1, partly: 0.5, no: 0 }
@@ -288,5 +288,22 @@ export async function judgeClip(input: JudgeClipInput): Promise<ClipJudgement> {
     note: raw.note.trim(),
     bestOpeningSentence,
     score: scoreAnswers(answers, questions),
+  }
+}
+
+/**
+ * The record stored in `clips.judge_json`. Questions are copied in so the stored clip stays
+ * readable after the question set changes (see `ClipJudgeRecord`).
+ */
+export function toJudgeRecord(
+  judgement: ClipJudgement,
+  questions: readonly JudgeQuestion[],
+): ClipJudgeRecord {
+  return {
+    score: judgement.score,
+    note: judgement.note,
+    answers: judgement.answers,
+    bestOpeningSentence: judgement.bestOpeningSentence,
+    questions: questions.map((q) => ({ id: q.id, text: q.text, hard: q.hard })),
   }
 }

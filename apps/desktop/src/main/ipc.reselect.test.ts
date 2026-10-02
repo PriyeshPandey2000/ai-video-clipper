@@ -144,7 +144,7 @@ import {
   insertWords,
   setProjectStatus,
 } from "@video-editor/database"
-import type { ClipSelectionTrace, TraceEntry } from "@video-editor/ai"
+import type { ClipSelectionTrace, ClipSuggestion, TraceEntry } from "@video-editor/ai"
 
 function traceEntry(overrides: Partial<TraceEntry> = {}): TraceEntry {
   return {
@@ -192,7 +192,7 @@ function selection(
     judgeQuestions: [],
   }
   return {
-    clips: clips.map((c, i) => ({
+    clips: clips.map((c, i): ClipSuggestion => ({
       title: c.title,
       startMs: c.startMs,
       endMs: c.endMs,
@@ -320,6 +320,41 @@ describeSqlite("clip:reselect (#97)", () => {
     expect(getWords(db, PROJECT_ID)).toHaveLength(400)
     // Selection runs without the Whisper binary being touched at all.
     expect(mockMeasureArousal).toHaveBeenCalled()
+  })
+
+  it("stores the judge's verdict with each clip, and NULL for a clip with none (#99)", async () => {
+    const result = selection([
+      { title: "Judged", startMs: 1000, endMs: 31000 },
+      { title: "Unjudged", startMs: 40000, endMs: 70000 },
+    ])
+    result.clips[0]!.judge = {
+      answers: { hook: "yes", payoff: "partly" },
+      note: "Strong open, soft landing.",
+      bestOpeningSentence: 3,
+      score: 0.8,
+    }
+    result.trace.judgeQuestions = [
+      { id: "hook", text: "Would it stop the scroll?", weight: 3, hard: false },
+      { id: "payoff", text: "Does it pay off?", weight: 2, hard: true },
+    ]
+    mockClipSelector.mockResolvedValue(result)
+
+    await invoke("clip:reselect", { projectId: PROJECT_ID })
+
+    const byTitle = new Map(getClips(db, PROJECT_ID).map((c) => [c.title, c]))
+    const stored = JSON.parse(byTitle.get("Judged")!.judgeJson!)
+    expect(stored).toEqual({
+      score: 0.8,
+      note: "Strong open, soft landing.",
+      answers: { hook: "yes", payoff: "partly" },
+      bestOpeningSentence: 3,
+      // Copied in, so the clip still renders if the question set later changes.
+      questions: [
+        { id: "hook", text: "Would it stop the scroll?", hard: false },
+        { id: "payoff", text: "Does it pay off?", hard: true },
+      ],
+    })
+    expect(byTitle.get("Unjudged")!.judgeJson).toBeNull()
   })
 
   it("replaces suggested clips but keeps rejected, approved and exported ones", async () => {

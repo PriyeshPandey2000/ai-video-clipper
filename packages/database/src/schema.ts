@@ -60,6 +60,14 @@ export const clips = sqliteTable(
     endMs: integer("end_ms").notNull(),
     aiScore: real("ai_score"),
     aiReason: text("ai_reason"),
+    /**
+     * The judge's verdict on this clip's exact exported range (#99): graded answers, the questions
+     * they answer, a one-line note and the score. JSON, parsed by `parseClipJudge`.
+     *
+     * Nullable with no default: NULL means "never judged" — a clip written before #99, or one the
+     * user cut by hand. An empty object would read as a judgement that found nothing.
+     */
+    judgeJson: text("judge_json"),
     status: text("status", {
       enum: ["suggested", "approved", "rejected", "exported"],
     })

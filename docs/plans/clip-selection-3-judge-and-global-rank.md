@@ -20,8 +20,10 @@ Depends on #97 (re-run + selection report) and #98 (genre profiles, `VIDEO CONTE
 >   scoring, keeping the higher score.
 > - **Chunk generation runs 3 at a time**, results kept in chunk order; 429s on generation and judge
 >   calls back off (honouring `retry-after`, else 1s/2s/4s, max 20s, 4 attempts).
-> - **No database migration in PR A.** `clips.ai_score` carries the real score; per-question answers
->   live in the run's selection report. `clips.judge_json` and the UI chips are PR B.
+> - **PR A had no database migration:** `clips.ai_score` carries the real score and per-question
+>   answers live in the run's selection report. **PR B** (stacked on the same branch) adds
+>   `clips.judge_json` (migration `0005`), stores the verdict with its questions copied in, and shows
+>   pass/fail chips and the judge's note in `ClipReview`.
 > - Judge ids for profile questions are positional (`comedy_1`). `bestOpeningSentence` is stored in
 >   the judgement but unused until #100. The score is a pure function of the answers.
 > - Not built: `JUDGE_MAX_CANDIDATES` cap (log first), batching (batch size is 1 by design).

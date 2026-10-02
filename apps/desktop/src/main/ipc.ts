@@ -72,6 +72,7 @@ import {
   selectClips,
   generateSocialCaptions,
   isClipProfileId,
+  toJudgeRecord,
 } from "@video-editor/ai"
 import type { ClipSelectionResult } from "@video-editor/ai"
 import { sanitizeName, buildSrt, remapWordsToEpisodeTimeline } from "@video-editor/export"
@@ -453,6 +454,11 @@ export function registerIpcHandlers(): void {
       endMs: c.endMs,
       aiScore: c.score,
       aiReason: c.reason,
+      // #99 — the verdict on exactly this range, with its questions copied in so the stored clip
+      // stays readable after the question set changes. NULL, not "{}", when there is none.
+      judgeJson: c.judge
+        ? JSON.stringify(toJudgeRecord(c.judge, selection.trace?.judgeQuestions ?? []))
+        : null,
       status: "suggested" as const,
       platform: c.platform,
       createdAt: now(),
