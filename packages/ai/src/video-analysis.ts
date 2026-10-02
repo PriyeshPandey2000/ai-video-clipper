@@ -145,8 +145,20 @@ export function buildAnalysisInput(
   if (!first || !last) return { text: full, excerpted: false, charCount: full.length }
 
   const chosen = new Map<number, Sentence>()
+  let usedChars = 0
+  // Candidates are added in priority order — head, then each topic's opening sentences, then the
+  // tail — and a batch stops once the budget is spent. Checking only `full.length` upfront (as
+  // before) bounds when excerpting kicks in, not the excerpt's own size: a transcript packed with
+  // short sentences inside the head/tail windows, or with many topic segments, could still
+  // assemble an excerpt past ANALYSIS_MAX_CHARS.
   const take = (list: Sentence[]): void => {
-    for (const s of list) chosen.set(s.index, s)
+    for (const s of list) {
+      if (chosen.has(s.index)) continue
+      const cost = renderSentences([s]).length + 1
+      if (usedChars + cost > ANALYSIS_MAX_CHARS) return
+      chosen.set(s.index, s)
+      usedChars += cost
+    }
   }
 
   const headEndMs = first.startMs + ANALYSIS_HEAD_MS

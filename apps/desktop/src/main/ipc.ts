@@ -67,7 +67,12 @@ import {
   segmentTopics,
   DEFAULT_FILLER_WORDS,
 } from "@video-editor/transcript"
-import { createAiClient, selectClips, generateSocialCaptions } from "@video-editor/ai"
+import {
+  createAiClient,
+  selectClips,
+  generateSocialCaptions,
+  isClipProfileId,
+} from "@video-editor/ai"
 import type { ClipSelectionResult } from "@video-editor/ai"
 import { sanitizeName, buildSrt, remapWordsToEpisodeTimeline } from "@video-editor/export"
 import { saveGroqApiKey } from "./config"
@@ -152,7 +157,16 @@ export function registerIpcHandlers(): void {
 
   function send<K extends keyof IpcEventChannels>(channel: K, data: IpcEventChannels[K]): void {
     const win = BrowserWindow.getAllWindows()[0]
-    if (win) win.webContents.send(channel, data)
+    if (!win) return
+    // Electron throws from webContents.send once the window has no live main frame (closing,
+    // navigating away). That is unrelated to whether the work being announced succeeded, so a
+    // throw here must not read as a failure of whatever just completed — e.g. runReselection's
+    // caller would otherwise roll back an override whose clip swap already committed.
+    try {
+      win.webContents.send(channel, data)
+    } catch (err) {
+      log.warn(`[ipc] send(${channel}) failed — window likely closing`, err)
+    }
   }
 
   function sendProgress(
@@ -662,6 +676,14 @@ export function registerIpcHandlers(): void {
     ) => {
       const project = getProject(db, projectId)
       if (!project) throw new Error(`Project ${projectId} not found`)
+
+      // Checked at the IPC boundary because only TypeScript, not a DB constraint, stands between
+      // the renderer and clip_profile_override — an invalid string would reach
+      // CLIP_PROFILES[profileId] as undefined and fail confusingly deep inside selection instead
+      // of here.
+      if (override !== null && !isClipProfileId(override)) {
+        throw new Error(`Invalid clip profile: ${String(override)}`)
+      }
 
       // Refused rather than silently accepted. An override with no transcript has nothing to
       // govern: it would only take effect on some future transcription, which is not what "choose
