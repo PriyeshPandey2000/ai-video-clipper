@@ -83,6 +83,28 @@ describe("buildAnalysisInput", () => {
     expect(input.text).toContain("EXCERPT")
   })
 
+  it("marks a gap between kept sentences even when it is shorter than the tail window", () => {
+    const sentences = longSentences()
+    // Two topics a minute apart (30 sentences at a 2s stride), far from the head and tail. Each
+    // contributes only its first three sentences, so sentences 1503..1529 are skipped between them.
+    const topic = (from: number): TopicSegment => {
+      const seg = sentences.slice(from, from + 30)
+      return {
+        sentences: seg,
+        startMs: seg[0]!.startMs,
+        endMs: seg[seg.length - 1]!.endMs,
+        title: "t",
+        keywords: [],
+      } as unknown as TopicSegment
+    }
+    const input = buildAnalysisInput(sentences, [topic(1500), topic(1530)])
+    const between = input.text.slice(
+      input.text.indexOf("sentence 1502"),
+      input.text.indexOf("sentence 1530"),
+    )
+    expect(between).toContain("[... transcript omitted here ...]")
+  })
+
   it("samples the first three sentences of each topic, not the whole segment", () => {
     const sentences = longSentences()
     // A topic in the middle of the video, far from both the head and tail windows.

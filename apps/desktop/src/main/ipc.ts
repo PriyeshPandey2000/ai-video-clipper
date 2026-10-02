@@ -492,21 +492,6 @@ export function registerIpcHandlers(): void {
       )
     }
 
-    // #98 — the analysis is stored per run, so a re-run replaces it the way it replaces the
-    // captions. Written before the swap below for the same reason the report is: everything up to
-    // here is derived purely from the selection result, so a failure here cannot leave half of a
-    // new run mixed in with the old one.
-    //
-    // Stored even when it is the fallback: "we could not classify this video" is a fact about the
-    // run, and dropping it would make the panel claim a detection that never happened.
-    replaceAiOutputByType(db, projectId, "video_analysis", {
-      id: generateId(),
-      projectId,
-      type: "video_analysis",
-      content: JSON.stringify(selection.analysis),
-      createdAt: now(),
-    })
-
     const report = await writeSelectionReport(projectDir(projectId), {
       header: {
         projectId,
@@ -555,6 +540,21 @@ export function registerIpcHandlers(): void {
     } else {
       insertClips(db, clipRows)
     }
+
+    // #98 — the analysis is stored per run, so a re-run replaces it the way it replaces the
+    // captions. Written after the clip swap, never before: it commits on its own, so writing it
+    // earlier would let a failed report write or clip swap leave the new analysis stored beside the
+    // previous run's clips — and the stored profile would then claim a run that never landed.
+    //
+    // Stored even when it is the fallback: "we could not classify this video" is a fact about the
+    // run, and dropping it would make the panel claim a detection that never happened.
+    replaceAiOutputByType(db, projectId, "video_analysis", {
+      id: generateId(),
+      projectId,
+      type: "video_analysis",
+      content: JSON.stringify(selection.analysis),
+      createdAt: now(),
+    })
 
     // Social captions are the last step and are non-fatal by design. A failure here must not
     // retroactively invalidate the run the user is waiting on — the clips are already correct
@@ -683,6 +683,15 @@ export function registerIpcHandlers(): void {
       // of here.
       if (override !== null && !isClipProfileId(override)) {
         throw new Error(`Invalid clip profile: ${String(override)}`)
+      }
+
+      // Checked before the override is written, not left to runReselection's own guard: a run
+      // already in flight reads the override from the database when it reaches selection, so a
+      // write that is about to be refused would still leak into it for the moment it exists.
+      if (project.status === "transcribing" || project.status === "analyzing") {
+        throw new Error(
+          `Cannot change the clip profile while the project is ${project.status}. Wait for the current run to finish.`,
+        )
       }
 
       // Refused rather than silently accepted. An override with no transcript has nothing to

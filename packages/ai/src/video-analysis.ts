@@ -177,8 +177,9 @@ export function buildAnalysisInput(
   for (const s of ordered) {
     // Mark every discontinuity. These boundaries are the excerpt's structure, and an unmarked
     // jump from the opening to some segment in the middle reads as speech that followed directly.
-    const gapMs = previous ? s.startMs - previous.endMs : 0
-    const jumped = previous !== null && gapMs > ANALYSIS_TAIL_MS
+    // Detected by sentence index, not elapsed time: a skipped stretch shorter than any time
+    // threshold (short topic segments) is still a gap the model must not read across.
+    const jumped = previous !== null && s.index !== previous.index + 1
     if (parts.length === 0 || jumped) {
       parts.push(jumped ? "\n[... transcript omitted here ...]\n" : "")
     }
