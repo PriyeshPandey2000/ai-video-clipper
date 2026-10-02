@@ -1,0 +1,1 @@
+ALTER TABLE `clips` ADD `judge_json` text;

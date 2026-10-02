@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
-import type { Clip } from "@video-editor/types"
+import type { Clip, ClipJudgeRecord, JudgeGrade } from "@video-editor/types"
+import { parseClipJudge } from "@video-editor/types"
 import type { CaptionStyle } from "@video-editor/types"
 import { Spinner, Badge, Progress, Button } from "@video-editor/ui"
 
@@ -43,6 +44,53 @@ function scoreColor(score: number | null): "green" | "yellow" | "red" | "neutral
   if (score >= 0.7) return "green"
   if (score >= 0.4) return "yellow"
   return "red"
+}
+
+/** Short chip labels for the universal judge questions; profile questions are labelled by number. */
+const JUDGE_LABELS: Record<string, string> = {
+  hook: "Hook",
+  standalone: "Standalone",
+  payoff: "Payoff",
+  oneIdea: "One idea",
+  postable: "Postable",
+}
+
+function judgeLabel(id: string): string {
+  const known = JUDGE_LABELS[id]
+  if (known) return known
+  // Profile questions are stored as `<profile>_<n>`; the full text is in the chip's tooltip.
+  const n = id.match(/_(\d+)$/)?.[1]
+  return n ? `Genre ${n}` : id
+}
+
+const GRADE_MARK: Record<JudgeGrade, string> = { yes: "✓", partly: "~", no: "✗" }
+const GRADE_STYLE: Record<JudgeGrade, string> = {
+  yes: "bg-green-500/10 text-green-400",
+  partly: "bg-yellow-500/10 text-yellow-400",
+  no: "bg-red-500/10 text-red-400",
+}
+
+/** Pass/fail chips for the judge's answers, plus its one-line note. Nothing for an unjudged clip. */
+function JudgeSummary({ judge }: { judge: ClipJudgeRecord }): React.ReactElement {
+  return (
+    <div className="mt-1 space-y-1">
+      <div className="flex flex-wrap gap-1">
+        {judge.questions.map((q) => {
+          const grade = judge.answers[q.id] ?? "no"
+          return (
+            <span
+              key={q.id}
+              title={`${q.text}${q.hard ? " (required)" : ""}`}
+              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${GRADE_STYLE[grade]}`}
+            >
+              {GRADE_MARK[grade]} {judgeLabel(q.id)}
+            </span>
+          )
+        })}
+      </div>
+      {judge.note && <p className="text-xs text-neutral-400 line-clamp-2">{judge.note}</p>}
+    </div>
+  )
 }
 
 function cropLabel(cropX: number): "L" | "C" | "R" {
@@ -313,6 +361,7 @@ export function ClipReview({
           const isExporting = exportingIds.has(clip.id)
           const isExported = clip.status === "exported"
           const progress = clipProgress[clip.id]
+          const judge = parseClipJudge(clip.judgeJson)
 
           return (
             <div
@@ -342,6 +391,7 @@ export function ClipReview({
                   {clip.aiReason && (
                     <p className="text-xs text-neutral-500 line-clamp-2">{clip.aiReason}</p>
                   )}
+                  {judge && <JudgeSummary judge={judge} />}
                 </div>
 
                 {clip.status !== "suggested" && (

@@ -316,6 +316,21 @@ describeSqlite("repository", () => {
     expect(clip?.pipelineHash).toBeNull()
   })
 
+  it("round-trips the judge's verdict and leaves it null for unjudged clips (#99)", () => {
+    const db = testDb()
+    insertProject(db, baseProject)
+    const verdict = JSON.stringify({ score: 0.7, note: "n", answers: {}, questions: [] })
+    insertClips(db, [
+      { ...baseClip("p1"), id: "c-judged", judgeJson: verdict },
+      // No judgement: stands in for a pre-#99 clip or one the user cut by hand.
+      { ...baseClip("p1"), id: "c-unjudged" },
+    ])
+    const byId = new Map(getClipsByIds(db, ["c-judged", "c-unjudged"]).map((c) => [c.id, c]))
+    expect(byId.get("c-judged")?.judgeJson).toBe(verdict)
+    // NULL, not "" or "{}": absence has to stay distinguishable from an empty verdict.
+    expect(byId.get("c-unjudged")?.judgeJson).toBeNull()
+  })
+
   // `source` exists to separate model output from hand-made clips, so it has three states, not two.
   it("distinguishes ai, user and pre-migration clips, with no default filling the third in", () => {
     const db = testDb()

@@ -357,7 +357,7 @@ export function renderVideoContext(analysis: VideoAnalysis, options: VideoContex
 
 /**
  * Sample rendering of the block above, hashed into the fingerprint so the *format* stays covered
- * even though the values are per-video and cannot be. Same reasoning as RERANK_FORMAT_SAMPLE: the
+ * even though the values are per-video and cannot be. The
  * block's shape is part of the configuration, and a format change changes what the model reads
  * even when no rubric changed.
  *

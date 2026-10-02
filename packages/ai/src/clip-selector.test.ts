@@ -12,6 +12,9 @@ import {
 } from "./clip-selector"
 import type { TraceEntry } from "./clip-selector"
 import { CLIP_PROFILES } from "./profiles"
+import { UNIVERSAL_JUDGE_QUESTIONS } from "./clip-judge"
+import { vi } from "vitest"
+import type { JudgeGrade } from "./clip-judge"
 
 function transcript(count: number): Word[] {
   const words: Word[] = []
@@ -68,6 +71,7 @@ function mockClient(
   prompts: string[] = [],
   analysisHandler: Handler = () => defaultAnalysis,
   systems: string[] = [],
+  judgeHandler: JudgeHandler = allYes,
 ): AiClient {
   return {
     provider: "groq",
@@ -84,10 +88,43 @@ function mockClient(
       // alone would only ever see the user half of what the model read.
       if (system) systems.push(system)
       if (prompt.startsWith(ANALYSIS_PROMPT_MARKER)) return analysisHandler(prompt) as never
+      // #99 — the judge call. Recognised by the fence the judge prompt wraps the clip in.
+      if (prompt.includes("[CLIP STARTS]")) return judgeHandler(prompt, system ?? "") as never
       return handler(prompt) as never
     },
   }
 }
+
+type JudgeHandler = (prompt: string, system: string) => unknown
+
+/** Question ids the judge was asked, read back out of its own system prompt. */
+function questionIds(system: string): string[] {
+  const ids: string[] = []
+  for (const m of system.matchAll(/^- ([\w.]+): /gm)) ids.push(m[1]!)
+  return ids
+}
+
+/** A judge answer giving `grade` to every question, or `grade(id)` per question. */
+function judgement(
+  system: string,
+  grade: JudgeGrade | ((id: string) => JudgeGrade),
+  extra: Record<string, unknown> = {},
+) {
+  const answers: Record<string, JudgeGrade> = {}
+  for (const id of questionIds(system)) answers[id] = typeof grade === "string" ? grade : grade(id)
+  return { answers, note: "A fine clip.", ...extra }
+}
+
+const allYes: JudgeHandler = (_prompt, system) => judgement(system, "yes")
+
+/** First sentence index of the clip a judge prompt is about — what the judge is looking at. */
+function clipStart(prompt: string): number {
+  const m = prompt.match(/\[CLIP STARTS\]\n#(\d+)/)
+  return m ? Number(m[1]) : -1
+}
+
+/** No waiting in tests. */
+const noSleep = { sleep: async () => {} }
 
 /** `analyzeVideo` prefixes its prompt with this; no selection or ranking prompt begins with it. */
 const ANALYSIS_PROMPT_MARKER = "TRANSCRIPT"
@@ -199,7 +236,20 @@ describe("output invariants", () => {
     }
   })
 
-  it("derives display scores from rank, descending (C8)", async () => {
+  it("scores clips with the judge's score, not their rank (#99)", async () => {
+    // Every answer "partly" is 0.5 whatever the position. The old rank-derived score gave the top
+    // clip 1.0 even when the whole batch was mediocre.
+    const meh: JudgeHandler = (_p, system) => judgement(system, "partly")
+    const { clips } = await selectClips(
+      mockClient(twoPerChunk, [], undefined, [], meh),
+      words,
+      sentences,
+    )
+    expect(clips.length).toBeGreaterThan(0)
+    for (const c of clips) expect(c.score).toBe(0.5)
+  })
+
+  it("orders clips by score, best first", async () => {
     const { clips } = await selectClips(mockClient(twoPerChunk), words, sentences)
     for (let i = 1; i < clips.length; i++) {
       expect(clips[i]!.score).toBeLessThanOrEqual(clips[i - 1]!.score)
@@ -238,27 +288,17 @@ describe("C1 — hallucinated timestamps are structurally impossible", () => {
 })
 
 describe("B13 — variable clip count", () => {
-  it("returns zero clips when nothing is marked strong, with reasons", async () => {
-    const weak: Handler = (prompt) => {
-      const r = range(prompt)
-      if (!r) return { ranking: [] }
-      const [lo, hi] = r
-      return {
-        clips: [
-          {
-            startSentence: lo,
-            endSentence: Math.min(lo + 12, hi),
-            title: "weak",
-            reason: "r",
-            strong: false,
-            platform: "shorts",
-          },
-        ],
-      }
-    }
-    const { clips, rejected } = await selectClips(mockClient(weak), words, sentences)
+  it("returns zero clips when the judge says none stand alone, with reasons", async () => {
+    const noStandalone: JudgeHandler = (_p, system) =>
+      judgement(system, (id) => (id === "standalone" ? "no" : "yes"))
+    const { clips, rejected } = await selectClips(
+      mockClient(twoPerChunk, [], undefined, [], noStandalone),
+      words,
+      sentences,
+    )
     expect(clips).toHaveLength(0)
-    expect(rejected[0]!.reasons).toContain("not marked strong")
+    expect(rejected.length).toBeGreaterThan(0)
+    expect(rejected[0]!.reasons).toContain("fails standalone")
   })
 
   it("handles an empty model response without throwing", async () => {
@@ -335,58 +375,14 @@ describe("hostile input", () => {
     expect(prompt).toContain("$$1.4M")
     expect(prompt).not.toContain(" to $1.4M ")
     // ...and "$'" must not have spliced the rest of the template in after the transcript.
-    // The template's tail ("Select every clip worth posting") belongs at the very end, once.
-    expect(prompt.match(/Select every clip worth posting/g) ?? []).toHaveLength(1)
+    // The template's tail ("List every plausible clip") belongs at the very end, once.
+    expect(prompt.match(/List every plausible clip/g) ?? []).toHaveLength(1)
     expect(prompt).not.toMatch(
-      /it's fine and left\.[\s\S]*Select every clip worth posting[\s\S]*Select every clip worth posting/,
+      /it's fine and left\.[\s\S]*List every plausible clip[\s\S]*List every plausible clip/,
     )
     // The real placeholders were still substituted — spoken "{{MIN_SEC}}" must not become "15".
     expect(prompt).toContain("roughly 15")
     expect(prompt).toContain("The minimum is {{MIN_SEC}} seconds flat.")
-  })
-
-  it("renders rerank lines with literal braces in a title left untouched", async () => {
-    // Regression: the rerank line used to be built by `.replace`-ing {ID}/{TITLE}/{REASON}
-    // placeholders, so a model-authored title containing the literal text "{REASON}" made the
-    // trailing replace consume the placeholder inside the title — the reason landed in the title
-    // and a bare "{REASON}" was stranded at the end of the line.
-    const hostile: Handler = (prompt) => {
-      const r = range(prompt)
-      if (!r) return { ranking: [0, 1] }
-      const [lo, hi] = r
-      return {
-        clips: [
-          {
-            startSentence: lo,
-            endSentence: Math.min(lo + 12, hi),
-            title: "Use {REASON} and $' and $$ here",
-            reason: "REAL-REASON",
-            strong: true,
-            platform: "shorts",
-          },
-          {
-            startSentence: Math.min(lo + 40, hi),
-            endSentence: Math.min(lo + 52, hi),
-            title: "second",
-            reason: "r2",
-            strong: true,
-            platform: "shorts",
-          },
-        ],
-      }
-    }
-
-    const prompts: string[] = []
-    await selectClips(mockClient(hostile, prompts), words, sentences)
-
-    // The rerank call is the one whose payload is bare `id=N` lines, not a "Sentences #x to #y" header.
-    const rerank = prompts.find((p) => /id=\d+ "/.test(p) && !/Sentences #/.test(p))
-    expect(rerank).toBeDefined()
-    // Braces, dollar-quote and doubled-dollar all survive as literal text...
-    expect(rerank).toContain('"Use {REASON} and $\' and $$ here"')
-    // ...and the real reason is present exactly once, in its own position after the dash.
-    expect(rerank).toContain('" — REAL-REASON')
-    expect(rerank!.match(/REAL-REASON/g) ?? []).toHaveLength(1)
   })
 
   it("survives out-of-range and reversed sentence indices", async () => {
@@ -458,7 +454,10 @@ describe("selection trace (#97)", () => {
 
   it("gives every kept candidate a rank that matches its position in the output", async () => {
     const result = await selectClips(mockClient(twoPerChunk), words, sentences)
-    const kept = result.trace!.candidates.filter((c) => c.outcome === "kept")
+    // The trace lists candidates in generation order; ranks are positions in the ranked output.
+    const kept = result
+      .trace!.candidates.filter((c) => c.outcome === "kept")
+      .sort((a, b) => a.finalRank! - b.finalRank!)
     expect(kept.map((c) => c.finalRank)).toEqual(kept.map((_, i) => i))
     // And the ranks point at the same clips, so the report's ranked table cannot drift from
     // what selectClips actually returned.
@@ -476,32 +475,22 @@ describe("selection trace (#97)", () => {
     }
   })
 
-  it("records gate rejections with the gate's own reasons and the boundary flags", async () => {
-    const weak: Handler = (prompt) => {
-      const r = range(prompt)
-      if (!r) return { ranking: [] }
-      const [lo, hi] = r
-      return {
-        clips: [
-          {
-            startSentence: lo,
-            endSentence: Math.min(lo + 12, hi),
-            title: "weak",
-            reason: "r",
-            strong: false,
-            platform: "shorts",
-          },
-        ],
-      }
-    }
-    const result = await selectClips(mockClient(weak), words, sentences)
+  it("records judge rejections with the verdict, the answers and the boundary", async () => {
+    const noPayoff: JudgeHandler = (_p, system) =>
+      judgement(system, (id) => (id === "payoff" ? "no" : "yes"))
+    const result = await selectClips(
+      mockClient(twoPerChunk, [], undefined, [], noPayoff),
+      words,
+      sentences,
+    )
     expect(result.clips).toHaveLength(0)
-    // The old return value said only `{title, reasons}` — no boundary, no flags, no text. These
-    // are the fields that make "why was nothing kept" answerable.
-    for (const c of result.trace!.candidates) {
-      expect(c.outcome).toBe("gate-rejected")
-      expect(c.gate.reasons).toContain("not marked strong")
-      expect(c.gate.passed).toBe(false)
+    const judged = result.trace!.candidates.filter((c) => c.outcome === "judge-rejected")
+    expect(judged.length).toBeGreaterThan(0)
+    // These are the fields that make "why was nothing kept" answerable.
+    for (const c of judged) {
+      expect(c.judgeReasons).toContain("fails payoff")
+      expect(c.judge?.answers.payoff).toBe("no")
+      expect(c.gate.passed).toBe(true)
       expect(c.boundary).not.toBeNull()
       expect(c.startTimecode).toMatch(/^\d+:\d{2}$/)
       expect(c.text).toBeTruthy()
@@ -561,6 +550,7 @@ describe("selection trace (#97)", () => {
       sentenceCount: 0,
       chunks: [],
       candidates: [],
+      judgeQuestions: expect.any(Array),
     })
   })
 
@@ -586,9 +576,16 @@ describe("selection trace (#97)", () => {
   })
 })
 
-/** Candidates that left without a `rejected` entry: duplicates, invalid ranges, over-budget. */
+/** Candidates that left without a `rejected` entry: duplicates and over-budget. */
 function dropWithoutRejection(candidates: TraceEntry[]): number {
-  return candidates.filter((c) => c.outcome !== "kept" && c.outcome !== "gate-rejected").length
+  return candidates.filter(
+    (c) =>
+      c.outcome !== "kept" &&
+      c.outcome !== "gate-rejected" &&
+      c.outcome !== "invalid-range" &&
+      c.outcome !== "judge-rejected" &&
+      c.outcome !== "judge-failed",
+  ).length
 }
 
 describe("chunk failure isolation", () => {
@@ -625,15 +622,15 @@ describe("chunk failure is not an empty selection (#97)", () => {
   it("throws when every chunk failed, rather than returning zero clips", async () => {
     // The whole point: a caller that swaps the user's clips for this result would wipe them,
     // and report success. Failing loudly is what makes the run a no-op instead.
-    await expect(selectClips(mockClient(alwaysFails), words, sentences)).rejects.toThrow(
-      /all \d+ chunk\(s\)/,
-    )
+    await expect(
+      selectClips(mockClient(alwaysFails), words, sentences, [], 10, [], null, noSleep),
+    ).rejects.toThrow(/all \d+ chunk\(s\)/)
   })
 
   it("says what actually went wrong, so the error is diagnosable", async () => {
-    await expect(selectClips(mockClient(alwaysFails), words, sentences)).rejects.toThrow(
-      /rate limit/,
-    )
+    await expect(
+      selectClips(mockClient(alwaysFails), words, sentences, [], 10, [], null, noSleep),
+    ).rejects.toThrow(/rate limit/)
   })
 
   it("does not mistake a genuinely empty answer for a failure", async () => {
@@ -889,5 +886,232 @@ describe("pipeline provenance (#89)", () => {
     } finally {
       CLIP_PROFILES.solo_opinion.rubric = original
     }
+  })
+})
+
+// ─── Judge, global ranking, failure handling (#99) ───────────────────────────
+describe("judging and global ranking (#99)", () => {
+  it("ranks clips from all chunks together, not by per-chunk quota", async () => {
+    // The judge likes clips late in the video. Round-robin interleaving would have put chunk 0's
+    // first pick on top; global ranking puts the best-judged clip on top wherever it sits.
+    const lateIsBetter: JudgeHandler = (prompt, system) => {
+      const late = clipStart(prompt) > sentences.length * 0.66
+      return judgement(system, late ? "yes" : "partly")
+    }
+    const { clips, trace } = await selectClips(
+      mockClient(twoPerChunk, [], undefined, [], lateIsBetter),
+      words,
+      sentences,
+    )
+    expect(clips.length).toBeGreaterThan(2)
+    expect(clips[0]!.score).toBe(1)
+    // The best clips are late ones, several of them, ahead of every early clip.
+    const lastFirstEarly = clips.findIndex((c) => c.score < 1)
+    expect(lastFirstEarly).toBeGreaterThan(1)
+    expect(clips[0]!.startMs).toBeGreaterThan(words[Math.floor(words.length * 0.5)]!.startMs)
+    // And each kept candidate's finalRank is its position in the returned list.
+    const kept = trace!.candidates
+      .filter((c) => c.outcome === "kept")
+      .sort((a, b) => a.finalRank! - b.finalRank!)
+    expect(kept.map((c) => c.title)).toEqual(clips.map((c) => c.title))
+  })
+
+  it("rejects a clip that fails a hard question even when everything else is perfect", async () => {
+    const result = await selectClips(
+      mockClient(twoPerChunk, [], undefined, [], (_p, system) =>
+        judgement(system, (id) => (id === "payoff" ? "no" : "yes")),
+      ),
+      words,
+      sentences,
+    )
+    expect(result.clips).toHaveLength(0)
+    expect(result.rejected.every((r) => r.reasons.includes("fails payoff"))).toBe(true)
+  })
+
+  it("lets a hard question that is only 'partly' through", async () => {
+    const result = await selectClips(
+      mockClient(twoPerChunk, [], undefined, [], (_p, system) =>
+        judgement(system, (id) => (id === "payoff" ? "partly" : "yes")),
+      ),
+      words,
+      sentences,
+    )
+    expect(result.clips.length).toBeGreaterThan(0)
+    expect(result.clips[0]!.score).toBeLessThan(1)
+  })
+
+  it("keeps the higher-scored clip of two overlapping ones, whichever the model listed first", async () => {
+    // Two overlapping ranges in one short video. The model lists the weaker one first.
+    const short = transcript(120)
+    const shortSentences = buildSentences(short)
+    const overlapping: Handler = () => ({
+      clips: [
+        { startSentence: 0, endSentence: 14, title: "weaker", reason: "r", platform: "shorts" },
+        { startSentence: 6, endSentence: 20, title: "stronger", reason: "r", platform: "shorts" },
+      ],
+    })
+    const prefersSecond: JudgeHandler = (prompt, system) =>
+      judgement(system, clipStart(prompt) <= 3 ? "partly" : "yes")
+    const { clips, trace } = await selectClips(
+      mockClient(overlapping, [], undefined, [], prefersSecond),
+      short,
+      shortSentences,
+    )
+    expect(clips.map((c) => c.title)).toEqual(["stronger"])
+    const weaker = trace!.candidates.find((c) => c.title === "weaker")!
+    expect(weaker.outcome).toBe("duplicate")
+    expect(weaker.duplicateOf).toBe("stronger")
+  })
+
+  it("shows the judge the exported text, with the lead-in fenced off", async () => {
+    const prompts: string[] = []
+    const result = await selectClips(mockClient(twoPerChunk, prompts), words, sentences)
+    const judgePrompts = prompts.filter((p) => p.includes("[CLIP STARTS]"))
+    expect(judgePrompts.length).toBeGreaterThan(0)
+    const first = judgePrompts[0]!
+    expect(first).toContain("[BEFORE CLIP — the viewer does NOT see this]")
+    expect(first).toContain("VIDEO CONTEXT")
+    // The clip block is the words inside the final boundary — compare against the trace's text.
+    const clipBlock = first.split("[CLIP STARTS]\n")[1]!.split("\n[CLIP ENDS]")[0]!
+    const flat = clipBlock
+      .split("\n")
+      .map((l) => l.replace(/^#\d+ /, ""))
+      .join(" ")
+    const entry = result.trace!.candidates.find((c) => c.text === flat)
+    expect(entry).toBeDefined()
+  })
+
+  it("asks the effective profile's questions, not just the universal set", async () => {
+    const systems: string[] = []
+    const { trace } = await selectClips(
+      mockClient(twoPerChunk, [], undefined, systems),
+      words,
+      sentences,
+      [],
+      10,
+      [],
+      "comedy",
+    )
+    const ids = trace!.judgeQuestions.map((q) => q.id)
+    expect(ids).toEqual(expect.arrayContaining(UNIVERSAL_JUDGE_QUESTIONS.map((q) => q.id)))
+    expect(ids.filter((id) => id.startsWith("comedy_"))).toHaveLength(
+      CLIP_PROFILES.comedy.judgeQuestions.length,
+    )
+    expect(systems.some((s) => s.includes("comedy_1"))).toBe(true)
+  })
+
+  it("never uses randomness in the selection path", async () => {
+    const random = vi.spyOn(Math, "random")
+    await selectClips(mockClient(twoPerChunk), words, sentences)
+    expect(random).not.toHaveBeenCalled()
+    random.mockRestore()
+  })
+
+  it("is deterministic: the same answers produce the same ranking on every run", async () => {
+    const a = await selectClips(mockClient(twoPerChunk), words, sentences)
+    const b = await selectClips(mockClient(twoPerChunk), words, sentences)
+    expect(a.clips.map((c) => [c.title, c.startMs, c.score])).toEqual(
+      b.clips.map((c) => [c.title, c.startMs, c.score]),
+    )
+  })
+})
+
+describe("judge failure handling (#99)", () => {
+  it("retries a rate-limited judge call and keeps the clip", async () => {
+    let limited = 0
+    const flaky: JudgeHandler = (_p, system) => {
+      if (limited++ === 0) throw Object.assign(new Error("Too Many Requests"), { statusCode: 429 })
+      return judgement(system, "yes")
+    }
+    const result = await selectClips(
+      mockClient(twoPerChunk, [], undefined, [], flaky),
+      words,
+      sentences,
+      [],
+      10,
+      [],
+      null,
+      noSleep,
+    )
+    expect(result.trace!.candidates.some((c) => c.outcome === "judge-failed")).toBe(false)
+    expect(result.clips.length).toBeGreaterThan(0)
+  })
+
+  it("rejects only the candidate whose judge call keeps failing", async () => {
+    const seen = new Set<number>()
+    const oneBad: JudgeHandler = (prompt, system) => {
+      const start = clipStart(prompt)
+      if (seen.size === 0) seen.add(start)
+      if (seen.has(start)) throw new Error("model exploded")
+      return judgement(system, "yes")
+    }
+    const result = await selectClips(
+      mockClient(twoPerChunk, [], undefined, [], oneBad),
+      words,
+      sentences,
+      [],
+      10,
+      [],
+      null,
+      noSleep,
+    )
+    const failed = result.trace!.candidates.filter((c) => c.outcome === "judge-failed")
+    expect(failed.length).toBeGreaterThan(0)
+    expect(failed[0]!.judgeReasons[0]).toMatch(/model exploded/)
+    expect(failed[0]!.judge).toBeNull()
+    expect(result.clips.length).toBeGreaterThan(0)
+  })
+
+  it("throws when most judge calls fail, so a re-run keeps the previous suggestions", async () => {
+    const alwaysBad: JudgeHandler = () => {
+      throw new Error("judge model unavailable")
+    }
+    await expect(
+      selectClips(
+        mockClient(twoPerChunk, [], undefined, [], alwaysBad),
+        words,
+        sentences,
+        [],
+        10,
+        [],
+        null,
+        noSleep,
+      ),
+    ).rejects.toThrow(/judging failed/i)
+  })
+
+  it("retries 429s on chunk generation too", async () => {
+    let first = true
+    const limitedOnce: Handler = (prompt) => {
+      if (first && range(prompt)) {
+        first = false
+        throw Object.assign(new Error("rate limit"), { statusCode: 429 })
+      }
+      return twoPerChunk(prompt)
+    }
+    const result = await selectClips(
+      mockClient(limitedOnce),
+      words,
+      sentences,
+      [],
+      10,
+      [],
+      null,
+      noSleep,
+    )
+    expect(result.trace!.chunks.every((c) => !c.failed)).toBe(true)
+  })
+})
+
+describe("pipeline fingerprint covers the judge (#99)", () => {
+  it("moves when a profile's judge question changes", () => {
+    const changed = {
+      ...CLIP_PROFILES,
+      comedy: {
+        ...CLIP_PROFILES.comedy,
+        judgeQuestions: [...CLIP_PROFILES.comedy.judgeQuestions, "Is it funny?"],
+      },
+    }
+    expect(computePipelineFingerprint(10, 0, changed)).not.toBe(computePipelineFingerprint(10, 0))
   })
 })

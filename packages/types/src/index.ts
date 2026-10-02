@@ -54,6 +54,57 @@ export interface Sentence {
   endsWithTerminator: boolean
 }
 
+/** One graded answer from the clip judge (#99). */
+export type JudgeGrade = "yes" | "partly" | "no"
+
+/**
+ * What the judge said about a clip, as stored in `clips.judge_json` (#99).
+ *
+ * Self-describing on purpose: `questions` is copied in with the answers, so a clip written under
+ * one set of questions still renders correctly after the set changes, and the UI needs no access to
+ * the pipeline's question tables to label its chips.
+ */
+export interface ClipJudgeRecord {
+  /** 0–1, the weighted share of yes answers. Same number as `Clip.aiScore`. */
+  score: number
+  /** One sentence for the editor. */
+  note: string
+  answers: Record<string, JudgeGrade>
+  /** Global sentence index the judge preferred as the opening, or null. Consumed by #100. */
+  bestOpeningSentence: number | null
+  /** The questions that were asked, in order. `hard` ones reject a clip on a clear "no". */
+  questions: { id: string; text: string; hard: boolean }[]
+}
+
+/**
+ * Parses `clips.judge_json`. Null for a clip with no judgement (written before #99, or by the user)
+ * and for anything unreadable — a bad blob must degrade to "no chips", never throw into the UI.
+ */
+export function parseClipJudge(json: string | null | undefined): ClipJudgeRecord | null {
+  if (!json) return null
+  try {
+    const v = JSON.parse(json) as Partial<ClipJudgeRecord> | null
+    if (
+      !v ||
+      typeof v.score !== "number" ||
+      typeof v.answers !== "object" ||
+      v.answers === null ||
+      !Array.isArray(v.questions)
+    ) {
+      return null
+    }
+    return {
+      score: v.score,
+      note: typeof v.note === "string" ? v.note : "",
+      answers: v.answers as Record<string, JudgeGrade>,
+      bestOpeningSentence: typeof v.bestOpeningSentence === "number" ? v.bestOpeningSentence : null,
+      questions: v.questions,
+    }
+  } catch {
+    return null
+  }
+}
+
 export interface Clip {
   id: string
   projectId: string
@@ -62,6 +113,8 @@ export interface Clip {
   endMs: number
   aiScore: number | null
   aiReason: string | null
+  /** The judge's verdict as JSON (#99); parse with `parseClipJudge`. Null when there is none. */
+  judgeJson: string | null
   status: "suggested" | "approved" | "rejected" | "exported"
   platform: "tiktok" | "reels" | "shorts" | "generic" | null
   cropX: number

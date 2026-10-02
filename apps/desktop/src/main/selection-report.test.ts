@@ -34,6 +34,10 @@ function trace(overrides: Partial<ClipSelectionTrace> = {}): ClipSelectionTrace 
     sentenceCount: 2,
     chunks: [{ index: 0, firstSentence: 0, lastSentence: 41, candidateCount: 2, failed: false }],
     candidates: [],
+    judgeQuestions: [
+      { id: "hook", text: "Would it stop the scroll?", weight: 3, hard: false },
+      { id: "payoff", text: "Does it pay off?", weight: 2, hard: true },
+    ],
     ...overrides,
   }
 }
@@ -45,10 +49,10 @@ function entry(overrides: Partial<TraceEntry>): TraceEntry {
     endSentence: 12,
     title: "Untitled clip",
     reason: "Hook",
-    strong: true,
     platform: "shorts",
     outcome: "kept",
-    trimmedStartSentence: 0,
+    judge: null,
+    judgeReasons: [],
     startMs: 0,
     endMs: 30000,
     startTimecode: "0:00",
@@ -160,7 +164,7 @@ describe("writeSelectionReport", () => {
           entry({
             outcome: "gate-rejected",
             finalRank: null,
-            gate: { passed: false, reasons: ["not marked strong"], warnings: [] },
+            gate: { passed: false, reasons: ["shorter than 15000ms"], warnings: [] },
           }),
         ],
       }),
@@ -237,7 +241,7 @@ describe("renderSelectionReportMarkdown", () => {
             outcome: "gate-rejected",
             finalRank: null,
             title: "The weak one",
-            gate: { passed: false, reasons: ["not marked strong"], warnings: [] },
+            gate: { passed: false, reasons: ["shorter than 15000ms"], warnings: [] },
             text: "This one never shipped.",
           }),
           entry({
@@ -268,7 +272,7 @@ describe("renderSelectionReportMarkdown", () => {
     expect(md).toContain("| temperature | 0 |")
     expect(md).toContain("Nobody expected this.")
     expect(md).toContain("gate-rejected — The weak one")
-    expect(md).toContain("not marked strong")
+    expect(md).toContain("shorter than 15000ms")
     expect(md).toContain("duplicate — The seam duplicate")
     expect(md).toContain("duplicate of: The kept one")
   })
@@ -327,5 +331,49 @@ describe("renderSelectionReportMarkdown", () => {
     })
     const md = await readFile(reportMarkdownPath, "utf-8")
     expect(md).toContain("_No chunks — the transcript had no sentences._")
+  })
+
+  it("shows the judge's verdict on kept and rejected candidates, and the question table (#99)", async () => {
+    const dir = await tmpDir()
+    const { reportMarkdownPath } = await writeSelectionReport(dir, {
+      header: { projectId: "p1", projectName: "My Video", durationMs: 60000, startedAtMs: 0 },
+      provenance,
+      analysis: analysis(),
+      trace: trace({
+        candidates: [
+          entry({
+            finalRank: 0,
+            title: "Judged keeper",
+            judge: {
+              answers: { hook: "yes", payoff: "partly" },
+              note: "Strong opening, soft landing.",
+              bestOpeningSentence: null,
+              score: 0.8,
+            },
+          }),
+          entry({
+            outcome: "judge-rejected",
+            finalRank: null,
+            title: "Judged reject",
+            judge: {
+              answers: { hook: "yes", payoff: "no" },
+              note: "Never resolves.",
+              bestOpeningSentence: null,
+              score: 0.6,
+            },
+            judgeReasons: ["fails payoff"],
+          }),
+        ],
+      }),
+      finalRanked: [],
+    })
+    const md = await readFile(reportMarkdownPath, "utf-8")
+    expect(md).toContain("## Judge questions")
+    expect(md).toContain("| payoff | 2 | yes |")
+    expect(md).toContain("judge: score 0.80 — hook ✓ · payoff ~")
+    expect(md).toContain("judge note: Strong opening, soft landing.")
+    expect(md).toContain("judge-rejected — Judged reject")
+    expect(md).toContain("judge: score 0.60 — hook ✓ · payoff ✗")
+    expect(md).toContain("judge verdict: fails payoff")
   })
 })
