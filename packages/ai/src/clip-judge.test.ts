@@ -128,6 +128,38 @@ describe("rate limits", () => {
     expect(waits).toEqual([3000, RATE_LIMIT_POLICY.maxWaitMs])
   })
 
+  it("honours an HTTP-date retry-after, and falls back when the date is past or unparseable", async () => {
+    const future = new Date(Date.now() + 7_000).toUTCString()
+    const past = new Date(Date.now() - 60_000).toUTCString()
+
+    const waitFor = async (value: string): Promise<number> => {
+      const waits: number[] = []
+      let calls = 0
+      await withRateLimitRetry(
+        async () => {
+          if (calls++ === 0) {
+            throw Object.assign(new Error("429"), {
+              statusCode: 429,
+              responseHeaders: { "retry-after": value },
+            })
+          }
+          return "ok"
+        },
+        async (ms) => {
+          waits.push(ms)
+        },
+      )
+      return waits[0]!
+    }
+
+    // A future HTTP-date is honoured, landing just under the 7s it asked for.
+    expect(await waitFor(future)).toBeGreaterThan(5_000)
+    expect(await waitFor(future)).toBeLessThanOrEqual(7_000)
+    // Past and unparseable dates get the default backoff, not a wait derived from garbage.
+    expect(await waitFor(past)).toBe(RATE_LIMIT_POLICY.baseWaitMs)
+    expect(await waitFor("not-a-date")).toBe(RATE_LIMIT_POLICY.baseWaitMs)
+  })
+
   it("backs off exponentially without a hint, and gives up after the attempt limit", async () => {
     const waits: number[] = []
     await expect(

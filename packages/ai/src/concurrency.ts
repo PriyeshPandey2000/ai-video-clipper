@@ -61,13 +61,32 @@ export function isRateLimitError(err: unknown): boolean {
   return false
 }
 
-/** The server's own `retry-after` hint in ms, when the error carries response headers. */
+/**
+ * The server's own `retry-after` hint in ms, when the error carries response headers.
+ *
+ * RFC 9110 allows two forms: delta-seconds (`"120"`) and an HTTP-date
+ * (`"Wed, 21 Oct 2026 07:28:00 GMT"`). Only the first is numeric, so the date form is parsed
+ * separately — otherwise a date reads as `NaN`, falls through to the default backoff, and burns
+ * retry attempts inside a window the server has already told us to stay out of.
+ *
+ * A date in the past, or one that cannot be parsed, yields null so the caller's default backoff
+ * applies. The value is returned uncapped: `withRateLimitRetry` caps every wait, so capping here
+ * too would change what the existing numeric-seconds path does.
+ */
 function retryAfterMs(err: unknown): number | null {
   const headers = asErrorLike(err)?.responseHeaders
   if (typeof headers !== "object" || headers === null) return null
   const raw = (headers as Record<string, unknown>)["retry-after"]
   const seconds = typeof raw === "string" ? Number(raw) : typeof raw === "number" ? raw : NaN
-  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000
+  if (typeof raw === "string") {
+    const at = Date.parse(raw)
+    if (Number.isFinite(at)) {
+      const remaining = at - Date.now()
+      if (remaining > 0) return remaining
+    }
+  }
+  return null
 }
 
 export type Sleep = (ms: number) => Promise<void>
