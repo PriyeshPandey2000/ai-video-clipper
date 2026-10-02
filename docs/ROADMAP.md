@@ -68,7 +68,7 @@
 - [x] Mac DMG build (`electron-builder`, dmg + zip targets)
 - [x] Code signing + notarization — hardened runtime, `xcrun notarytool`, stapled dmg/zip
 - [x] Tag-triggered release pipeline (`.github/workflows/release.yml`) — build, sign, notarize, draft GitHub Release with assets
-- [ ] Auto-update via `electron-updater`
+- [x] Auto-update via `electron-updater` — check on launch, top-right toast, never restarts while a transcription/export is active
 - [ ] Onboarding flow (first-run walkthrough: drop video → pick model → transcribe)
 
 ## Phase 7 — Creator features ✅ Done
@@ -87,19 +87,51 @@
 - [ ] Direct publish to TikTok / Instagram Reels / YouTube Shorts
 - [ ] Natural language clip search ("find where I mention pricing")
 
-## Phase 9 — Smarter clip selection ❌ Not started
+## Phase 9 — Smarter clip selection ✅ Done (the original list; superseded in places by Phase 10)
 
-- [ ] Semantic block preprocessing — group word-level timestamps into silence-bounded blocks with metadata (filler density, WPM, speaker) before LLM call; reduces token usage 50–70%
-- [ ] Block-ID-based LLM output — LLM returns `start_block_id` / `end_block_id` instead of raw milliseconds; backend resolves precise timestamps from DB, eliminating hallucination
-- [ ] Code-level timestamp validation — clamp LLM output to `[0, durationMs]`, snap to nearest word boundary, cap clip at 90s
-- [ ] FFmpeg audio energy scoring — extract per-second RMS amplitude, compute energy level per block, pass as `Energy: High/Low` signal to LLM
-- [ ] Content type detection — separate LLM call before scoring classifies video as podcast / interview / tutorial / vlog + density (sparse/dense); main prompt tuned per type
-- [ ] Explicit virality criteria in prompt — replace generic "find engaging segments" with ranked signal list: hook moments, emotional peaks, opinion bombs, revelation moments, conflict, quotable one-liners, story peaks, practical value
-- [ ] Hook sentence per clip — LLM returns the single opening line that makes someone stop scrolling; shown on clip card alongside reason
-- [ ] Duration guidance in prompt — 45–90s sweet spot, shorter only for standalone one-liner, longer only when story arc needs full context
-- [ ] Retry on bad LLM JSON — up to 3 attempts with progressively stricter instruction before failing; prevents pipeline crash on malformed output
-- [ ] Dedupe overlapping clips — after scoring, drop any clip that overlaps >50% with a higher-scored one
-- [ ] Long video chunking — transcripts >30 min split into 20-min chunks with 60s overlap, scored per chunk then deduped across chunks
+The wave-by-wave record is in `docs/CLIP-DETECTION-RESEARCH.md`. What shipped, and what has since changed:
+
+- [x] Semantic block preprocessing — `buildSentences` groups word timestamps into sentences at punctuation/pause boundaries before the LLM call
+- [x] Block-ID-based LLM output — the model returns `startSentence`/`endSentence` indices, never milliseconds; a hallucinated timestamp is structurally impossible
+- [x] Code-level timestamp validation — `refineClipBoundaries` snaps to word edges and clamps to 15–90s
+- [x] Audio energy scoring — `measureArousal` per-second RMS, surfaced as `{loud}`/`{fast}`/`{slow}`/`{burst}` prompt tags
+- [x] Content type detection — **replaced** by the LLM genre profile (#98, Phase 10); the regex detector is gone
+- [x] Explicit virality criteria in the prompt — the ranked signal list is in the system prompt
+- [~] Hook sentence per clip — the judge now returns `bestOpeningSentence` and it is stored, but nothing uses it yet (#100)
+- [~] Duration guidance — the 15–90s clamp is enforced; per-genre ranges wait on #102
+- [x] Retry on bad LLM JSON (#73)
+- [x] Dedupe overlapping clips — now after scoring, keeping the higher-scored clip
+- [x] Long video chunking — >30 min split into ~20 min chunks with 150s overlap, topic-coherent first, fixed-time fallback
+
+## Phase 10 — Clip selection quality 🔄 In progress
+
+Goal: the best clips across the whole video, judged on what is actually exported. Issues in order:
+
+- [x] **#89** Provenance — original AI cut, rank, pipeline version/hash, model and profile stored per clip
+- [x] **#97** Re-run clip selection from the stored transcript, plus a per-run selection report (#106)
+- [~] **#98** Genre profile — backend shipped (#109): LLM analysis (profile, confidence, summary, speakers, topics), six profiles with rubrics and judge questions, override column, `project:get/set-clip-profile`. **Still open:** the renderer UI — "Detected: Conversation (high)", the override dropdown, and the warning for `visual` videos
+- [x] **#99** Judge every final cut, rank globally (#110) — recall-first generation, one judge call per refined clip, graded answers, hard `standalone`/`payoff` gate, global ranking, real scores, `judge_json` + chips in `ClipReview`. Removed: `strong`, Borda re-rank, random shuffle, hook-first trim, round-robin interleaving
+- [ ] **#100** Judge-chosen opening sentence (replaces the regex hook-trim; `bestOpeningSentence` is already stored)
+- [ ] **#101** The 5-video manual test: profile accuracy, your 15 reference moments, model comparison, chunking decision. Run this before building more knobs
+- [ ] **#102** Clip settings: length range, clip count, profile override UI, free-text topic steer
+- [ ] **#103** Topic diversity cap (only if #101 shows clustering)
+- [ ] **#104** One-tap reject reasons + feedback per pipeline version
+- [ ] **#105** Speaker labels (diarization) for conversation videos
+- [ ] **#108** Pick the genre before the first run (Auto stays default)
+- [ ] **#107** Review follow-ups, including re-suggesting rejected moments (do before #104)
+
+## Phase 11 — Measurement & evals ❌ Not started
+
+Phase 9 and 10 shipped on judgement, not measurement. #101 is the lightweight version; this phase is
+the formal one.
+
+- [ ] **#46** Mechanical eval harness over 3–5 cached transcripts: cold-open rate, truncated-ending rate, length compliance, gate rejections, judge-call count, cost/time per hour. Taste tier (precision@5) later and weak
+- [ ] **#90** Noise floor — the shuffle is gone and temperature is pinned (done in #97/#99); what remains is measuring top-5 overlap across 3 identical runs, and deciding single-run vs mean-of-N
+- [ ] **#91** `scripts/recall-ablation.ts` still carries an old copy of the prompt (it still asks for `strong`); import the real one
+- [ ] **#92** Tighten `HOOK_RE` and the filler set — `hook` still drives a prompt tag and the "weak opening" warning (it no longer moves boundaries)
+- [ ] **#94** Ablate what is left — signal tags and per-profile rubrics; Borda and the hook-first trim are already deleted. New candidate: the judge's questions and weights (starting values, never tuned)
+
+Feature freeze until #101's numbers exist: no SenseVoice or reframe work until we know where quality is being lost.
 
 ## Polish backlog ✅ Done
 

@@ -69,3 +69,30 @@
 **Decision:** Renderer (React) has zero direct access to filesystem, DB, or AI APIs. All data via typed IPC.
 
 **Why:** Security. Electron's `contextIsolation: true` + `sandbox: false` gives main process full Node access while keeping renderer isolated. Also testable — main process logic can be unit tested without a browser context.
+
+---
+
+## ADR-009: Classify the video with an LLM, not a regex (#98)
+
+**Decision:** One structured call before selection decides the genre profile (conversation, solo/opinion, educational, story, comedy, visual) and writes a summary, speakers and topics. Every selection and judge prompt carries that context and the profile's rubric. The user can override the profile.
+
+**Why:** The regex detector decided the rubric from keywords — one "how to" in a one-hour podcast made it a tutorial and applied "never clip a partial step" to every chunk. The model also never knew what the video was, so it could not judge whether a clip stood alone.
+
+**Consequences:** One extra call per run (the override does not skip it, since the summary and topics come from the same call). A failed analysis falls back to `solo_opinion`/low confidence and the run continues. The profile and its rubric are in the pipeline fingerprint.
+
+---
+
+## ADR-010: Judge the exported clip, rank across the whole video (#99)
+
+**Decision:** Generation is for recall. Each refined clip is judged in its own call on the exact words that will be exported, and every chunk's candidates are ranked together by that score. The generator's `strong` flag, the title-only Borda re-rank, the random shuffle, round-robin interleaving and the hook-first trim are removed.
+
+**Why:** Chunk-relative "strong" flags and per-chunk quotas made the ranking depend on where a moment sat. The re-rank never saw the transcript. The model judged a range the code then changed, and the displayed score was just the rank.
+
+**Choices worth remembering**
+
+- Answers are graded (yes / partly / no), not booleans, so scores do not tie in bunches. There is no 1–10 rating: absolute LLM scores are noise (C8 in `CLIP-DETECTION-RESEARCH.md`).
+- `standalone` and `payoff` are hard: a clear "no" rejects the clip. "Partly" does not.
+- One call per clip, not a batch: no position bias and no clips anchoring each other. Cost is bounded by dropping seam duplicates first and running 3 calls at a time.
+- The score is a pure function of the stored answers, so weights can be re-tuned offline.
+
+**Consequences:** More calls per video than before (minus one re-rank call per chunk). A run where most judge calls fail throws before anything is written, so a re-run never replaces good suggestions with a half-judged set. Weights and the hard rule are starting values until the 5-video test (#101).

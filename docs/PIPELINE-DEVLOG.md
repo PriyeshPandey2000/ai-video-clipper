@@ -238,3 +238,48 @@ Transcript shows timestamps in seconds (`[10.50]`) but system prompt asked for m
 - Header (when `status === "ready"`): "Burn subs" checkbox, folder picker button (shows current folder name), "Export SRT", "Export Episode" buttons
 - Folder picker opens `dialog:pick-folder` IPC, updates `outputDir` state for session
 - All export calls use shared `outputDir` / `burnSubtitles` settings
+
+---
+
+## Session 9 — Clip selection v2/v3: genre profile (#98) and judged ranking (#99)
+
+**Goal:** pick the best clips across a whole video, judged on what is actually exported. The earlier work this builds on: provenance columns (#89/#95), temperature pinned to 0, and re-run + selection report (#97/#106).
+
+**Problems found**
+
+- The regex content-type detector chose the rubric from keywords, so one "how to" in a podcast applied the tutorial rubric to every chunk, and the model never knew what the video was.
+- Long videos were ranked by chunk quota (rank #1 of every chunk, then #2 …), "strong" was judged per chunk, the re-rank saw only the model's own title and reason after a `Math.random` shuffle, the code moved the clip start after the model had judged it, and the displayed score was just the rank.
+
+### #98 — genre profile (PR #109)
+
+- `packages/ai/src/video-analysis.ts`: one structured call returns profile, confidence, optional secondary profile, summary, speakers, topics. Transcripts over ~60k tokens are excerpted (first 5 min, 3 sentences per topic, last 3 min) and every gap is marked `[... transcript omitted here ...]`. Failure falls back to `solo_opinion`/low and never aborts.
+- `packages/ai/src/profiles.ts`: six profiles, each with a rubric, judge questions and a length budget (currently the global 15–90s).
+- `selectClips` takes a `profileOverride`; the analysis still runs so the context block stays accurate. The context block and rubric go into every selection prompt.
+- DB: `projects.clip_profile_override` (migration 0004); `ai_outputs` type `video_analysis`; `clips.content_type` now holds profile ids. IPC: `project:get-clip-profile`, `project:set-clip-profile` (re-runs selection, rolls the override back if the run fails).
+- Removed `detectContentType` and the old rubric suffixes. `PIPELINE_VERSION` → `v2-genre-profile`.
+- Bugs caught in review and fixed before merge: excerpt gaps were marked by elapsed time (> 3 min) so short topic segments were rendered as continuous speech — now by sentence index; `video_analysis` was saved before the clip swap, so a failed swap could leave a new analysis beside old clips; `set-clip-profile` wrote the override before checking the project was idle; post-swap `webContents.send` errors could trigger a rollback; the excerpt budget was only checked up front.
+
+### #99 — judge the final cut, rank globally (PR #110)
+
+- `packages/ai/src/clip-judge.ts`: five universal questions (`hook`, `standalone`, `payoff`, `oneIdea`, `postable`) plus the profile's three, graded yes/partly/no, weighted. `standalone` and `payoff` are hard: a clear "no" rejects. The judge sees the exported words (labelled by sentence) plus up to 2 sentences of lead-in, fenced off as not shown to the viewer. It also returns a one-line note and `bestOpeningSentence` (stored, unused until #100).
+- `selectClips`: generate for recall → refine → mechanical gate → drop ≥ 90 % seam duplicates → judge → hard gate → sort all chunks by score (ties by start time) → overlap dedupe keeping the higher score → top 10. Chunks and judge calls run 3 at a time with results kept in order.
+- `packages/ai/src/concurrency.ts`: `mapPool`, 429 detection, `withRateLimitRetry` (honours `retry-after` as seconds or an HTTP-date; otherwise 1s/2s/4s, max 20s, 4 attempts).
+- Failure rules: one failed judge call rejects only that candidate; more than half failing throws before any write.
+- Removed: `strong`, `reRankWithBorda`, `shuffle`, round-robin interleaving, `hookFirstAdjust`; `passesQualityGate` no longer takes an LLM flag. `PIPELINE_VERSION` → `v3-judge-global-rank`; the fingerprint now hashes the judge prompt, questions, weights, grades and every profile's judge questions.
+- DB: `clips.judge_json` (migration 0005) stores answers, the questions asked, note and score; `ai_score` is the real score. `ClipReview` shows a ✓/~/✗ chip per question and the note.
+- The selection report shows every candidate's judge answers (rejected ones included), the question table, and the new outcomes `judge-rejected` / `judge-failed`.
+
+**Decisions:** see ADR-009 and ADR-010. A 1–10 "overall" rating was considered and dropped (C8: absolute LLM scores are noise); graded answers separate clips well enough.
+
+**Not done / known gaps**
+
+- No UI for the profile (display, override, `visual` warning) — the IPC exists (#98 stays open).
+- The clip list is sorted by time, so the judge's ranking order is not visible; the progress message does not name the judging phase.
+- No cap on judge calls; the count is not yet logged per run. Weights and the hard rule are untuned until #101.
+- `scripts/recall-ablation.ts` still carries the old prompt (#91).
+
+**If something breaks, check first**
+
+1. The newest file in `<project>/selection-reports/`: the judge answers show whether clips were rejected for `standalone`/`payoff` or never reached the judge.
+2. An error "Clip judging failed for N of M clip(s)" means the judge model or API failed, not that the clips were bad; the previous suggestions are untouched. Check for 429s in the log.
+3. `pipelineHash` / `pipelineVersion` on the clips: runs with different values are not comparable.

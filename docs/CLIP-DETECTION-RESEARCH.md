@@ -7,6 +7,13 @@
 > **Part 6** = review log (what changed between revisions and who was right).
 > **Part 7** = devlog (what shipped, why, and what to check first when something breaks).
 
+> **Status update (2026-10).** Parts of this plan have since been replaced. The regex content-type
+> detector (C4) is gone — an LLM genre profile (#98) took its place. The Borda re-rank (C2/C3 pass 2),
+> its shuffle, and the hook-first trim (D5) are deleted; every final clip is now judged on its exact
+> text and ranked across the whole video (#99). The "never absolute scores" rule (C8) still holds:
+> the judge returns graded yes/partly/no answers, not a numeric rating. Current design:
+> `docs/ARCHITECTURE.md` → "Clip selection pipeline"; decisions: ADR-009 and ADR-010.
+
 ---
 
 ## Part 0 — Pre-Wave 1 baseline

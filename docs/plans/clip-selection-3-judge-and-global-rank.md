@@ -1,8 +1,8 @@
 # Clip selection 3 — judge the final cut, rank globally (#99)
 
-Status: **PR A implemented** (see the note below for where the build differs from this plan).
-Scope of this document is **PR A** (pipeline + storage + report).
-PR B (score and chips in `ClipReview`) follows once PR A has been run on real videos.
+Status: **shipped** in #110 (PR A, the pipeline, and PR B, `judge_json` plus the `ClipReview`
+chips, together). The note below lists where the build differs from this plan; where they differ,
+the code wins. The plan text itself is kept as written before the build.
 
 Depends on #97 (re-run + selection report) and #98 (genre profiles, `VIDEO CONTEXT` block,
 `judgeQuestions`) — both merged (#109).
