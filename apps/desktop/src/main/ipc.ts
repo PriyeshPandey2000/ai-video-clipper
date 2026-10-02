@@ -11,6 +11,7 @@ import {
   setProjectStatus,
   setCaptionStyle,
   setFillerWords,
+  setClipProfileOverride,
   clearDerivedData,
   insertWords,
   insertSegments,
@@ -27,6 +28,7 @@ import {
   setClipCropX,
   markClipExported,
 } from "@video-editor/database"
+import type { Db } from "@video-editor/database"
 import {
   generateProxy,
   extractAudio,
@@ -48,7 +50,7 @@ import {
   resolveWhisperBinary,
 } from "@video-editor/whisper"
 import type { WhisperModel, ModelInfo } from "@video-editor/types"
-import { WHISPER_MODELS } from "@video-editor/types"
+import { WHISPER_MODELS, type ClipProfileId, type VideoAnalysis } from "@video-editor/types"
 import { generateId, now } from "@video-editor/utils"
 import type {
   PipelineProgress,
@@ -65,7 +67,12 @@ import {
   segmentTopics,
   DEFAULT_FILLER_WORDS,
 } from "@video-editor/transcript"
-import { createAiClient, selectClips, generateSocialCaptions } from "@video-editor/ai"
+import {
+  createAiClient,
+  selectClips,
+  generateSocialCaptions,
+  isClipProfileId,
+} from "@video-editor/ai"
 import type { ClipSelectionResult } from "@video-editor/ai"
 import { sanitizeName, buildSrt, remapWordsToEpisodeTimeline } from "@video-editor/export"
 import { saveGroqApiKey } from "./config"
@@ -115,6 +122,25 @@ function projectDir(projectId: string): string {
   return join(getProjectsDir(), projectId)
 }
 
+/**
+ * The video analysis from this project's most recent selection run, or null if it has none (#98).
+ *
+ * Parsed defensively on purpose: the row's `content` is a JSON blob written by an older build if
+ * the schema has moved on, and a project panel that throws on load because of a stale row would be
+ * strictly worse than a panel that says it does not know the video's profile. Malformed JSON is
+ * therefore indistinguishable from absent here, which is the same answer in both cases.
+ */
+function readStoredAnalysis(db: Db, projectId: string): VideoAnalysis | null {
+  const row = getAiOutputs(db, projectId).find((o) => o.type === "video_analysis")
+  if (!row) return null
+  try {
+    return JSON.parse(row.content) as VideoAnalysis
+  } catch (err) {
+    log.warn(`[clip-profile] stored video_analysis for project ${projectId} is unreadable:`, err)
+    return null
+  }
+}
+
 export function registerIpcHandlers(): void {
   const resourcesPath = getResourcesPath()
   log.info("Resolved binary paths", {
@@ -131,7 +157,16 @@ export function registerIpcHandlers(): void {
 
   function send<K extends keyof IpcEventChannels>(channel: K, data: IpcEventChannels[K]): void {
     const win = BrowserWindow.getAllWindows()[0]
-    if (win) win.webContents.send(channel, data)
+    if (!win) return
+    // Electron throws from webContents.send once the window has no live main frame (closing,
+    // navigating away). That is unrelated to whether the work being announced succeeded, so a
+    // throw here must not read as a failure of whatever just completed — e.g. runReselection's
+    // caller would otherwise roll back an override whose clip swap already committed.
+    try {
+      win.webContents.send(channel, data)
+    } catch (err) {
+      log.warn(`[ipc] send(${channel}) failed — window likely closing`, err)
+    }
   }
 
   function sendProgress(
@@ -373,8 +408,29 @@ export function registerIpcHandlers(): void {
     const arousalPerSec = await measureArousal(ffmpegBin, audioPath)
     log.info(`[arousal] ${arousalPerSec.length} seconds measured`)
 
-    sendProgress(projectId, "generating_clips", 0.1, "Analyzing transcript for clips", run)
-    const selection = await selectClips(client, wordRows, sentences, topics, 10, arousalPerSec)
+    // #98 — the user's override, read here rather than passed in, so the transcription pipeline and
+    // a re-selection cannot disagree about which profile is in effect. Both enter through this one
+    // function, so reading it here is what makes "changing the dropdown changes the next run" true.
+    const profileOverride = project.clipProfileOverride
+
+    // One message for both halves of this call: selectClips now opens with an LLM call that decides
+    // what the video is, which is a separate thing happening and worth naming.
+    sendProgress(
+      projectId,
+      "generating_clips",
+      0.1,
+      "Understanding the video, then selecting clips",
+      run,
+    )
+    const selection = await selectClips(
+      client,
+      wordRows,
+      sentences,
+      topics,
+      10,
+      arousalPerSec,
+      profileOverride,
+    )
     const { clips: clipSuggestions, rejected } = selection
     if (rejected.length > 0) {
       log.info(
@@ -383,7 +439,7 @@ export function registerIpcHandlers(): void {
       )
     }
     log.info(
-      `[clips] pipeline ${selection.pipelineVersion} hash=${selection.pipelineHash.slice(0, 12)} model=${selection.model} temp=${selection.trace?.temperature ?? "?"} type=${selection.contentType}`,
+      `[clips] pipeline ${selection.pipelineVersion} hash=${selection.pipelineHash.slice(0, 12)} model=${selection.model} temp=${selection.trace?.temperature ?? "?"} profile=${selection.contentType}${selection.contentTypeOverridden ? " (override)" : ""} confidence=${selection.analysis.confidence}`,
     )
 
     // aiRank is the position in the ranked output, and original{Start,End}Ms a copy of what we
@@ -448,7 +504,12 @@ export function registerIpcHandlers(): void {
         pipelineHash: selection.pipelineHash,
         model: selection.model,
         contentType: selection.contentType,
+        contentTypeOverridden: selection.contentTypeOverridden,
       },
+      // #98 — what the classifier decided, verbatim. The report renders the rubric and the context
+      // block from the profile id, using the same functions the prompts did, so the report cannot
+      // claim a prompt differed from the one the model actually received.
+      analysis: selection.analysis,
       trace: selection.trace,
       // Built from the trace's own kept entries rather than from clipSuggestions, so the
       // report's ranked list and its candidate table are the same facts by construction.
@@ -479,6 +540,21 @@ export function registerIpcHandlers(): void {
     } else {
       insertClips(db, clipRows)
     }
+
+    // #98 — the analysis is stored per run, so a re-run replaces it the way it replaces the
+    // captions. Written after the clip swap, never before: it commits on its own, so writing it
+    // earlier would let a failed report write or clip swap leave the new analysis stored beside the
+    // previous run's clips — and the stored profile would then claim a run that never landed.
+    //
+    // Stored even when it is the fallback: "we could not classify this video" is a fact about the
+    // run, and dropping it would make the panel claim a detection that never happened.
+    replaceAiOutputByType(db, projectId, "video_analysis", {
+      id: generateId(),
+      projectId,
+      type: "video_analysis",
+      content: JSON.stringify(selection.analysis),
+      createdAt: now(),
+    })
 
     // Social captions are the last step and are non-fatal by design. A failure here must not
     // retroactively invalidate the run the user is waiting on — the clips are already correct
@@ -520,7 +596,18 @@ export function registerIpcHandlers(): void {
     return getClips(db, projectId)
   })
 
-  handle("clip:reselect", async (_event, { projectId }: { projectId: string }) => {
+  /**
+   * Re-runs selection over the stored transcript and swaps this project's suggestions (#97).
+   *
+   * Shared by `clip:reselect` and `project:set-clip-profile` rather than duplicated: the parts that
+   * matter are the status guard and the bookkeeping around a destructive swap, and an override
+   * that re-ran selection by its own route would have a second copy of both to drift.
+   */
+  async function runReselection(projectId: string): Promise<{
+    reportJsonPath: string
+    reportMarkdownPath: string
+    clipCount: number
+  }> {
     const project = getProject(db, projectId)
     if (!project) throw new Error(`Project ${projectId} not found`)
 
@@ -567,7 +654,73 @@ export function registerIpcHandlers(): void {
       setProjectStatus(db, projectId, previousStatus)
       endActivity()
     }
+  }
+
+  handle("clip:reselect", async (_event, { projectId }: { projectId: string }) => {
+    return runReselection(projectId)
   })
+
+  handle("project:get-clip-profile", async (_event, { projectId }: { projectId: string }) => {
+    const project = getProject(db, projectId)
+    if (!project) throw new Error(`Project ${projectId} not found`)
+    const analysis = readStoredAnalysis(db, projectId)
+    const override = project.clipProfileOverride
+    return { analysis, override, effective: override ?? analysis?.profile ?? null }
+  })
+
+  handle(
+    "project:set-clip-profile",
+    async (
+      _event,
+      { projectId, override }: { projectId: string; override: ClipProfileId | null },
+    ) => {
+      const project = getProject(db, projectId)
+      if (!project) throw new Error(`Project ${projectId} not found`)
+
+      // Checked at the IPC boundary because only TypeScript, not a DB constraint, stands between
+      // the renderer and clip_profile_override — an invalid string would reach
+      // CLIP_PROFILES[profileId] as undefined and fail confusingly deep inside selection instead
+      // of here.
+      if (override !== null && !isClipProfileId(override)) {
+        throw new Error(`Invalid clip profile: ${String(override)}`)
+      }
+
+      // Checked before the override is written, not left to runReselection's own guard: a run
+      // already in flight reads the override from the database when it reaches selection, so a
+      // write that is about to be refused would still leak into it for the moment it exists.
+      if (project.status === "transcribing" || project.status === "analyzing") {
+        throw new Error(
+          `Cannot change the clip profile while the project is ${project.status}. Wait for the current run to finish.`,
+        )
+      }
+
+      // Refused rather than silently accepted. An override with no transcript has nothing to
+      // govern: it would only take effect on some future transcription, which is not what "choose
+      // the profile for these clips" means, and a silent success would read as having applied.
+      if (getWords(db, projectId).length === 0) {
+        throw new Error(
+          "This project has no transcript yet, so there is nothing for a clip profile to apply to. Transcribe it first.",
+        )
+      }
+
+      // Written before the re-run because runClipSelection reads the override from the database —
+      // that is what makes both entry points agree on which profile is in effect. The rollback is
+      // the other half of the same invariant: without it a failed re-run would leave the project
+      // claiming a profile its stored clips were not selected under, with nothing on screen saying so.
+      const previousOverride = project.clipProfileOverride
+      setClipProfileOverride(db, projectId, override)
+      try {
+        return await runReselection(projectId)
+      } catch (err) {
+        setClipProfileOverride(db, projectId, previousOverride)
+        log.warn(
+          `[clip-profile] override to ${override ?? "auto"} reverted for project ${projectId} — the re-run it triggered failed`,
+          err,
+        )
+        throw err
+      }
+    },
+  )
 
   handle("clip:last-report", async (_event, { projectId }: { projectId: string }) => {
     return findLastReport(projectDir(projectId))

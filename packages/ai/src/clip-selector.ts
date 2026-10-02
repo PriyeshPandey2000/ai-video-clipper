@@ -3,6 +3,7 @@ import { CLIP_SELECTION_TEMPERATURE, STRUCTURED_OUTPUT_SUFFIX, type AiClient } f
 import type { z } from "zod"
 import { z as zod } from "zod"
 import type { Word, Sentence } from "@video-editor/types"
+import { CLIP_PROFILE_IDS, type ClipProfileId, type VideoAnalysis } from "@video-editor/types"
 import {
   refineClipBoundaries,
   passesQualityGate,
@@ -16,6 +17,15 @@ import {
   DANGLING_OPENERS,
 } from "@video-editor/transcript"
 import type { TopicSegment } from "@video-editor/transcript"
+import { CLIP_PROFILES, type ClipProfile } from "./profiles"
+import {
+  analyzeVideo,
+  renderVideoContext,
+  analysisInputFingerprintFields,
+  ANALYSIS_PROMPT,
+  VIDEO_CONTEXT_TEMPLATE,
+  videoContextSample,
+} from "./video-analysis"
 
 export interface ClipSuggestion {
   title: string
@@ -48,13 +58,28 @@ export interface ClipSelectionProvenance {
   pipelineHash: string
   /** The model that served the structured (clip-selection) calls. */
   model: string
-  contentType: ContentType
+  /**
+   * The genre profile the rubric was swapped to. A profile id, not one of the old content types:
+   * `interview`/`tutorial`/`solo`/`generic` are gone, and this column now records what the LLM
+   * decided the video was.
+   */
+  contentType: ClipProfileId
+  /** True when `contentType` is the user's choice rather than the classifier's. */
+  contentTypeOverridden: boolean
 }
 
 export interface ClipSelectionResult extends ClipSelectionProvenance {
   clips: ClipSuggestion[]
   /** Candidates dropped by the quality gate — surfaced so "only 2 clips" is explainable. */
   rejected: ClipRejection[]
+  /**
+   * What the classifier made of the video (#98): profile, confidence, summary, speakers, topics.
+   *
+   * Present on every return path including the empty-transcript one, for the same reason `trace`
+   * is: a caller that stores it must not have to special-case the runs where it is missing, and a
+   * report that omits it on a zero-sentence video is indistinguishable from an older build's.
+   */
+  analysis: VideoAnalysis
   /**
    * Every candidate's full history, in the order returned (#97). Optional because a caller that
    * only wants clips should not pay to accumulate it, and present on every run — including the
@@ -307,59 +332,6 @@ function toTimecode(ms: number): string {
   return `${min}:${String(sec).padStart(2, "0")}`
 }
 
-// ─── C4 — content-type detection and rubric swap ────────────────────────────
-
-export type ContentType = "interview" | "tutorial" | "solo" | "generic"
-
-/**
- * Infers content type from the transcript heuristically.
- * Used to swap the system prompt so the LLM applies the right clip-selection rubric.
- */
-export function detectContentType(sentences: Sentence[]): ContentType {
-  if (sentences.length === 0) return "generic"
-  const text = sentences.map((s) => s.text).join(" ")
-
-  // Tutorial: step-by-step language dominates
-  if (
-    /\bstep\s*(?:one|two|three|1|2|3)\b|\bhow\s+to\b|\bin\s+this\s+(?:video|tutorial)\b|\bby\s+the\s+end\b/i.test(
-      text,
-    )
-  )
-    return "tutorial"
-
-  // Interview: high question ratio or clear host/guest signals
-  const questions = sentences.filter((s) => s.text.trim().endsWith("?")).length
-  const questionRatio = questions / sentences.length
-  if (
-    questionRatio > 0.12 ||
-    /\bmy\s+guest\b|\bjoined\s+by\b|\bgreat\s+question\b|\btell\s+me\s+about\b/i.test(text)
-  )
-    return "interview"
-
-  return "solo"
-}
-
-const CONTENT_TYPE_SUFFIX: Record<ContentType, string> = {
-  generic: "",
-  solo: "",
-  interview: `
-
-This is an INTERVIEW. Prioritise these clip shapes:
-- Guest says something surprising and the host visibly reacts (pushback, laughter, "really?")
-- Guest shares a personal story with a clear unexpected turn
-- Moment of genuine disagreement or tension between speakers
-- Bold claim the host challenges or the guest doubles down on
-- Rare disclosure: "I've never told anyone this", "what most people don't know"`,
-  tutorial: `
-
-This is a TUTORIAL. Prioritise these clip shapes:
-- One complete actionable step with a clear stated outcome ("do X → get Y")
-- The mistake most people make, followed immediately by the correct approach
-- Before/after or wrong-way/right-way reveal
-- A single rule or mental model that changes how you do something
-HARD RULE: never clip a partial step. A clip that starts or ends mid-instruction fails on its own.`,
-}
-
 // ─── D5 — hook-first check ───────────────────────────────────────────────────
 
 /** D5 — how many sentences forward hook-first trim may move a clip's start. */
@@ -560,7 +532,9 @@ async function reRankWithBorda(client: AiClient, candidates: Candidate[]): Promi
     .map(({ c }) => c)
 }
 
-const USER_PROMPT_TEMPLATE = `Sentences #{{FIRST}} to #{{LAST}}.
+const USER_PROMPT_TEMPLATE = `{{CONTEXT}}
+
+Sentences #{{FIRST}} to #{{LAST}}.
 
 {{TRANSCRIPT}}
 
@@ -568,7 +542,7 @@ Select every clip worth posting, best first. Each clip should span roughly {{MIN
 Only use sentence indices between {{FIRST}} and {{LAST}}.
 Return fewer clips — or an empty array — rather than padding with weak ones.`
 
-// The transcript goes in LAST, and via a function replacement. Two reasons, both load-bearing:
+// {{TRANSCRIPT}} goes in LAST, and via a function replacement. Three reasons, all load-bearing:
 //
 // 1. Order. Substituting the transcript before the other placeholders means transcript text that
 //    happens to contain "{{MIN_SEC}}" gets substituted again, corrupting spoken words.
@@ -576,11 +550,24 @@ Return fewer clips — or an empty array — rather than padding with weak ones.
 //    the template. A transcript containing "$$1M" or a dollar-quote came out garbled — `$$1M`
 //    became `$1M`, and `$'` spliced the rest of the prompt into the middle of the sentence. A
 //    function replacement treats its argument as literal text and skips all of that.
-function renderUserPrompt(chunk: Sentence[], words: Word[], arousalPerSec: number[]): string {
+//
+// 3. {{CONTEXT}} is also a function replacement, for reasons 1 and 2 again. It carries
+//    model-authored text — the summary and topic strings — so the same corruption applies, and a
+//    summary containing the literal "{{TRANSCRIPT}}" would otherwise swallow the whole transcript.
+//
+// Both function replacements treat their argument as opaque, so neither substituted value is ever
+// re-scanned for placeholders.
+function renderUserPrompt(
+  chunk: Sentence[],
+  words: Word[],
+  arousalPerSec: number[],
+  contextBlock: string,
+): string {
   return USER_PROMPT_TEMPLATE.replaceAll("{{FIRST}}", String(chunk[0]!.index))
     .replaceAll("{{LAST}}", String(chunk[chunk.length - 1]!.index))
     .replaceAll("{{MIN_SEC}}", String(MIN_CLIP_MS / 1000))
     .replaceAll("{{MAX_SEC}}", String(MAX_CLIP_MS / 1000))
+    .replace("{{CONTEXT}}", () => contextBlock)
     .replace("{{TRANSCRIPT}}", () => buildAnnotatedPrompt(chunk, words, arousalPerSec))
 }
 
@@ -590,8 +577,12 @@ function renderUserPrompt(chunk: Sentence[], words: Word[], arousalPerSec: numbe
  * Human-readable label for the clip-selection *code*. Bump by hand when a change alters output
  * without touching any constant in the fingerprint — a logic edit in `refineClipBoundaries` or
  * `hookFirstAdjust` is invisible to the hash by construction.
+ *
+ * v2 — the genre-profile pipeline (#98) replaced the regex content-type detector. The hash moved
+ * on its own because the rubric swap is hashed; the version moves because what a profile *is* was
+ * redefined, which no constant in the fingerprint can see.
  */
-export const PIPELINE_VERSION = "v1-unmeasured"
+export const PIPELINE_VERSION = "v2-genre-profile"
 
 /**
  * sha256 over every prompt template and heuristic threshold the clip-selection path reads, so a
@@ -603,12 +594,16 @@ export const PIPELINE_VERSION = "v1-unmeasured"
  * identical, the metric would be unattributable — which is the one thing this column exists to
  * prevent.
  *
- * Two things are deliberately NOT folded in:
+ * Three things are deliberately NOT folded in:
  * - `PIPELINE_VERSION`. The two answer different questions: the hash says "what config was this?",
  *   the version says "what code was this?". Folding the version in would make every manual bump
  *   look like a configuration change.
  * - The model. It is recorded per-run on the clip row, because the same fingerprint is
  *   legitimately paired with different models and comparing those is the point of storing it.
+ * - `judgeQuestions`, `lookingFor` and `defaultLengthMs` from the profile table (#98). None of them
+ *   reaches a prompt in this version — the judging pass that consumes `judgeQuestions` is a
+ *   separate issue, and `defaultLengthMs` is held at the global 15–90s. Hashing a string nothing
+ *   sends would make "it is in the hash" a claim this function could not honestly make.
  *
  * Known remaining gap: a behavioural change in code that reads none of these constants — a logic
  * edit inside `refineClipBoundaries` or `hookFirstAdjust`. That is what `PIPELINE_VERSION` is for.
@@ -622,20 +617,32 @@ export const PIPELINE_VERSION = "v1-unmeasured"
  * `temperature` is likewise a parameter, defaulting to the constant the client actually sends.
  * It has to be a parameter rather than an inlined read of the constant purely so a test can prove
  * the digest moves when the temperature does — an unhashed temperature is the bug this closes,
- * and "it is in the hash" is only a meaningful claim if that is checked.
+ * and "it is in the hash" is only a meaningful claim if that is checked. `profiles` follows the
+ * same rule for the same reason: a rubric the hash does not cover is the exact defect #98's
+ * predecessor had, so there has to be a way to prove each rubric is covered.
  */
 export function computePipelineFingerprint(
   maxClips: number,
   temperature: number = CLIP_SELECTION_TEMPERATURE,
+  profiles: Record<ClipProfileId, ClipProfile> = CLIP_PROFILES,
 ): string {
   return createHash("sha256")
     .update(
       [
         `system:${SYSTEM_PROMPT}`,
-        // Sorted by key so insertion order in the record can't change the hash.
-        ...Object.keys(CONTENT_TYPE_SUFFIX)
+        // #98: the analysis call and the context block it feeds. Both decide what the model reads
+        // before it ever sees a sentence, so both belong in the configuration this hash names.
+        `analysisSystem:${ANALYSIS_PROMPT}`,
+        `analysisContextTemplate:${VIDEO_CONTEXT_TEMPLATE}`,
+        `analysisContextSample:${videoContextSample()}`,
+        ...analysisInputFingerprintFields(),
+        // Every rubric, not just the one the last run used. The rubric is chosen per video, so a
+        // hash covering only the effective profile would let two runs with different rubrics
+        // collide — and "which rubric produced this clip" is the question the profile replaced the
+        // regex to answer. Sorted by id so the record's insertion order cannot move the digest.
+        ...CLIP_PROFILE_IDS.slice()
           .sort()
-          .map((k) => `suffix:${k}=${CONTENT_TYPE_SUFFIX[k as ContentType]}`),
+          .map((id) => `rubric:${id}=${profiles[id].rubric}`),
         `user:${USER_PROMPT_TEMPLATE}`,
         `structuredSuffix:${STRUCTURED_OUTPUT_SUFFIX}`,
         `rerankSystem:${RERANK_SYSTEM}`,
@@ -686,16 +693,19 @@ async function selectFromChunk(
   client: AiClient,
   chunk: Sentence[],
   words: Word[],
+  profile: ClipProfile,
+  contextBlock: string,
   arousalPerSec: number[] = [],
-  contentType: ContentType = "generic",
 ): Promise<Candidate[]> {
   const schema = zod.object({ clips: zod.array(CandidateSchema).max(MAX_CANDIDATES_PER_CHUNK) })
   const firstIndex = chunk[0]!.index
   const lastIndex = chunk[chunk.length - 1]!.index
-  const prompt = renderUserPrompt(chunk, words, arousalPerSec)
+  const prompt = renderUserPrompt(chunk, words, arousalPerSec, contextBlock)
 
-  // C4 — append content-type rubric suffix to base system prompt.
-  const system = SYSTEM_PROMPT + (CONTENT_TYPE_SUFFIX[contentType] ?? "")
+  // #98 — the profile's rubric, appended to the base system prompt. This is the swap the regex
+  // detector used to perform; what changed is that the profile now comes from the model's own
+  // reading of the video instead of a keyword match.
+  const system = SYSTEM_PROMPT + profile.rubric
 
   const result = await client.generateObject({
     prompt,
@@ -708,6 +718,14 @@ async function selectFromChunk(
   return reRankWithBorda(client, generated)
 }
 
+/**
+ * Picks clips from a transcribed video.
+ *
+ * `profileOverride` (#98) is the user's choice of genre profile, and it wins over the classifier's.
+ * The analysis still runs either way, because the summary, speakers and topics are what the
+ * context block carries and a user overriding a bad *profile* is not saying the *description* is
+ * wrong. Pass `null` for "use what the classifier decided".
+ */
 export async function selectClips(
   client: AiClient,
   words: Word[],
@@ -715,7 +733,21 @@ export async function selectClips(
   topics: TopicSegment[] = [],
   maxClips = DEFAULT_MAX_CLIPS,
   arousalPerSec: number[] = [],
+  profileOverride: ClipProfileId | null = null,
 ): Promise<ClipSelectionResult> {
+  // Runs before the provenance literal is built so the profile can go straight in, rather than
+  // being defaulted and overwritten. `analyzeVideo` answers the documented fallback without an API
+  // call when there are no sentences, so this costs nothing on the empty-transcript path.
+  const analysis = await analyzeVideo(client, sentences, topics)
+  const profileId = profileOverride ?? analysis.profile
+  const profile = CLIP_PROFILES[profileId]
+  // Rendered once, not per chunk: it is a pure function of the analysis and the effective profile,
+  // so every chunk of a run necessarily carries the identical block.
+  const contextBlock = renderVideoContext(analysis, {
+    profileId: analysis.profile,
+    override: profileOverride,
+  })
+
   const provenance: ClipSelectionProvenance = {
     pipelineVersion: PIPELINE_VERSION,
     // Fingerprint the *effective* clip budget, not the default — ipc.ts passes maxClips
@@ -723,7 +755,8 @@ export async function selectClips(
     pipelineHash: computePipelineFingerprint(maxClips, client.temperature),
     // Clip selection goes through generateObject, so the structured model is the one that served it.
     model: client.structuredModel,
-    contentType: "generic",
+    contentType: profileId,
+    contentTypeOverridden: profileOverride !== null,
   }
   // Present on every return path, including this one. A report that omits `trace` on a
   // zero-sentence video is indistinguishable from a report written by an older build.
@@ -736,12 +769,19 @@ export async function selectClips(
     chunks: [],
     candidates: [],
   }
-  if (sentences.length === 0) return { ...provenance, clips: [], rejected: [], trace }
+  if (sentences.length === 0) {
+    return { ...provenance, analysis, clips: [], rejected: [], trace }
+  }
 
-  // C4 — detect content type once; each chunk uses the same type-specific rubric.
-  const contentType = detectContentType(sentences)
-  provenance.contentType = contentType
-  console.log(`[content-type] ${contentType}`)
+  // #98 — one profile for the whole video, logged with the confidence behind it. The confidence
+  // is the part worth having in the log: a low-confidence classification is the first thing to
+  // check when a run picks the wrong moments, and `analyzeVideo` has already swallowed any failure
+  // that made it low.
+  console.log(
+    `[clip-profile] ${profileId} (${analysis.confidence}${
+      provenance.contentTypeOverridden ? ", user override" : ""
+    })${analysis.fallback ? " — analysis unavailable" : ""}${analysis.secondaryProfile ? `, also ${analysis.secondaryProfile}` : ""}`,
+  )
 
   // D5 — fast lookup for hook-first check in the candidate loop below.
   const sentenceByIndex = new Map(sentences.map((s) => [s.index, s]))
@@ -754,7 +794,14 @@ export async function selectClips(
     // chunk still fails after that, drop just this chunk's candidates rather than aborting clip
     // selection for the whole video — other chunks' clips are still worth surfacing.
     try {
-      const candidates = await selectFromChunk(client, chunk, words, arousalPerSec, contentType)
+      const candidates = await selectFromChunk(
+        client,
+        chunk,
+        words,
+        profile,
+        contextBlock,
+        arousalPerSec,
+      )
       perChunk.push(candidates)
       trace.chunks.push({
         index: trace.chunks.length,
@@ -915,5 +962,5 @@ export async function selectClips(
     clip.score = total <= 1 ? 1 : Number((1 - i / total).toFixed(2))
   })
 
-  return { ...provenance, clips, rejected, trace }
+  return { ...provenance, analysis, clips, rejected, trace }
 }

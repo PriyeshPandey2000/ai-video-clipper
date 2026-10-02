@@ -20,3 +20,13 @@ export type {
 export { generateBlogPost } from "./blog-generator"
 export { generateSocialCaptions } from "./caption-generator"
 export type { SocialCaption } from "./caption-generator"
+export {
+  analyzeVideo,
+  renderVideoContext,
+  buildAnalysisInput,
+  fallbackAnalysis,
+  ANALYSIS_PROMPT,
+} from "./video-analysis"
+export type { AnalysisInput, VideoContextOptions } from "./video-analysis"
+export { CLIP_PROFILES, getClipProfile, isClipProfileId } from "./profiles"
+export type { ClipProfile } from "./profiles"

@@ -4,13 +4,28 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import type { ClipSelectionTrace, TraceEntry } from "@video-editor/ai"
+import type { VideoAnalysis } from "@video-editor/types"
 import { findLastReport, reportFileStamp, writeSelectionReport } from "./selection-report"
 
 const provenance = {
   pipelineVersion: "v1-unmeasured",
   pipelineHash: "a".repeat(64),
   model: "openai/gpt-oss-120b",
-  contentType: "solo" as const,
+  contentType: "solo_opinion" as const,
+  contentTypeOverridden: false,
+}
+
+/** A successful detection, so report tests exercise the normal path. */
+function analysis(overrides: Partial<VideoAnalysis> = {}): VideoAnalysis {
+  return {
+    profile: "solo_opinion",
+    confidence: "high",
+    summary: "One person arguing a case straight to camera.",
+    speakers: [{ role: "Host" }],
+    mainTopics: ["creator tools"],
+    fallback: false,
+    ...overrides,
+  }
 }
 
 function trace(overrides: Partial<ClipSelectionTrace> = {}): ClipSelectionTrace {
@@ -79,6 +94,7 @@ describe("writeSelectionReport", () => {
         startedAtMs: Date.UTC(2026, 0, 2, 3, 4, 5, 6),
       },
       provenance,
+      analysis: analysis(),
       trace: trace({ candidates: [entry({})] }),
       finalRanked: [
         {
@@ -113,6 +129,7 @@ describe("writeSelectionReport", () => {
         startedAtMs: Date.UTC(2026, 0, 2, 3, 4, 5, 6),
       },
       provenance,
+      analysis: analysis(),
       trace: trace({ candidates: [entry({})] }),
       finalRanked: [],
     })
@@ -123,7 +140,7 @@ describe("writeSelectionReport", () => {
       pipelineVersion: "v1-unmeasured",
       pipelineHash: "a".repeat(64),
       model: "openai/gpt-oss-120b",
-      contentType: "solo",
+      contentType: "solo_opinion",
     })
     expect((json.trace as ClipSelectionTrace).temperature).toBe(0)
     expect((json.trace as ClipSelectionTrace).sentenceCount).toBe(2)
@@ -135,6 +152,7 @@ describe("writeSelectionReport", () => {
     const { reportJsonPath } = await writeSelectionReport(dir, {
       header: { projectId: "p1", projectName: "V", durationMs: 0, startedAtMs: 0 },
       provenance,
+      analysis: analysis(),
       trace: trace({
         candidates: [
           entry({ finalRank: 0 }),
@@ -167,6 +185,7 @@ describe("findLastReport", () => {
     await writeSelectionReport(dir, {
       header: { projectId: "p1", projectName: "V", durationMs: 0, startedAtMs: 0 },
       provenance,
+      analysis: analysis(),
       trace: trace(),
       finalRanked: [],
     })
@@ -180,6 +199,7 @@ describe("findLastReport", () => {
       await writeSelectionReport(dir, {
         header: { projectId: "p1", projectName: "V", durationMs: 0, startedAtMs: at },
         provenance,
+        analysis: analysis(),
         trace: trace(),
         finalRanked: [],
       })
@@ -195,6 +215,7 @@ describe("findLastReport", () => {
     await writeSelectionReport(dir, {
       header: { projectId: "p1", projectName: "V", durationMs: 0, startedAtMs: 1000 },
       provenance,
+      analysis: analysis(),
       trace: trace(),
       finalRanked: [],
     })
@@ -208,6 +229,7 @@ describe("renderSelectionReportMarkdown", () => {
     const { reportMarkdownPath } = await writeSelectionReport(dir, {
       header: { projectId: "p1", projectName: "My Video", durationMs: 60000, startedAtMs: 0 },
       provenance,
+      analysis: analysis(),
       trace: trace({
         candidates: [
           entry({ finalRank: 0, title: "The kept one" }),
@@ -259,6 +281,7 @@ describe("renderSelectionReportMarkdown", () => {
     await writeSelectionReport(dir, {
       header: { projectId: "p1", projectName: hostile, durationMs: 0, startedAtMs: 0 },
       provenance,
+      analysis: analysis(),
       trace: trace({ candidates: [entry({ title: hostile })] }),
       finalRanked: [],
     })
@@ -281,6 +304,7 @@ describe("renderSelectionReportMarkdown", () => {
     const { reportMarkdownPath } = await writeSelectionReport(dir, {
       header: { projectId: "p1", projectName: "Quiet video", durationMs: 60000, startedAtMs: 0 },
       provenance,
+      analysis: analysis(),
       trace: trace({
         candidates: [entry({ outcome: "gate-rejected", finalRank: null, title: "Nope" })],
       }),
@@ -297,6 +321,7 @@ describe("renderSelectionReportMarkdown", () => {
     const { reportMarkdownPath } = await writeSelectionReport(dir, {
       header: { projectId: "p1", projectName: "Empty", durationMs: 0, startedAtMs: 0 },
       provenance,
+      analysis: analysis(),
       trace: trace({ sentenceCount: 0, chunks: [], candidates: [] }),
       finalRanked: [],
     })

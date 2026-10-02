@@ -4,6 +4,7 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator"
 import { and, desc, eq, inArray } from "drizzle-orm"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import type { ClipProfileId } from "@video-editor/types"
 import * as schema from "./schema"
 import { aiOutputs, clips, projects, segments, words } from "./schema"
 
@@ -172,6 +173,21 @@ export function setProjectStatus(db: Db, projectId: string, status: ProjectStatu
 export function setCaptionStyle(db: Db, projectId: string, captionStyleJson: string): void {
   db.update(projects)
     .set({ captionStyle: captionStyleJson, updatedAt: Date.now() })
+    .where(eq(projects.id, projectId))
+    .run()
+}
+
+/**
+ * Sets or clears the user's clip-profile override (#98). `null` clears it, which is the only way
+ * back to "use what the classifier detected".
+ */
+export function setClipProfileOverride(
+  db: Db,
+  projectId: string,
+  override: ClipProfileId | null,
+): void {
+  db.update(projects)
+    .set({ clipProfileOverride: override, updatedAt: Date.now() })
     .where(eq(projects.id, projectId))
     .run()
 }

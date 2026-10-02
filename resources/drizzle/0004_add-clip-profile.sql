@@ -1,0 +1,1 @@
+ALTER TABLE `projects` ADD `clip_profile_override` text;

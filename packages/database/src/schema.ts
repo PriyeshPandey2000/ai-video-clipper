@@ -1,4 +1,5 @@
 import { index, sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core"
+import { CLIP_PROFILE_IDS } from "@video-editor/types"
 
 export const projects = sqliteTable("projects", {
   id: text("id").primaryKey(),
@@ -13,6 +14,18 @@ export const projects = sqliteTable("projects", {
     .default("idle"),
   captionStyle: text("caption_style"),
   fillerWords: text("filler_words"),
+  /**
+   * The user's chosen clip profile, overriding what the classifier detected (#98).
+   *
+   * Nullable with no default, and deliberately so: NULL means "use the detected profile", which is
+   * the state every project is in until someone overrides it. An empty string or a sentinel like
+   * "auto" would have to be distinguished from a real value on every read, and this column already
+   * has a null that means exactly the right thing.
+   *
+   * Overriding writes no new transcript: the analysis is re-derived from the stored words on the
+   * re-run that follows, so an override is always about the same video and never drifts from it.
+   */
+  clipProfileOverride: text("clip_profile_override", { enum: CLIP_PROFILE_IDS }),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 })
@@ -72,10 +85,17 @@ export const clips = sqliteTable(
     pipelineHash: text("pipeline_hash"),
     /** Model that served the structured clip-selection calls, e.g. "openai/gpt-oss-120b". */
     aiModel: text("ai_model"),
-    /** Rubric the prompt was swapped to, so "does the tutorial rubric help?" is answerable. */
-    contentType: text("content_type", {
-      enum: ["interview", "tutorial", "solo", "generic"],
-    }),
+    /**
+     * The genre profile the selection prompt was swapped to, so "which rubric produced this clip?"
+     * is answerable from the clip alone (#89, widened to profile ids in #98).
+     *
+     * The enum is TypeScript-only — drizzle's `text({ enum })` emits plain `text` with no CHECK
+     * constraint — so widening it from the old content types changed no SQL and rows written before
+     * #98 still hold `interview`/`tutorial`/`solo`/`generic` verbatim. Those values are left
+     * untouched on purpose: rewriting them would mean guessing what a pre-#98 `solo` row was
+     * really closest to, and a fabricated profile is worse than a stale one.
+     */
+    contentType: text("content_type", { enum: CLIP_PROFILE_IDS }),
     // ── Clip origin (#46 taste tier; added in #97) ─────────────────────────────
     // Who authored this clip: the selection pipeline, or the user by hand.
     //
@@ -118,7 +138,11 @@ export const aiOutputs = sqliteTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     type: text("type", {
-      enum: ["blog_post", "social_caption", "timestamps", "chapter_markers"],
+      // "video_analysis" (#98) is the JSON `VideoAnalysis` from the pre-selection LLM call. It
+      // lives here rather than in a column because it is a per-run artifact with a natural
+      // replace-on-rerun lifecycle, which `replaceAiOutputByType` already implements for the
+      // social captions.
+      enum: ["blog_post", "social_caption", "timestamps", "chapter_markers", "video_analysis"],
     }).notNull(),
     content: text("content").notNull(),
     createdAt: integer("created_at").notNull(),
