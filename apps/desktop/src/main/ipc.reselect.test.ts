@@ -204,7 +204,16 @@ function selection(
     pipelineVersion: "v1-unmeasured",
     pipelineHash: "hash",
     model: "test/model",
-    contentType: "solo" as const,
+    contentType: "solo_opinion" as const,
+    contentTypeOverridden: false,
+    analysis: {
+      profile: "solo_opinion",
+      confidence: "high",
+      summary: "Test run",
+      speakers: [{ role: "Host" }],
+      mainTopics: ["test"],
+      fallback: false,
+    },
     trace: fullTrace,
   }
 }
