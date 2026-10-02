@@ -30,3 +30,11 @@ export {
 export type { AnalysisInput, VideoContextOptions } from "./video-analysis"
 export { CLIP_PROFILES, getClipProfile, isClipProfileId } from "./profiles"
 export type { ClipProfile } from "./profiles"
+export {
+  judgeClip,
+  judgeQuestionsFor,
+  scoreAnswers,
+  failedHardQuestions,
+  UNIVERSAL_JUDGE_QUESTIONS,
+} from "./clip-judge"
+export type { ClipJudgement, JudgeGrade, JudgeQuestion } from "./clip-judge"

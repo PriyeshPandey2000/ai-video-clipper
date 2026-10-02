@@ -18,6 +18,20 @@ import {
 } from "@video-editor/transcript"
 import type { TopicSegment } from "@video-editor/transcript"
 import { CLIP_PROFILES, type ClipProfile } from "./profiles"
+import { mapPool, withRateLimitRetry, realSleep, type Sleep } from "./concurrency"
+import {
+  judgeClip,
+  judgeQuestionsFor,
+  failedHardQuestions,
+  JUDGE_SYSTEM_PROMPT,
+  JUDGE_USER_TEMPLATE,
+  JUDGE_BEFORE_SENTENCES,
+  UNIVERSAL_JUDGE_QUESTIONS,
+  PROFILE_QUESTION_WEIGHT,
+  GRADE_VALUE,
+  type ClipJudgement,
+  type JudgeQuestion,
+} from "./clip-judge"
 import {
   analyzeVideo,
   renderVideoContext,
@@ -36,6 +50,8 @@ export interface ClipSuggestion {
   platform: "tiktok" | "reels" | "shorts" | "generic"
   /** Non-blocking defects (e.g. cold open). Drives the eval harness's cold-open rate. */
   warnings: string[]
+  /** The judge's verdict on this clip's exact exported range (#99). `score` is derived from it. */
+  judge?: ClipJudgement
 }
 
 export interface ClipRejection {
@@ -100,22 +116,28 @@ export interface TraceCandidate {
   endSentence: number
   title: string
   reason: string
-  /** The model's own calibrated `strong` flag — the only judgement input the gate takes. */
-  strong: boolean
   platform: "tiktok" | "reels" | "shorts" | "generic"
 }
 
 /** What became of a candidate. Every candidate ends in exactly one of these. */
-export type TraceOutcome = "kept" | "gate-rejected" | "invalid-range" | "duplicate" | "over-budget"
+export type TraceOutcome =
+  | "kept"
+  | "gate-rejected"
+  | "invalid-range"
+  | "duplicate"
+  | "judge-rejected"
+  | "judge-failed"
+  | "over-budget"
 
 export interface TraceEntry extends TraceCandidate {
   outcome: TraceOutcome
   /**
-   * The range after the hook-first trim (D5). Differs from `startSentence` whenever a hook was
-   * found within the trim window; recording both is what makes a "the model said 40, we cut from 42"
-   * discrepancy explainable.
+   * The judge's verdict on the refined clip (#99), or null when the candidate never reached the
+   * judge (mechanical rejection, pre-judge duplicate) or the judge call failed.
    */
-  trimmedStartSentence: number | null
+  judge: ClipJudgement | null
+  /** Why the judge stage rejected it: a failed hard question, or the call error. Else empty. */
+  judgeReasons: string[]
   /** Final refined boundaries, or null when refinement produced nothing. */
   startMs: number | null
   endMs: number | null
@@ -167,8 +189,10 @@ export interface ClipSelectionTrace {
   temperature: number
   sentenceCount: number
   chunks: TraceChunk[]
-  /** One entry per candidate returned, in the order they were ranked. */
+  /** One entry per candidate returned, in generation order (chunk, then the model's own order). */
   candidates: TraceEntry[]
+  /** The judge's question table for this run, so the report is self-describing. */
+  judgeQuestions: JudgeQuestion[]
 }
 
 /**
@@ -180,7 +204,6 @@ const CandidateSchema = zod.object({
   endSentence: zod.number().int().min(0),
   title: zod.string(),
   reason: zod.string(),
-  strong: zod.boolean(),
   platform: zod.enum(["tiktok", "reels", "shorts", "generic"]),
 })
 
@@ -216,14 +239,11 @@ WHAT MAKES A CLIP WORTH POSTING — look for these, in rough order of value:
 A clip MUST be self-contained. Someone who never saw the source video should understand it.
 Prefer a range that starts where a thought starts and ends where it resolves.
 
-RANKING: return clips in order, best first. Do not assign numeric scores — ordering is your
-judgment, and an absolute score would be noise.
+RECALL: list every plausible clip in this chunk, best first. A later step judges each clip strictly
+on its exact text, so do not self-censor — but do not pad with clips you can see are weak either.
+Do not assign numeric scores.
 
-STRONG FLAG: set "strong": true only if you would personally post this clip. Be strict. A
-transcript with no outstanding moments should return few clips, or none. Returning weak clips is
-worse than returning nothing.
-
-Return JSON with a "clips" array. Each item: startSentence, endSentence, title, reason, strong,
+Return JSON with a "clips" array. Each item: startSentence, endSentence, title, reason,
 platform ("tiktok" | "reels" | "shorts" | "generic").`
 
 // Only chunk long-form content; short videos go to the LLM in one call.
@@ -295,28 +315,6 @@ function fixedChunks(sentences: Sentence[]): Sentence[][] {
   return chunks
 }
 
-/** A candidate plus the chunk it came from, carried through ranking so the trace can say which. */
-interface RankedCandidate {
-  chunk: number
-  candidate: Candidate
-}
-
-/** Round-robin by rank so a later chunk isn't starved by an earlier one. */
-function interleaveByRank(perChunk: Candidate[][]): RankedCandidate[] {
-  const tagged: RankedCandidate[][] = perChunk.map((candidates, chunk) =>
-    candidates.map((candidate) => ({ chunk, candidate })),
-  )
-  const merged: RankedCandidate[] = []
-  const depth = Math.max(0, ...tagged.map((c) => c.length))
-  for (let rank = 0; rank < depth; rank++) {
-    for (const chunk of tagged) {
-      const ranked = chunk[rank]
-      if (ranked) merged.push(ranked)
-    }
-  }
-  return merged
-}
-
 function overlapRatio(a: ClipSuggestion, b: ClipSuggestion): number {
   const start = Math.max(a.startMs, b.startMs)
   const end = Math.min(a.endMs, b.endMs)
@@ -332,39 +330,29 @@ function toTimecode(ms: number): string {
   return `${min}:${String(sec).padStart(2, "0")}`
 }
 
-// ─── D5 — hook-first check ───────────────────────────────────────────────────
+// ─── Concurrency ─────────────────────────────────────────────────────────────
 
-/** D5 — how many sentences forward hook-first trim may move a clip's start. */
-const HOOK_FIRST_MAX_TRIM = 2
+/** Chunk-generation and judge calls in flight at once. Speed only — not part of the fingerprint. */
+const CHUNK_CONCURRENCY = 3
+const JUDGE_CONCURRENCY = 3
+/**
+ * Share of judge calls that may fail before the run is treated as failed. A run where most judge
+ * calls died has not judged the clips it returns; keeping its few survivors and replacing the
+ * user's previous suggestions with them would be worse than failing.
+ */
+const MAX_JUDGE_FAILURE_RATIO = 0.5
+/**
+ * Overlap above which a refined candidate is dropped as a seam duplicate BEFORE judging. Chunks
+ * overlap by 150s, so the same moment arrives twice with near-identical bounds; judging both just
+ * spends calls. Looser overlaps are still deduped after scoring, where the better one is kept.
+ */
+const PRE_JUDGE_DUPLICATE_OVERLAP = 0.9
+
 /** Ceiling on candidates requested per chunk, independent of how many survive the gate. */
 const MAX_CANDIDATES_PER_CHUNK = 20
 /** Default clip count per video. Overridable per call, so the effective value is hashed per run. */
 const DEFAULT_MAX_CLIPS = 10
 
-/**
- * Tries to advance the clip's start sentence to the first sentence with a hook marker.
- * Trims at most `maxTrim` sentences forward. Returns the original start if no hook is
- * found within that window — the caller adds a "weak opening" warning.
- */
-function hookFirstAdjust(
-  sentenceByIndex: Map<number, Sentence>,
-  startSentence: number,
-  endSentence: number,
-  maxTrim = HOOK_FIRST_MAX_TRIM,
-): { adjustedStart: number; noHook: boolean } {
-  for (let i = 0; i <= maxTrim; i++) {
-    const idx = startSentence + i
-    // Never trim so far that fewer than 3 sentences remain in the clip.
-    if (idx > endSentence - 2) break
-    const sent = sentenceByIndex.get(idx)
-    if (sent && HOOK_RE.test(sent.text)) return { adjustedStart: idx, noHook: false }
-  }
-  return { adjustedStart: startSentence, noHook: true }
-}
-
-// B7/B8/B10 — local signals injected as prompt metadata so the LLM can weight them without
-// seeing raw audio. No model needed: speech rate from timestamps, hooks from regex, filler
-// from the existing word set.
 const HOOK_RE =
   /(?:\?$)|(?:\b\d{2,})|(?:\b(?:best|worst|biggest|most|least|first|last|only|never|always|ever)\b)|(?:\b(?:nobody|don't tell|secret|hidden|misconception|myth)\b)|(?:\b(?:here.?s why|that.?s why|turns out|here.?s the thing|the truth is)\b)/i
 const FILLER_SET = new Set([
@@ -455,92 +443,15 @@ function buildAnnotatedPrompt(
     .join("\n")
 }
 
-// C2 — listwise ranking stability. Shuffling the list before a second pass and merging with
-// Borda count removes the order-sensitivity of a single listwise call: the same video should
-// produce the same top clips across runs, not a coin flip based on which example appeared first.
-const RERANK_SYSTEM =
-  "Re-rank the given clip candidates for viral short-form video potential. Each candidate is " +
-  'shown with an explicit "id=N" field. Return a JSON object with a "ranking" array containing ' +
-  "every id value — not list positions — in your preferred order, best first."
-
-/**
- * How each candidate is presented to the rerank pass. It only ever sees the model's own title and
- * reason — never the transcript — so this format is part of what the fingerprint must cover.
- *
- * Interpolation, not `.replace` on a placeholder template. An earlier version built this from
- * `{ID}`/`{TITLE}`/`{REASON}` placeholders so the format could be hashed as a literal, but that
- * traded one injection bug for another: a model-authored title containing the literal text
- * `{REASON}` made the trailing `.replace` consume the placeholder *inside the title*, splicing the
- * reason into it and stranding `{REASON}` at the end of the line. The fingerprint no longer needs
- * the raw format for that — see `RERANK_FORMAT_SAMPLE` below.
- */
-function renderRerankLine(id: number, c: Pick<Candidate, "title" | "reason">): string {
-  return `id=${id} "${c.title}" — ${c.reason}`
-}
-
-// Sample rendering of the line above, hashed into the fingerprint so the format still counts as
-// covered. A change to the format changes this string; nothing is parsed to get there.
-const RERANK_FORMAT_SAMPLE = renderRerankLine(0, { title: "T", reason: "R" })
-
-function shuffle<T>(arr: T[]): T[] {
-  const out = [...arr]
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[out[i], out[j]] = [out[j]!, out[i]!]
-  }
-  return out
-}
-
-async function reRankWithBorda(client: AiClient, candidates: Candidate[]): Promise<Candidate[]> {
-  if (candidates.length <= 1) return candidates
-
-  // Key on array position, not startSentence — the schema doesn't guarantee unique
-  // startSentence values across candidates.
-  const tailRank = candidates.length
-  const indexed = candidates.map((c, id) => ({ c, id }))
-
-  const shuffled = shuffle(indexed)
-  const schema = zod.object({ ranking: zod.array(zod.number().int()) })
-  const prompt = shuffled.map(({ c, id }) => renderRerankLine(id, c)).join("\n")
-
-  let pass2Ranking: number[]
-  try {
-    const result = await client.generateObject({
-      prompt,
-      schema: schema as unknown as z.ZodType<{ ranking: number[] }>,
-      system: RERANK_SYSTEM,
-    })
-    pass2Ranking = result.ranking
-  } catch {
-    return candidates
-  }
-
-  // Build pass 2 rank map; unmentioned candidates get tail rank (Borda tail-rank rule).
-  const pass2Rank = new Map<number, number>(indexed.map(({ id }) => [id, tailRank]))
-  for (let i = 0; i < pass2Ranking.length; i++) {
-    const id = pass2Ranking[i]
-    if (id !== undefined && pass2Rank.has(id)) pass2Rank.set(id, i)
-  }
-
-  return indexed
-    .map(({ c, id }) => ({
-      c,
-      // pass1 rank is simply the candidate's position in the original (already-ranked) list.
-      borda: id + (pass2Rank.get(id) ?? tailRank),
-    }))
-    .sort((a, b) => a.borda - b.borda)
-    .map(({ c }) => c)
-}
-
 const USER_PROMPT_TEMPLATE = `{{CONTEXT}}
 
 Sentences #{{FIRST}} to #{{LAST}}.
 
 {{TRANSCRIPT}}
 
-Select every clip worth posting, best first. Each clip should span roughly {{MIN_SEC}}–{{MAX_SEC}} seconds of transcript time.
+List every plausible clip, best first. Each clip should span roughly {{MIN_SEC}}–{{MAX_SEC}} seconds of transcript time.
 Only use sentence indices between {{FIRST}} and {{LAST}}.
-Return fewer clips — or an empty array — rather than padding with weak ones.`
+Return an empty array if nothing in this section is a plausible clip.`
 
 // {{TRANSCRIPT}} goes in LAST, and via a function replacement. Three reasons, all load-bearing:
 //
@@ -576,13 +487,17 @@ function renderUserPrompt(
 /**
  * Human-readable label for the clip-selection *code*. Bump by hand when a change alters output
  * without touching any constant in the fingerprint — a logic edit in `refineClipBoundaries` or
- * `hookFirstAdjust` is invisible to the hash by construction.
+ * the boundary or gate logic is invisible to the hash by construction.
  *
  * v2 — the genre-profile pipeline (#98) replaced the regex content-type detector. The hash moved
  * on its own because the rubric swap is hashed; the version moves because what a profile *is* was
  * redefined, which no constant in the fingerprint can see.
+ *
+ * v3 — generation is for recall; every refined clip is judged on its exact text and ranked across
+ * all chunks (#99). The per-chunk `strong` flag, the title-only Borda re-rank, round-robin
+ * interleaving and the hook-first trim are gone.
  */
-export const PIPELINE_VERSION = "v2-genre-profile"
+export const PIPELINE_VERSION = "v3-judge-global-rank"
 
 /**
  * sha256 over every prompt template and heuristic threshold the clip-selection path reads, so a
@@ -600,13 +515,14 @@ export const PIPELINE_VERSION = "v2-genre-profile"
  *   look like a configuration change.
  * - The model. It is recorded per-run on the clip row, because the same fingerprint is
  *   legitimately paired with different models and comparing those is the point of storing it.
- * - `judgeQuestions`, `lookingFor` and `defaultLengthMs` from the profile table (#98). None of them
- *   reaches a prompt in this version — the judging pass that consumes `judgeQuestions` is a
- *   separate issue, and `defaultLengthMs` is held at the global 15–90s. Hashing a string nothing
- *   sends would make "it is in the hash" a claim this function could not honestly make.
+ * - `lookingFor` and `defaultLengthMs` from the profile table (#98). Neither reaches a prompt:
+ *   `defaultLengthMs` is held at the global 15–90s. Hashing a value nothing sends would make "it is
+ *   in the hash" a claim this function could not honestly make. `judgeQuestions` IS hashed now —
+ *   the judge sends them.
+ * - Concurrency limits and rate-limit waits. They change speed, never what the model reads.
  *
  * Known remaining gap: a behavioural change in code that reads none of these constants — a logic
- * edit inside `refineClipBoundaries` or `hookFirstAdjust`. That is what `PIPELINE_VERSION` is for.
+ * edit inside `refineClipBoundaries`. That is what `PIPELINE_VERSION` is for.
  * The zod candidate schema is not hashed either: it is sent to the SDK, not to the model as text,
  * so in `json_object` mode a schema edit does not change the prompt.
  *
@@ -645,8 +561,22 @@ export function computePipelineFingerprint(
           .map((id) => `rubric:${id}=${profiles[id].rubric}`),
         `user:${USER_PROMPT_TEMPLATE}`,
         `structuredSuffix:${STRUCTURED_OUTPUT_SUFFIX}`,
-        `rerankSystem:${RERANK_SYSTEM}`,
-        `rerankLineFormat:${RERANK_FORMAT_SAMPLE}`,
+        // #99 — the judge: what it is told, the questions it answers, and how answers become a
+        // score. All of it decides which clips win, so all of it names the configuration.
+        `judgeSystem:${JUDGE_SYSTEM_PROMPT}`,
+        `judgeUser:${JUDGE_USER_TEMPLATE}`,
+        `judgeBeforeSentences:${JUDGE_BEFORE_SENTENCES}`,
+        `judgeGrades:${JSON.stringify(GRADE_VALUE)}`,
+        ...UNIVERSAL_JUDGE_QUESTIONS.map(
+          (q) => `judgeQ:${q.id}|w=${q.weight}|hard=${q.hard}|${q.text}`,
+        ),
+        `judgeProfileQuestionWeight:${PROFILE_QUESTION_WEIGHT}`,
+        // Every profile's questions, not just the effective one — same reasoning as the rubrics.
+        ...CLIP_PROFILE_IDS.slice()
+          .sort()
+          .map((id) => `judgeProfileQ:${id}=${JSON.stringify(profiles[id].judgeQuestions)}`),
+        `maxJudgeFailureRatio:${MAX_JUDGE_FAILURE_RATIO}`,
+        `preJudgeDuplicateOverlap:${PRE_JUDGE_DUPLICATE_OVERLAP}`,
         `hookRe:${HOOK_RE.source}`,
         // Sorted: FILLER_SET is a Set, and its iteration order is not a stable thing to hash.
         `filler:${[...FILLER_SET].sort().join(",")}`,
@@ -672,7 +602,6 @@ export function computePipelineFingerprint(
         `minClipMs:${MIN_CLIP_MS}`,
         `maxClipMs:${MAX_CLIP_MS}`,
         `dedupeOverlap:${DEDUPE_OVERLAP_RATIO}`,
-        `hookFirstMaxTrim:${HOOK_FIRST_MAX_TRIM}`,
         `maxCandidatesPerChunk:${MAX_CANDIDATES_PER_CHUNK}`,
         `maxClips:${maxClips}`,
         // Temperature (#97/#90). Left out, two runs differing only in temperature would share a
@@ -715,7 +644,12 @@ async function selectFromChunk(
   const generated = result.clips.filter(
     (c) => c.startSentence >= firstIndex && c.endSentence <= lastIndex,
   )
-  return reRankWithBorda(client, generated)
+  return generated
+}
+
+export interface SelectClipsOptions {
+  /** Wait function for rate-limit backoff. Injected so tests do not sleep for real. */
+  sleep?: Sleep
 }
 
 /**
@@ -734,7 +668,9 @@ export async function selectClips(
   maxClips = DEFAULT_MAX_CLIPS,
   arousalPerSec: number[] = [],
   profileOverride: ClipProfileId | null = null,
+  options: SelectClipsOptions = {},
 ): Promise<ClipSelectionResult> {
+  const sleep = options.sleep ?? realSleep
   // Runs before the provenance literal is built so the profile can go straight in, rather than
   // being defaulted and overwritten. `analyzeVideo` answers the documented fallback without an API
   // call when there are no sentences, so this costs nothing on the empty-transcript path.
@@ -747,6 +683,8 @@ export async function selectClips(
     profileId: analysis.profile,
     override: profileOverride,
   })
+
+  const judgeQuestions = judgeQuestionsFor(profile)
 
   const provenance: ClipSelectionProvenance = {
     pipelineVersion: PIPELINE_VERSION,
@@ -768,6 +706,7 @@ export async function selectClips(
     sentenceCount: sentences.length,
     chunks: [],
     candidates: [],
+    judgeQuestions,
   }
   if (sentences.length === 0) {
     return { ...provenance, analysis, clips: [], rejected: [], trace }
@@ -783,62 +722,59 @@ export async function selectClips(
     })${analysis.fallback ? " — analysis unavailable" : ""}${analysis.secondaryProfile ? `, also ${analysis.secondaryProfile}` : ""}`,
   )
 
-  // D5 — fast lookup for hook-first check in the candidate loop below.
   const sentenceByIndex = new Map(sentences.map((s) => [s.index, s]))
 
+  // ── Step 1 — generate for recall, chunks in parallel ───────────────────────
   const chunks = topicsToChunks(sentences, topics)
+  type ChunkResult = { ok: true; candidates: Candidate[] } | { ok: false; error: string }
+  // mapPool returns results in chunk order, so the trace and the candidate order are the same on
+  // every run regardless of which response arrives first.
+  const chunkResults = await mapPool(
+    chunks,
+    CHUNK_CONCURRENCY,
+    async (chunk): Promise<ChunkResult> => {
+      // client.generateObject already retries malformed-JSON failures. If a chunk still fails after
+      // that, drop just this chunk's candidates rather than aborting selection for the whole video.
+      try {
+        const candidates = await withRateLimitRetry(
+          () => selectFromChunk(client, chunk, words, profile, contextBlock, arousalPerSec),
+          sleep,
+        )
+        return { ok: true, candidates }
+      } catch (err) {
+        console.error(
+          `[clip-selector] chunk (sentences #${chunk[0]?.index}-#${chunk[chunk.length - 1]?.index}) failed after retries, skipping:`,
+          err,
+        )
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    },
+  )
+
   const perChunk: Candidate[][] = []
   let failedChunks = 0
-  for (const chunk of chunks) {
-    // client.generateObject already retries transient/malformed-JSON failures internally. If a
-    // chunk still fails after that, drop just this chunk's candidates rather than aborting clip
-    // selection for the whole video — other chunks' clips are still worth surfacing.
-    try {
-      const candidates = await selectFromChunk(
-        client,
-        chunk,
-        words,
-        profile,
-        contextBlock,
-        arousalPerSec,
-      )
-      perChunk.push(candidates)
-      trace.chunks.push({
-        index: trace.chunks.length,
-        firstSentence: chunk[0]!.index,
-        lastSentence: chunk[chunk.length - 1]!.index,
-        candidateCount: candidates.length,
-        failed: false,
-      })
-    } catch (err) {
-      console.error(
-        `[clip-selector] chunk (sentences #${chunk[0]?.index}-#${chunk[chunk.length - 1]?.index}) failed after retries, skipping:`,
-        err,
-      )
+  chunks.forEach((chunk, index) => {
+    const result = chunkResults[index]!
+    const base = {
+      index,
+      firstSentence: chunk[0]!.index,
+      lastSentence: chunk[chunk.length - 1]!.index,
+    }
+    if (result.ok) {
+      perChunk.push(result.candidates)
+      trace.chunks.push({ ...base, candidateCount: result.candidates.length, failed: false })
+    } else {
       perChunk.push([])
-      // Recorded even though it produced nothing: "chunk 3 of 5 returned no candidates at all"
-      // and "chunk 3 of 5 never ran" are very different answers to why a long video yielded two
-      // clips, and the report is the only place either is visible.
-      trace.chunks.push({
-        index: trace.chunks.length,
-        firstSentence: chunk[0]!.index,
-        lastSentence: chunk[chunk.length - 1]!.index,
-        candidateCount: 0,
-        failed: true,
-        error: err instanceof Error ? err.message : String(err),
-      })
+      // Recorded even though it produced nothing: "chunk 3 of 5 returned no candidates" and
+      // "chunk 3 of 5 never ran" are very different answers to why a long video yielded two clips.
+      trace.chunks.push({ ...base, candidateCount: 0, failed: true, error: result.error })
       failedChunks++
     }
-  }
+  })
 
-  // A run where every chunk failed has told us nothing about the transcript — it has only told
-  // us the API was unreachable. Returning zero clips from it would be a lie the caller cannot
-  // detect: an empty result and a broken run are the same value.
-  //
-  // Throwing here is what lets a re-selection keep its previous suggestions. runClipSelection
-  // swaps suggestions for the returned clips, so "all chunks failed" must be an exception that
-  // happens *before* the swap rather than an empty list that reaches it. The partial-failure case
-  // (some chunks answered) deliberately still succeeds — those clips are real.
+  // A run where every chunk failed has told us nothing about the transcript — only that the API was
+  // unreachable. Throwing here, before any swap, is what lets a re-selection keep its previous
+  // suggestions. The partial-failure case (some chunks answered) still succeeds.
   if (chunks.length > 0 && failedChunks === chunks.length) {
     throw new Error(
       `Clip selection failed for all ${chunks.length} chunk(s) after retries. ` +
@@ -847,120 +783,193 @@ export async function selectClips(
     )
   }
 
-  const clips: ClipSuggestion[] = []
+  // ── Step 2 — refine every candidate, deterministic, no LLM ─────────────────
   const rejected: ClipRejection[] = []
-  const ranked = interleaveByRank(perChunk)
+  interface Survivor {
+    entry: TraceEntry
+    boundary: NonNullable<ReturnType<typeof refineClipBoundaries>>
+    candidate: Candidate
+    warnings: string[]
+    suggestion: ClipSuggestion
+  }
+  const survivors: Survivor[] = []
 
-  for (const { chunk, candidate } of ranked) {
-    // D5 — try to trim opening forward to a hook sentence before boundary refinement.
-    const { adjustedStart } = hookFirstAdjust(
-      sentenceByIndex,
-      candidate.startSentence,
-      candidate.endSentence,
+  perChunk.forEach((candidates, chunk) => {
+    for (const candidate of candidates) {
+      // Every candidate gets an entry, whatever happens to it: each silent drop is a question the
+      // report exists to answer.
+      const entry: TraceEntry = {
+        chunk,
+        startSentence: candidate.startSentence,
+        endSentence: candidate.endSentence,
+        title: candidate.title,
+        reason: candidate.reason,
+        platform: candidate.platform,
+        outcome: "kept",
+        judge: null,
+        judgeReasons: [],
+        startMs: null,
+        endMs: null,
+        startTimecode: null,
+        endTimecode: null,
+        boundary: null,
+        gate: { passed: false, reasons: [], warnings: [] },
+        duplicateOf: null,
+        finalRank: null,
+        text: null,
+      }
+      trace.candidates.push(entry)
+
+      // The model's range goes straight to refinement. The hook-first trim that used to run here
+      // moved the start after the model had judged the range; the judge now sees the final cut.
+      const boundary = refineClipBoundaries(
+        words,
+        sentences,
+        candidate.startSentence,
+        candidate.endSentence,
+      )
+      if (!boundary) {
+        entry.outcome = "invalid-range"
+        entry.gate.reasons = ["invalid sentence range"]
+        rejected.push({ title: candidate.title, reasons: ["invalid sentence range"] })
+        continue
+      }
+
+      entry.startMs = boundary.startMs
+      entry.endMs = boundary.endMs
+      entry.startTimecode = toTimecode(boundary.startMs)
+      entry.endTimecode = toTimecode(boundary.endMs)
+      entry.boundary = {
+        danglingUnresolved: boundary.danglingUnresolved,
+        endedOnCompleteThought: boundary.endedOnCompleteThought,
+        tooShort: boundary.tooShort,
+      }
+      // Words inside the final boundary, not the model's requested sentence range — this is the
+      // text the exported clip will contain.
+      entry.text = words
+        .filter((w) => w.startMs >= boundary.startMs && w.endMs <= boundary.endMs)
+        .map((w) => w.text)
+        .join(" ")
+
+      // Mechanical rejections happen BEFORE judging, so no call is spent on a clip that cannot ship.
+      const gate = passesQualityGate(boundary)
+      entry.gate = { passed: gate.passed, reasons: gate.reasons, warnings: gate.warnings }
+      if (!gate.passed) {
+        entry.outcome = "gate-rejected"
+        rejected.push({ title: candidate.title, reasons: gate.reasons })
+        continue
+      }
+
+      // D2's backward expansion can walk the start earlier than the model's, so re-check HOOK_RE
+      // against the sentence the clip actually opens on.
+      const finalOpener = sentenceByIndex.get(boundary.startSentenceIndex)
+      const noHook = !finalOpener || !HOOK_RE.test(finalOpener.text)
+
+      const suggestion: ClipSuggestion = {
+        title: candidate.title,
+        startMs: boundary.startMs,
+        endMs: boundary.endMs,
+        // Replaced by the judge's score once the clip is judged.
+        score: 0,
+        reason: candidate.reason,
+        platform: candidate.platform,
+        warnings: [...gate.warnings, ...(noHook ? ["weak opening"] : [])],
+      }
+
+      // Chunk overlap makes the same moment arrive twice with near-identical bounds. Drop the
+      // later copy now rather than pay to judge both.
+      const twin = survivors.find(
+        (s) => overlapRatio(s.suggestion, suggestion) >= PRE_JUDGE_DUPLICATE_OVERLAP,
+      )
+      if (twin) {
+        entry.outcome = "duplicate"
+        entry.duplicateOf = twin.suggestion.title
+        continue
+      }
+
+      survivors.push({ entry, boundary, candidate, warnings: suggestion.warnings, suggestion })
+    }
+  })
+
+  // ── Step 3 — judge each final cut, one call per clip ───────────────────────
+  type JudgeResult = { ok: true; judgement: ClipJudgement } | { ok: false; error: string }
+  const judged = await mapPool(survivors, JUDGE_CONCURRENCY, async (s): Promise<JudgeResult> => {
+    try {
+      const judgement = await judgeClip({
+        client,
+        questions: judgeQuestions,
+        context: contextBlock,
+        words,
+        sentences,
+        boundary: s.boundary,
+        sleep,
+      })
+      return { ok: true, judgement }
+    } catch (err) {
+      console.error(`[clip-judge] judging "${s.candidate.title}" failed:`, err)
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  const judgeFailures = judged.filter((j) => !j.ok).length
+  // Mirrors the all-chunks-failed rule: a run that mostly failed to judge has not judged what it
+  // would return, and a re-selection would swap the user's suggestions for it. Throw before the swap.
+  if (survivors.length > 0 && judgeFailures / survivors.length > MAX_JUDGE_FAILURE_RATIO) {
+    const firstError = judged.find((j): j is { ok: false; error: string } => !j.ok)?.error
+    throw new Error(
+      `Clip judging failed for ${judgeFailures} of ${survivors.length} clip(s). ` +
+        `This is an API or model failure, not a verdict on the clips. First error: ${firstError ?? "unknown"}`,
     )
-
-    // Every candidate gets an entry, whatever happens to it. The three ways this loop used to
-    // `continue`/`break` silently (refine-null, gate-reject, dedupe) are the exact questions the
-    // report exists to answer, so each is now an outcome rather than a bare skip.
-    const entry: TraceEntry = {
-      chunk,
-      startSentence: candidate.startSentence,
-      endSentence: candidate.endSentence,
-      title: candidate.title,
-      reason: candidate.reason,
-      strong: candidate.strong,
-      platform: candidate.platform,
-      outcome: "kept",
-      trimmedStartSentence: adjustedStart,
-      startMs: null,
-      endMs: null,
-      startTimecode: null,
-      endTimecode: null,
-      boundary: null,
-      gate: { passed: false, reasons: [], warnings: [] },
-      duplicateOf: null,
-      finalRank: null,
-      text: null,
-    }
-    trace.candidates.push(entry)
-
-    const boundary = refineClipBoundaries(words, sentences, adjustedStart, candidate.endSentence)
-    if (!boundary) {
-      entry.outcome = "invalid-range"
-      entry.gate.reasons = ["invalid sentence range"]
-      rejected.push({ title: candidate.title, reasons: ["invalid sentence range"] })
-      continue
-    }
-
-    entry.startMs = boundary.startMs
-    entry.endMs = boundary.endMs
-    entry.startTimecode = toTimecode(boundary.startMs)
-    entry.endTimecode = toTimecode(boundary.endMs)
-    entry.boundary = {
-      danglingUnresolved: boundary.danglingUnresolved,
-      endedOnCompleteThought: boundary.endedOnCompleteThought,
-      tooShort: boundary.tooShort,
-    }
-    // Words inside the final boundary, not the model's requested sentence range — this is the
-    // text the exported clip will contain, which is what "what does this clip say?" means.
-    entry.text = words
-      .filter((w) => w.startMs >= boundary.startMs && w.endMs <= boundary.endMs)
-      .map((w) => w.text)
-      .join(" ")
-
-    const gate = passesQualityGate(boundary, candidate.strong)
-    entry.gate = { passed: gate.passed, reasons: gate.reasons, warnings: gate.warnings }
-    if (!gate.passed) {
-      entry.outcome = "gate-rejected"
-      rejected.push({ title: candidate.title, reasons: gate.reasons })
-      continue
-    }
-
-    // D2's backward expansion can walk the boundary's actual start earlier than adjustedStart
-    // (e.g. the hook sentence itself opens with a dangling reference like "So" or "This"), which
-    // would make a stale noHook computed at adjustedStart lie about what the clip really opens
-    // on. Re-check HOOK_RE against the sentence the clip actually starts on.
-    const finalOpener = sentenceByIndex.get(boundary.startSentenceIndex)
-    const noHook = !finalOpener || !HOOK_RE.test(finalOpener.text)
-
-    const suggestion: ClipSuggestion = {
-      title: candidate.title,
-      startMs: boundary.startMs,
-      endMs: boundary.endMs,
-      // Derived from rank for display only — the model never emits a number (C8).
-      score: 0,
-      reason: candidate.reason,
-      platform: candidate.platform,
-      warnings: [...gate.warnings, ...(noHook ? ["weak opening"] : [])],
-    }
-
-    // Chunk overlap intentionally produces duplicates at the seams; keep the better-ranked one.
-    const duplicate = clips.find(
-      (existing) => overlapRatio(existing, suggestion) > DEDUPE_OVERLAP_RATIO,
-    )
-    if (duplicate) {
-      entry.outcome = "duplicate"
-      entry.duplicateOf = duplicate.title
-      continue
-    }
-
-    // Previously a `break` — candidates past the budget were never examined at all. They are now
-    // recorded as over-budget instead, which costs nothing and stops the report from implying
-    // the model never proposed them.
-    if (clips.length >= maxClips) {
-      entry.outcome = "over-budget"
-      continue
-    }
-
-    clips.push(suggestion)
-    entry.finalRank = clips.length - 1
   }
 
-  // Display score from final rank, so the UI has a number without the LLM inventing one.
-  const total = clips.length
-  clips.forEach((clip, i) => {
-    clip.score = total <= 1 ? 1 : Number((1 - i / total).toFixed(2))
+  const scored: Survivor[] = []
+  survivors.forEach((s, i) => {
+    const result = judged[i]!
+    if (!result.ok) {
+      s.entry.outcome = "judge-failed"
+      s.entry.judgeReasons = [`judge call failed: ${result.error}`]
+      rejected.push({ title: s.candidate.title, reasons: s.entry.judgeReasons })
+      return
+    }
+    s.entry.judge = result.judgement
+    s.suggestion.judge = result.judgement
+    s.suggestion.score = result.judgement.score
+    const failed = failedHardQuestions(result.judgement.answers, judgeQuestions)
+    if (failed.length > 0) {
+      s.entry.outcome = "judge-rejected"
+      s.entry.judgeReasons = failed.map((id) => `fails ${id}`)
+      rejected.push({ title: s.candidate.title, reasons: s.entry.judgeReasons })
+      return
+    }
+    scored.push(s)
   })
+
+  // ── Step 4 — rank every chunk together, dedupe, cut ────────────────────────
+  // Best score first; ties broken by position in the video so the order never depends on anything
+  // random or on which response arrived first.
+  scored.sort(
+    (a, b) =>
+      b.suggestion.score - a.suggestion.score || a.suggestion.startMs - b.suggestion.startMs,
+  )
+
+  const clips: ClipSuggestion[] = []
+  for (const s of scored) {
+    // The list is score-ordered, so any earlier clip that overlaps this one scored at least as well.
+    const duplicate = clips.find(
+      (existing) => overlapRatio(existing, s.suggestion) > DEDUPE_OVERLAP_RATIO,
+    )
+    if (duplicate) {
+      s.entry.outcome = "duplicate"
+      s.entry.duplicateOf = duplicate.title
+      continue
+    }
+    if (clips.length >= maxClips) {
+      s.entry.outcome = "over-budget"
+      continue
+    }
+    clips.push(s.suggestion)
+    s.entry.finalRank = clips.length - 1
+  }
 
   return { ...provenance, analysis, clips, rejected, trace }
 }

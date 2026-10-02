@@ -153,10 +153,10 @@ function traceEntry(overrides: Partial<TraceEntry> = {}): TraceEntry {
     endSentence: 12,
     title: "Candidate",
     reason: "Hook",
-    strong: true,
     platform: "shorts",
     outcome: "kept",
-    trimmedStartSentence: 0,
+    judge: null,
+    judgeReasons: [],
     startMs: 1000,
     endMs: 31000,
     startTimecode: "0:01",
@@ -189,6 +189,7 @@ function selection(
     candidates: clips.map((c, i) =>
       traceEntry({ title: c.title, startMs: c.startMs, endMs: c.endMs, finalRank: i }),
     ),
+    judgeQuestions: [],
   }
   return {
     clips: clips.map((c, i) => ({

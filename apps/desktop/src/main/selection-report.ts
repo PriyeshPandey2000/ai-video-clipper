@@ -165,7 +165,38 @@ const OUTCOME_LABEL: Record<TraceEntry["outcome"], string> = {
   "gate-rejected": "gate-rejected",
   "invalid-range": "invalid range",
   duplicate: "duplicate",
+  "judge-rejected": "judge-rejected",
+  "judge-failed": "judge call failed",
   "over-budget": "over budget",
+}
+
+const GRADE_MARK = { yes: "✓", partly: "~", no: "✗" } as const
+
+/** Compact judge verdict: score, then one mark per question in the run's own order. */
+function judgeLines(c: TraceEntry, questions: ClipSelectionTrace["judgeQuestions"]): string[] {
+  const out: string[] = []
+  if (c.judge) {
+    const marks = questions
+      .map((q) => `${q.id} ${GRADE_MARK[c.judge!.answers[q.id] ?? "no"]}`)
+      .join(" · ")
+    out.push(`- judge: score ${c.judge.score.toFixed(2)} — ${marks}`)
+    if (c.judge.note) out.push(`- judge note: ${cell(c.judge.note)}`)
+  }
+  if (c.judgeReasons.length > 0) out.push(`- judge verdict: ${c.judgeReasons.join("; ")}`)
+  return out
+}
+
+function renderJudgeQuestions(trace: ClipSelectionTrace): string[] {
+  const lines = ["## Judge questions", "", "| id | weight | hard | question |", "|---|---|---|---|"]
+  for (const q of trace.judgeQuestions) {
+    lines.push(`| ${q.id} | ${q.weight} | ${q.hard ? "yes" : ""} | ${cell(q.text)} |`)
+  }
+  lines.push(
+    "",
+    "Grades: ✓ yes = 1, ~ partly = 0.5, ✗ no = 0. A ✗ on a hard question rejects the clip.",
+    "",
+  )
+  return lines
 }
 
 function renderMarkdown(report: SelectionReport): string {
@@ -290,6 +321,8 @@ function renderMarkdown(report: SelectionReport): string {
     }
   }
 
+  if (trace.judgeQuestions.length > 0) lines.push(...renderJudgeQuestions(trace))
+
   if (dropped.length > 0) {
     lines.push("## Dropped candidates")
     lines.push("")
@@ -298,10 +331,6 @@ function renderMarkdown(report: SelectionReport): string {
       lines.push("")
       lines.push(`- chunk: ${c.chunk}`)
       lines.push(`- model range: #${c.startSentence}–#${c.endSentence}`)
-      lines.push(
-        `- after hook trim: ${c.trimmedStartSentence === null ? "—" : `#${c.trimmedStartSentence}–#${c.endSentence}`}`,
-      )
-      lines.push(`- strong: ${c.strong}`)
       lines.push(`- reason: ${cell(c.reason)}`)
       if (c.startMs !== null && c.endMs !== null) {
         lines.push(`- refined: ${tc(c.startTimecode)}–${tc(c.endTimecode)}`)
@@ -320,6 +349,7 @@ function renderMarkdown(report: SelectionReport): string {
       if (c.gate.warnings.length > 0) {
         lines.push(`- warnings: ${c.gate.warnings.join("; ")}`)
       }
+      lines.push(...judgeLines(c, trace.judgeQuestions))
       if (c.duplicateOf) {
         lines.push(`- duplicate of: ${cell(c.duplicateOf)}`)
       }
@@ -335,10 +365,8 @@ function renderMarkdown(report: SelectionReport): string {
       lines.push("")
       lines.push(`- chunk: ${c.chunk}`)
       lines.push(`- model range: #${c.startSentence}–#${c.endSentence}`)
-      lines.push(
-        `- after hook trim: ${c.trimmedStartSentence === null ? "—" : `#${c.trimmedStartSentence}–#${c.endSentence}`}`,
-      )
       lines.push(`- refined: ${tc(c.startTimecode)}–${tc(c.endTimecode)}`)
+      lines.push(...judgeLines(c, trace.judgeQuestions))
       if (c.boundary) {
         lines.push(
           `- boundary flags: danglingUnresolved=${c.boundary.danglingUnresolved}, ` +

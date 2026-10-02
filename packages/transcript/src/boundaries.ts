@@ -215,23 +215,19 @@ export interface QualityGateResult {
 }
 
 /**
- * B13 — the absolute gate. Deterministic checks only; the LLM's own opinion enters as a
- * calibrated binary (`strong`), never as a numeric threshold (C8). A project is allowed to
- * yield two clips, or zero.
+ * B13 — the absolute gate. Deterministic checks only, run BEFORE any LLM judgement so no call is
+ * spent on a clip that cannot ship. The model's opinion of a clip is the judge's job (#99), applied
+ * to the refined clip afterwards. A project is allowed to yield two clips, or zero.
  *
  * Only defects with no available repair block a clip. A dangling opener is a *warning*: D2
  * already attempted the repair, and rejecting on it would be the hard blacklist we ruled out —
  * it discards good content because of where the model's range happened to start, and a clip
  * beginning at sentence 0 has nothing to expand into and could never pass.
  */
-export function passesQualityGate(
-  boundary: RefinedBoundary,
-  llmMarkedStrong: boolean,
-): QualityGateResult {
+export function passesQualityGate(boundary: RefinedBoundary): QualityGateResult {
   const reasons: string[] = []
   const warnings: string[] = []
 
-  if (!llmMarkedStrong) reasons.push("not marked strong")
   if (boundary.tooShort) reasons.push(`shorter than ${MIN_CLIP_MS}ms`)
   if (!boundary.endedOnCompleteThought) reasons.push("does not end on a complete thought")
 

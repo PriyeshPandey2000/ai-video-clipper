@@ -6,6 +6,25 @@ PR B (score and chips in `ClipReview`) follows once PR A has been run on real vi
 Depends on #97 (re-run + selection report) and #98 (genre profiles, `VIDEO CONTEXT` block,
 `judgeQuestions`) — both merged (#109).
 
+> **Status: PR A implemented.** This document was written before the build. Where the code
+> differs, the code wins; the differences, decided in review, are:
+>
+> - **Graded answers, no `overall` rating.** Each question is `yes` (1) / `partly` (0.5) / `no` (0).
+>   `score = Σ weight × grade ÷ Σ weight`. A 1–10 rating was dropped: decision C8 in
+>   `CLIP-DETECTION-RESEARCH.md` rules out absolute LLM scores, and graded answers already break ties.
+> - **Hard requirements reject only on a clear `no`** (`standalone`, `payoff`); `partly` passes.
+> - **Judge-failure rule:** one failed call rejects that candidate; if **more than half** fail the run
+>   throws before any swap, so a re-selection keeps the previous suggestions.
+> - **Seam duplicates (≥ 90% overlap) are dropped before judging**; looser overlap is deduped after
+>   scoring, keeping the higher score.
+> - **Chunk generation runs 3 at a time**, results kept in chunk order; 429s on generation and judge
+>   calls back off (honouring `retry-after`, else 1s/2s/4s, max 20s, 4 attempts).
+> - **No database migration in PR A.** `clips.ai_score` carries the real score; per-question answers
+>   live in the run's selection report. `clips.judge_json` and the UI chips are PR B.
+> - Judge ids for profile questions are positional (`comedy_1`). `bestOpeningSentence` is stored in
+>   the judgement but unused until #100. The score is a pure function of the answers.
+> - Not built: `JUDGE_MAX_CANDIDATES` cap (log first), batching (batch size is 1 by design).
+
 ---
 
 ## 1. Problem statement
