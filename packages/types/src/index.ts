@@ -79,12 +79,69 @@ export interface Segment {
 export interface AiOutput {
   id: string
   projectId: string
-  type: "blog_post" | "social_caption" | "timestamps" | "chapter_markers"
+  type: "blog_post" | "social_caption" | "timestamps" | "chapter_markers" | "video_analysis"
   content: string
   createdAt: number
 }
 
 export type PipelineStage = "transcribing" | "analyzing" | "generating_clips" | "generating_content"
+
+// ─── Clip profiles (#98) ────────────────────────────────────────────────────
+// What kind of video this is, decided by one LLM call before selection rather than by a regex
+// over the transcript. Lives here rather than in @video-editor/ai because it crosses three
+// packages: the AI package picks the rubric, the database stores it, and the renderer offers it
+// as a dropdown. @video-editor/ai depends on this package, so a definition there could not be
+// read by the others.
+
+export const CLIP_PROFILE_IDS = [
+  "conversation",
+  "solo_opinion",
+  "educational",
+  "story",
+  "comedy",
+  "visual",
+] as const
+
+export type ClipProfileId = (typeof CLIP_PROFILE_IDS)[number]
+
+/**
+ * How sure the classifier is. Deliberately closed and coarse: a numeric score would invite
+ * comparisons the model's calibration cannot support, and "low" is what the fallback path
+ * reports, so the two cases stay visibly different.
+ */
+export type AnalysisConfidence = "high" | "medium" | "low"
+
+export interface VideoAnalysisSpeaker {
+  /**
+   * `host`, `guest`, a name the transcript states, or an empty string when the text does not
+   * establish it. Diarization is a separate later issue, so this is the model's inference from
+   * what was said rather than anything measured.
+   */
+  role: string
+}
+
+export interface VideoAnalysis {
+  profile: ClipProfileId
+  confidence: AnalysisConfidence
+  /**
+   * A second profile when the video genuinely mixes two — a webinar with Q&A, a story that turns
+   * into a lecture. Recorded but not acted on: per-segment profiles are explicitly out of scope
+   * for now, and blending two rubrics on a guess would be worse than picking the primary.
+   */
+  secondaryProfile?: ClipProfileId
+  /** 2–3 sentences on what the video is about. Prepended to every selection prompt. */
+  summary: string
+  speakers: VideoAnalysisSpeaker[]
+  /** Up to 6 short topic strings. */
+  mainTopics: string[]
+  /**
+   * True when the structured call failed (or there was no transcript) and these values are the
+   * documented defaults rather than the model's answer. Selection never aborts on a failed
+   * analysis, so this flag is the only way to tell "we asked and it said solo_opinion" from
+   * "we never found out".
+   */
+  fallback: boolean
+}
 
 export type WhisperModel = "tiny" | "base" | "small" | "medium" | "large"
 
@@ -172,6 +229,37 @@ export interface IpcInvokeChannels {
   }
   /** Most recent selection report for this project, or null if it has never been re-run. */
   "clip:last-report": { args: { projectId: string }; result: string | null }
+  /**
+   * The stored video analysis for this project, plus the user's override (#98).
+   *
+   * `effective` is the profile the next run will actually use: the override when set, otherwise
+   * the detected one. The renderer shows all three because "Detected: Educational" over a
+   * dropdown reading "Conversation" is only explicable if both are on screen.
+   *
+   * `analysis` is null when this project has never been analyzed — which, before #98, meant
+   * every video, since the analysis is only written by a selection run.
+   */
+  "project:get-clip-profile": {
+    args: { projectId: string }
+    result: {
+      analysis: VideoAnalysis | null
+      override: ClipProfileId | null
+      effective: ClipProfileId | null
+    }
+  }
+  /**
+   * Overrides (or clears, with `override: null`) the detected clip profile and re-runs selection
+   * through #97's path in the same call (#98).
+   *
+   * Deliberately one channel rather than a write followed by a separate `clip:reselect`: the
+   * override is only meaningful if the suggestions it governs are the ones on screen, and two
+   * round trips leave a window where the stored profile and the stored clips disagree. Returns
+   * the same shape as `clip:reselect` for the same reason.
+   */
+  "project:set-clip-profile": {
+    args: { projectId: string; override: ClipProfileId | null }
+    result: { reportJsonPath: string; reportMarkdownPath: string; clipCount: number }
+  }
   "export:clips": {
     args: {
       projectId: string

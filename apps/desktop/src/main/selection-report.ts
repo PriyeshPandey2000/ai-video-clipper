@@ -11,6 +11,8 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import type { ClipSelectionProvenance, ClipSelectionTrace, TraceEntry } from "@video-editor/ai"
+import { CLIP_PROFILES, renderVideoContext } from "@video-editor/ai"
+import type { VideoAnalysis } from "@video-editor/types"
 
 export const SELECTION_REPORTS_DIR = "selection-reports"
 
@@ -27,6 +29,8 @@ export interface SelectionReportHeader {
 export interface SelectionReport {
   header: SelectionReportHeader
   provenance: ClipSelectionProvenance
+  /** What the classifier made of the video before selection (#98). */
+  analysis: VideoAnalysis
   trace: ClipSelectionTrace
   /** mm:ss start→end for each kept clip, in final rank order. The report's headline answer. */
   finalRanked: {
@@ -144,6 +148,18 @@ function cell(text: string): string {
   return text.replace(/\|/g, "\\|").replace(/\n/g, " ")
 }
 
+/**
+ * Speaker list for the report's analysis table. Distinct and non-empty, or a dash — the model is
+ * told to return an empty role when it cannot tell who is speaking, so a list of blanks is a real
+ * shape and "Speaker 1, Speaker 2" would be a worse rendering of it than an honest dash.
+ */
+function renderSpeakerList(analysis: VideoAnalysis): string {
+  const roles = [...new Set(analysis.speakers.map((s) => s.role.trim()))].filter(
+    (r) => r.length > 0,
+  )
+  return roles.length > 0 ? cell(roles.join(", ")) : "—"
+}
+
 const OUTCOME_LABEL: Record<TraceEntry["outcome"], string> = {
   kept: "kept",
   "gate-rejected": "gate-rejected",
@@ -153,7 +169,7 @@ const OUTCOME_LABEL: Record<TraceEntry["outcome"], string> = {
 }
 
 function renderMarkdown(report: SelectionReport): string {
-  const { header, provenance, trace } = report
+  const { header, provenance, analysis, trace } = report
   const s = summarise(report)
   const kept = trace.candidates.filter((c) => c.outcome === "kept")
   const dropped = trace.candidates.filter((c) => c.outcome !== "kept")
@@ -164,6 +180,50 @@ function renderMarkdown(report: SelectionReport): string {
   lines.push(`Run started ${new Date(header.startedAtMs).toISOString()}`)
   lines.push("")
 
+  lines.push("## Video analysis")
+  lines.push("")
+  lines.push(
+    `What the classifier decided about this video before any clip was chosen. The profile selects ` +
+      `the rubric; the context block is prepended to every selection prompt.`,
+  )
+  lines.push("")
+  lines.push("| field | value |")
+  lines.push("| --- | --- |")
+  lines.push(`| profile used | ${CLIP_PROFILES[provenance.contentType].label} |`)
+  lines.push(`| profile detected | ${CLIP_PROFILES[analysis.profile].label} |`)
+  if (provenance.contentTypeOverridden) {
+    // Stated rather than left to arithmetic: the detected and used profiles differ, and the reader
+    // needs to know whether that was the model or the user.
+    lines.push(`| profile source | **user override** — the classifier's choice was not used |`)
+  }
+  lines.push(
+    `| confidence | ${analysis.fallback ? "n/a (analysis unavailable)" : analysis.confidence} |`,
+  )
+  if (analysis.secondaryProfile) {
+    lines.push(
+      `| secondary profile | ${CLIP_PROFILES[analysis.secondaryProfile].label} (recorded, not used) |`,
+    )
+  }
+  lines.push(`| speakers | ${renderSpeakerList(analysis)} |`)
+  lines.push(`| main topics | ${cell(analysis.mainTopics.join("; ")) || "—"} |`)
+  lines.push(`| summary | ${cell(analysis.summary) || "—"} |`)
+  lines.push("")
+  lines.push("VIDEO CONTEXT block, as sent:")
+  lines.push("")
+  lines.push(
+    fence(
+      renderVideoContext(analysis, {
+        profileId: analysis.profile,
+        override: provenance.contentTypeOverridden ? provenance.contentType : null,
+      }),
+    ),
+  )
+  lines.push("")
+  lines.push("RUBRIC appended to the system prompt, as sent:")
+  lines.push("")
+  lines.push(fence(CLIP_PROFILES[provenance.contentType].rubric))
+  lines.push("")
+
   lines.push("## Run")
   lines.push("")
   lines.push("| field | value |")
@@ -172,7 +232,7 @@ function renderMarkdown(report: SelectionReport): string {
   lines.push(`| pipeline hash | \`${provenance.pipelineHash}\` |`)
   lines.push(`| model | \`${provenance.model}\` |`)
   lines.push(`| temperature | ${trace.temperature} |`)
-  lines.push(`| content type | ${provenance.contentType} |`)
+  lines.push(`| clip profile | \`${provenance.contentType}\` |`)
   lines.push(`| video duration | ${formatDuration(header.durationMs)} |`)
   lines.push(`| sentences | ${trace.sentenceCount} |`)
   lines.push(

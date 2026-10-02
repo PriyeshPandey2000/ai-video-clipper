@@ -24,6 +24,7 @@ import {
   setClipTimes,
   markClipExported,
   setFillerWords,
+  setClipProfileOverride,
   updateProjectImportResult,
   words as wordsTable,
   segments as segmentsTable,
@@ -170,11 +171,19 @@ describeSqlite("repository", () => {
     writeFileSync(join(dir, "0001_late.sql"), "ALTER TABLE projects ADD COLUMN marker TEXT;")
 
     const sqlite = makeLegacySqlite()
-    const db = createDb(sqlite, dir)
+    createDb(sqlite, dir)
 
     const columns = sqlite.prepare("PRAGMA table_info(projects)").all() as { name: string }[]
     expect(columns.some((c) => c.name === "marker")).toBe(true)
-    expect(getProject(db, "legacy")?.name).toBe("Old")
+    // Read through raw SQL rather than getProject on purpose. This fixture ships a hand-written
+    // pair of migrations, so its `projects` table only has the columns those two add — it is not
+    // the full current schema, and `getProject` selects every column drizzle knows about. The claim
+    // under test is "the baseline did not lose data or skip 0001", and that is answerable from the
+    // table this fixture actually built. Whether the real migration chain brings a legacy database
+    // all the way to the current schema is covered by the tests above, which use MIGRATIONS_DIR.
+    expect(sqlite.prepare("SELECT name FROM projects WHERE id = 'legacy'").get()).toEqual({
+      name: "Old",
+    })
   })
 
   it("insertProject / getProject / listProjects order by updatedAt desc", () => {
@@ -259,7 +268,7 @@ describeSqlite("repository", () => {
         pipelineVersion: "v1-unmeasured",
         pipelineHash: "abc123",
         aiModel: "openai/gpt-oss-120b",
-        contentType: "solo" as const,
+        contentType: "solo_opinion" as const,
       },
     ])
 
@@ -274,7 +283,7 @@ describeSqlite("repository", () => {
       pipelineVersion: "v1-unmeasured",
       pipelineHash: "abc123",
       aiModel: "openai/gpt-oss-120b",
-      contentType: "solo",
+      contentType: "solo_opinion",
     })
   })
 
@@ -482,6 +491,58 @@ describeSqlite("repository", () => {
     // The panel picks with `.find`, so this ordering decides which captions the user sees. Left
     // unordered, "the most recent" is whatever SQLite happens to return first.
     expect(getAiOutputs(db, "p1").map((o) => o.id)).toEqual(["cap-2", "cap-1"])
+  })
+
+  // The stored video_analysis is the per-run counterpart to the per-project override (#98): one
+  // describes the video as the classifier saw it, the other records the user's disagreement. A
+  // re-run replaces the first and leaves the second alone, which is the whole point of splitting
+  // them across two tables.
+  it("stores one video_analysis per run, replaced on re-run without touching other outputs", () => {
+    const db = testDb()
+    insertProject(db, baseProject)
+    insertAiOutput(db, {
+      id: "analysis-old",
+      projectId: "p1",
+      type: "video_analysis",
+      content: '{"profile":"solo_opinion","fallback":true}',
+      createdAt: 1000,
+    })
+    insertAiOutput(db, {
+      id: "cap-keep",
+      projectId: "p1",
+      type: "social_caption",
+      content: "keep me",
+      createdAt: 1000,
+    })
+
+    const replaced = replaceAiOutputByType(db, "p1", "video_analysis", {
+      id: "analysis-new",
+      projectId: "p1",
+      type: "video_analysis",
+      content: '{"profile":"conversation","fallback":false}',
+      createdAt: 2000,
+    })
+
+    expect(replaced).toBe(1)
+    const analyses = getAiOutputs(db, "p1").filter((o) => o.type === "video_analysis")
+    expect(analyses.map((o) => o.id)).toEqual(["analysis-new"])
+    expect(getAiOutputs(db, "p1").some((o) => o.id === "cap-keep")).toBe(true)
+  })
+
+  it("clipProfileOverride is null until set, and null again after being cleared", () => {
+    const db = testDb()
+    insertProject(db, baseProject)
+
+    // Null means "use what the classifier detected". It has to be a real null rather than a
+    // sentinel, because every read has to distinguish "no override" from "override to X" without
+    // knowing the set of profiles.
+    expect(getProject(db, "p1")?.clipProfileOverride).toBeNull()
+
+    setClipProfileOverride(db, "p1", "educational")
+    expect(getProject(db, "p1")?.clipProfileOverride).toBe("educational")
+
+    setClipProfileOverride(db, "p1", null)
+    expect(getProject(db, "p1")?.clipProfileOverride).toBeNull()
   })
 
   it("setFillerWords atomically replaces filler segments", () => {

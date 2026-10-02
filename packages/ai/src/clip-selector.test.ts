@@ -11,6 +11,7 @@ import {
   PIPELINE_VERSION,
 } from "./clip-selector"
 import type { TraceEntry } from "./clip-selector"
+import { CLIP_PROFILES } from "./profiles"
 
 function transcript(count: number): Word[] {
   const words: Word[] = []
@@ -45,7 +46,29 @@ const sentences = buildSentences(words)
 
 type Handler = (prompt: string) => unknown
 
-function mockClient(handler: Handler, prompts: string[] = []): AiClient {
+/** The classifier's answer when a test has no opinion. `solo_opinion` is the documented default. */
+export const defaultAnalysis = {
+  profile: "solo_opinion",
+  confidence: "high",
+  summary: "A single speaker argues a case to camera.",
+  speakers: [{ role: "Host" }],
+  mainTopics: ["hooks"],
+}
+
+/**
+ * Routes the classification call (#98) separately from the selection and re-ranking calls.
+ *
+ * selectClips now opens with one structured call, and every handler in this file matches on the
+ * *selection* prompt's "Sentences #N to #M" or returns a ranking shape. Handing those a
+ * classification response would make every test fail in a way that says nothing about the test, so
+ * the analysis prompt is recognised by its leading marker and answered from its own handler.
+ */
+function mockClient(
+  handler: Handler,
+  prompts: string[] = [],
+  analysisHandler: Handler = () => defaultAnalysis,
+  systems: string[] = [],
+): AiClient {
   return {
     provider: "groq",
     textModel: "mock",
@@ -55,12 +78,19 @@ function mockClient(handler: Handler, prompts: string[] = []): AiClient {
     async complete() {
       return ""
     },
-    async generateObject({ prompt }) {
+    async generateObject({ prompt, system }) {
       prompts.push(prompt)
+      // Recorded separately because the rubric is a system-prompt concern: asserting on `prompts`
+      // alone would only ever see the user half of what the model read.
+      if (system) systems.push(system)
+      if (prompt.startsWith(ANALYSIS_PROMPT_MARKER)) return analysisHandler(prompt) as never
       return handler(prompt) as never
     },
   }
 }
+
+/** `analyzeVideo` prefixes its prompt with this; no selection or ranking prompt begins with it. */
+const ANALYSIS_PROMPT_MARKER = "TRANSCRIPT"
 
 function range(prompt: string): [number, number] | null {
   const m = prompt.match(/Sentences #(\d+) to #(\d+)/)
@@ -294,7 +324,9 @@ describe("hostile input", () => {
       buildSentences(w),
     )
 
-    const prompt = prompts[0]!
+    // Not prompts[0]: the classification call now precedes every selection prompt, so the first
+    // recorded prompt is the analysis, which contains none of these tokens.
+    const prompt = prompts.find((p) => range(p) !== null)!
     // Every hostile token survives exactly as written.
     for (const token of hostile) {
       expect(prompt).toContain(token)
@@ -653,6 +685,8 @@ describe("chunk failure is not an empty selection (#97)", () => {
 })
 
 describe("pipeline provenance (#89)", () => {
+  // Answers the classification call like mockClient does, so a test that only cares about
+  // provenance does not also have to be a test of analyzeVideo.
   const stubClient = (structuredModel = "test/model") =>
     ({
       provider: "groq",
@@ -660,7 +694,8 @@ describe("pipeline provenance (#89)", () => {
       structuredModel,
       temperature: CLIP_SELECTION_TEMPERATURE,
       complete: async () => "",
-      generateObject: async () => ({ clips: [] }),
+      generateObject: async ({ prompt }: { prompt: string }) =>
+        prompt.startsWith("TRANSCRIPT") ? defaultAnalysis : { clips: [] },
     }) as unknown as AiClient
 
   it("is a sha256 hex digest", () => {
@@ -679,7 +714,12 @@ describe("pipeline provenance (#89)", () => {
     expect(result.pipelineHash).toBe(PIPELINE_FINGERPRINT)
     expect(result.pipelineVersion).toBe(PIPELINE_VERSION)
     expect(result.model).toBe("test/model")
-    expect(result.contentType).toBe("generic")
+    // #98 — no transcript means no classification, so the profile is the documented fallback and
+    // says so. Silently reporting a profile the model never chose would be indistinguishable from
+    // a real detection in both this result and the report.
+    expect(result.contentType).toBe("solo_opinion")
+    expect(result.analysis.fallback).toBe(true)
+    expect(result.contentTypeOverridden).toBe(false)
   })
 
   it("records the structured model, not the text model", async () => {
@@ -701,10 +741,14 @@ describe("pipeline provenance (#89)", () => {
     expect(at5.pipelineHash).toBe(computePipelineFingerprint(5))
   })
 
-  it("detects the content type from the transcript rather than asserting the type is valid", async () => {
-    // The previous version of this test asserted the result was one of the four ContentType
-    // values, which the type system already guarantees — it could not fail. This feeds a
-    // transcript with explicit step-by-step language and asserts the classifier commits to it.
+  it("takes the profile from the classifier, not from wording in the transcript (#98)", async () => {
+    // This transcript is the exact input that motivated the issue: it is full of "step one" and
+    // "how to", so the old regex detector called it educational and applied the tutorial rubric —
+    // whose "never clip a partial step" rule suppresses exactly the beats worth clipping.
+    //
+    // The assertion is deliberately inverted: given step-by-step *wording*, the profile must still
+    // be whatever the classifier said. If someone reintroduced keyword detection over the
+    // transcript, this fails, which is the point.
     const words: Word[] = []
     let ms = 0
     const lines = [
@@ -728,7 +772,122 @@ describe("pipeline provenance (#89)", () => {
       }
       ms += 400
     }
-    const result = await selectClips(stubClient(), words, buildSentences(words))
-    expect(result.contentType).toBe("tutorial")
+
+    const result = await selectClips(
+      mockClient(twoPerChunk, [], () => ({
+        ...defaultAnalysis,
+        profile: "conversation",
+        confidence: "medium",
+      })),
+      words,
+      buildSentences(words),
+    )
+    expect(result.contentType).toBe("conversation")
+    expect(result.analysis.profile).toBe("conversation")
+    expect(result.contentTypeOverridden).toBe(false)
+  })
+
+  it("reports the override as an override rather than as the model's answer (#98)", async () => {
+    const words = transcript(120)
+    const sentences = buildSentences(words)
+    const result = await selectClips(
+      mockClient(twoPerChunk),
+      words,
+      sentences,
+      [],
+      10,
+      [],
+      "comedy",
+    )
+    // The stored analysis still records what the classifier detected; only the effective profile
+    // changes. A report or UI that read the analysis alone would tell the user the wrong reason
+    // for the clips on screen.
+    expect(result.contentType).toBe("comedy")
+    expect(result.analysis.profile).toBe("solo_opinion")
+    expect(result.contentTypeOverridden).toBe(true)
+  })
+
+  it("falls back to solo_opinion without failing the run when classification throws (#98)", async () => {
+    const words = transcript(120)
+    const sentences = buildSentences(words)
+    const result = await selectClips(
+      mockClient(twoPerChunk, [], () => {
+        throw new Error("model unavailable")
+      }),
+      words,
+      sentences,
+      [],
+      10,
+      [],
+    )
+    // The point of the fallback: one failed call must not cost the user their whole selection run.
+    expect(result.contentType).toBe("solo_opinion")
+    expect(result.analysis.fallback).toBe(true)
+    expect(result.analysis.confidence).toBe("low")
+    expect(result.contentTypeOverridden).toBe(false)
+  })
+
+  it("prepends the video context to every selection prompt (#98)", async () => {
+    const prompts: string[] = []
+    await selectClips(mockClient(twoPerChunk, prompts), words, sentences, [], 10)
+    const selectionPrompts = prompts.filter((p) => range(p) !== null)
+    expect(selectionPrompts.length).toBeGreaterThan(1)
+    for (const prompt of selectionPrompts) {
+      expect(prompt).toContain("VIDEO CONTEXT")
+      expect(prompt).toContain("A single speaker argues a case to camera.")
+    }
+  })
+
+  it("appends the effective profile's rubric to the selection system prompt (#98)", async () => {
+    const prompts: string[] = []
+    const systems: string[] = []
+    await selectClips(
+      mockClient(twoPerChunk, prompts, undefined, systems),
+      words,
+      sentences,
+      [],
+      10,
+    )
+    const rubric = CLIP_PROFILES.solo_opinion.rubric
+    const selectionSystems = systems.filter((s) => s.includes(rubric))
+    // The rubric is what actually changes selection behaviour, so its presence is the assertion —
+    // not merely that *some* profile block was attached. One system prompt per chunk.
+    expect(selectionSystems.length).toBe(prompts.filter((p) => range(p) !== null).length)
+  })
+
+  it("uses the override's rubric, not the detected profile's (#98)", async () => {
+    const prompts: string[] = []
+    const systems: string[] = []
+    await selectClips(
+      mockClient(twoPerChunk, prompts, undefined, systems),
+      words,
+      sentences,
+      [],
+      10,
+      [],
+      "comedy",
+    )
+    // Counted against the selection prompts, so "one rubric per chunk" is checked rather than
+    // merely "the right rubric appears somewhere in the run".
+    const chunkCount = prompts.filter((p) => range(p) !== null).length
+    const selectionSystems = systems.filter((s) => s.includes(CLIP_PROFILES.comedy.rubric))
+    expect(selectionSystems.length).toBe(chunkCount)
+    for (const system of selectionSystems) {
+      // The detected profile's rubric must be absent, not merely unmentioned: a prompt carrying
+      // both would be the two-rubric blend the issue explicitly ruled out.
+      expect(system).not.toContain(CLIP_PROFILES.solo_opinion.rubric)
+    }
+  })
+
+  it("changes the fingerprint when a rubric changes (#98)", () => {
+    // Two runs are only comparable if a rubric edit moves the hash. Profiles are passed by
+    // reference, so mutating the table's copy is enough to prove the rubrics are hashed at all.
+    const original = CLIP_PROFILES.solo_opinion.rubric
+    try {
+      CLIP_PROFILES.solo_opinion.rubric = "a different rubric entirely"
+      expect(computePipelineFingerprint(10)).not.toBe(PIPELINE_FINGERPRINT)
+    } finally {
+      CLIP_PROFILES.solo_opinion.rubric = original
+    }
   })
 })
