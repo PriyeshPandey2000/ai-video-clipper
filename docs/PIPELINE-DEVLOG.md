@@ -273,7 +273,7 @@ Transcript shows timestamps in seconds (`[10.50]`) but system prompt asked for m
 
 **Not done / known gaps**
 
-- No UI for the profile (display, override, `visual` warning) — the IPC exists (#98 stays open).
+- ~~No UI for the profile~~ — added afterwards: the genre control in `ClipReview` (detected profile and confidence, override dropdown that re-runs selection, `visual` and low-confidence hints), driven by `describeClipProfile`.
 - The clip list is sorted by time, so the judge's ranking order is not visible; the progress message does not name the judging phase.
 - No cap on judge calls; the count is not yet logged per run. Weights and the hard rule are untuned until #101.
 - `scripts/recall-ablation.ts` still carries the old prompt (#91).

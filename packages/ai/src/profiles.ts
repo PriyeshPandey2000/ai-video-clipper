@@ -10,7 +10,7 @@
 // call site because the pipeline fingerprint hashes every rubric: a rubric edited anywhere other
 // than this table would change clip output invisibly.
 
-import { CLIP_PROFILE_IDS, type ClipProfileId } from "@video-editor/types"
+import { CLIP_PROFILE_DISPLAY, CLIP_PROFILE_IDS, type ClipProfileId } from "@video-editor/types"
 import { MIN_CLIP_MS, MAX_CLIP_MS } from "@video-editor/transcript"
 
 export interface ClipProfile {
@@ -123,8 +123,8 @@ Do not award a clip for a visual event you have no evidence of.`
 export const CLIP_PROFILES: Record<ClipProfileId, ClipProfile> = {
   conversation: {
     id: "conversation",
-    label: "Conversation",
-    lookingFor: "Surprising claims, pushback, personal stories with a turn",
+    label: CLIP_PROFILE_DISPLAY.conversation.label,
+    lookingFor: CLIP_PROFILE_DISPLAY.conversation.lookingFor,
     rubric: CONVERSATION_RUBRIC,
     judgeQuestions: [
       "Does the clip contain both a claim and someone's reaction to it?",
@@ -135,8 +135,8 @@ export const CLIP_PROFILES: Record<ClipProfileId, ClipProfile> = {
   },
   solo_opinion: {
     id: "solo_opinion",
-    label: "Solo opinion",
-    lookingFor: "Strong specific claims, quotable lines, reframed beliefs",
+    label: CLIP_PROFILE_DISPLAY.solo_opinion.label,
+    lookingFor: CLIP_PROFILE_DISPLAY.solo_opinion.lookingFor,
     rubric: SOLO_OPINION_RUBRIC,
     judgeQuestions: [
       "Is there one contestable claim, and is it specific rather than general?",
@@ -147,8 +147,8 @@ export const CLIP_PROFILES: Record<ClipProfileId, ClipProfile> = {
   },
   educational: {
     id: "educational",
-    label: "Educational",
-    lookingFor: "One complete step with an outcome, a mistake and its fix, one mental model",
+    label: CLIP_PROFILE_DISPLAY.educational.label,
+    lookingFor: CLIP_PROFILE_DISPLAY.educational.lookingFor,
     rubric: EDUCATIONAL_RUBRIC,
     judgeQuestions: [
       "Does the clip teach one thing from beginning to end, with no instruction cut in half?",
@@ -159,8 +159,8 @@ export const CLIP_PROFILES: Record<ClipProfileId, ClipProfile> = {
   },
   story: {
     id: "story",
-    label: "Story",
-    lookingFor: "One beat with setup, turn and payoff — payoff included",
+    label: CLIP_PROFILE_DISPLAY.story.label,
+    lookingFor: CLIP_PROFILE_DISPLAY.story.lookingFor,
     rubric: STORY_RUBRIC,
     judgeQuestions: [
       "Does the clip contain the payoff, not just the setup or the turn?",
@@ -171,8 +171,8 @@ export const CLIP_PROFILES: Record<ClipProfileId, ClipProfile> = {
   },
   comedy: {
     id: "comedy",
-    label: "Comedy",
-    lookingFor: "Setup plus punchline, or a funny exchange — ending just after the laugh",
+    label: CLIP_PROFILE_DISPLAY.comedy.label,
+    lookingFor: CLIP_PROFILE_DISPLAY.comedy.lookingFor,
     rubric: COMEDY_RUBRIC,
     judgeQuestions: [
       "Is the punchline inside the clip?",
@@ -183,8 +183,8 @@ export const CLIP_PROFILES: Record<ClipProfileId, ClipProfile> = {
   },
   visual: {
     id: "visual",
-    label: "Visual",
-    lookingFor: "Mostly decided by what is on screen — transcript-based clipping will be weak here",
+    label: CLIP_PROFILE_DISPLAY.visual.label,
+    lookingFor: CLIP_PROFILE_DISPLAY.visual.lookingFor,
     rubric: VISUAL_RUBRIC,
     judgeQuestions: [
       "Is the moment inferable from the words alone, or does it depend on unseen footage?",

@@ -196,6 +196,129 @@ export interface VideoAnalysis {
   fallback: boolean
 }
 
+/**
+ * Display text for each profile, shared by the prompt-side profile table and the renderer's genre
+ * control. One definition so the label the user picks is the label the report prints.
+ */
+export const CLIP_PROFILE_DISPLAY: Record<ClipProfileId, { label: string; lookingFor: string }> = {
+  conversation: {
+    label: "Conversation",
+    lookingFor: "Surprising claims, pushback, personal stories with a turn",
+  },
+  solo_opinion: {
+    label: "Solo opinion",
+    lookingFor: "Strong specific claims, quotable lines, reframed beliefs",
+  },
+  educational: {
+    label: "Educational",
+    lookingFor: "One complete step with an outcome, a mistake and its fix, one mental model",
+  },
+  story: {
+    label: "Story",
+    lookingFor: "One beat with setup, turn and payoff — payoff included",
+  },
+  comedy: {
+    label: "Comedy",
+    lookingFor: "Setup plus punchline, or a funny exchange — ending just after the laugh",
+  },
+  visual: {
+    label: "Visual",
+    lookingFor: "Mostly decided by what is on screen — transcript-based clipping will be weak here",
+  },
+}
+
+export type ClipProfileState =
+  /** Never analysed and nothing chosen — the first selection run has not happened. */
+  | "none"
+  /** The classifier's answer is in effect. */
+  | "detected"
+  /** The classifier failed; the documented fallback profile is in effect, not a real detection. */
+  | "fallback"
+  /** The user's choice is in effect. */
+  | "override"
+
+/** What the genre control shows, derived from `project:get-clip-profile`. */
+export interface ClipProfileView {
+  state: ClipProfileState
+  /** The profile the next run will use, or null before any analysis. */
+  effective: ClipProfileId | null
+  /** One line for the control: what is in effect, and why. */
+  headline: string
+  /** What the effective profile looks for, or null when none is in effect. */
+  lookingFor: string | null
+  /** A mixed video's second profile, shown as a hint. Never acted on. */
+  alsoLooksLike: string | null
+  /** True when the effective profile is `visual`: transcript-based clipping will be weak. */
+  visualWarning: boolean
+  /** True when the classifier was unsure and the user has not overridden it — worth a look. */
+  lowConfidence: boolean
+}
+
+/**
+ * Turns the stored analysis and override into what the genre control prints (#98).
+ *
+ * Pure so the wording, and above all the three-way difference between a real detection, the
+ * documented fallback and a user's choice, can be tested without a renderer. Showing a fallback as
+ * "Detected: Solo opinion" would claim a classification that never happened.
+ */
+export function describeClipProfile(info: {
+  analysis: VideoAnalysis | null
+  override: ClipProfileId | null
+}): ClipProfileView {
+  const { analysis, override } = info
+  const label = (id: ClipProfileId): string => CLIP_PROFILE_DISPLAY[id].label
+
+  if (override) {
+    const detected =
+      analysis && !analysis.fallback
+        ? ` (detected: ${label(analysis.profile)}, ${analysis.confidence} confidence)`
+        : ""
+    return {
+      state: "override",
+      effective: override,
+      headline: `You chose: ${label(override)}${detected}`,
+      lookingFor: CLIP_PROFILE_DISPLAY[override].lookingFor,
+      alsoLooksLike: null,
+      visualWarning: override === "visual",
+      lowConfidence: false,
+    }
+  }
+
+  if (!analysis) {
+    return {
+      state: "none",
+      effective: null,
+      headline: "Not analysed yet — the genre is detected when clips are selected",
+      lookingFor: null,
+      alsoLooksLike: null,
+      visualWarning: false,
+      lowConfidence: false,
+    }
+  }
+
+  if (analysis.fallback) {
+    return {
+      state: "fallback",
+      effective: analysis.profile,
+      headline: `Couldn't tell what kind of video this is — using ${label(analysis.profile)}`,
+      lookingFor: CLIP_PROFILE_DISPLAY[analysis.profile].lookingFor,
+      alsoLooksLike: null,
+      visualWarning: false,
+      lowConfidence: false,
+    }
+  }
+
+  return {
+    state: "detected",
+    effective: analysis.profile,
+    headline: `Detected: ${label(analysis.profile)} (${analysis.confidence} confidence)`,
+    lookingFor: CLIP_PROFILE_DISPLAY[analysis.profile].lookingFor,
+    alsoLooksLike: analysis.secondaryProfile ? label(analysis.secondaryProfile) : null,
+    visualWarning: analysis.profile === "visual",
+    lowConfidence: analysis.confidence === "low",
+  }
+}
+
 export type WhisperModel = "tiny" | "base" | "small" | "medium" | "large"
 
 export const WHISPER_MODELS: WhisperModel[] = ["tiny", "base", "small", "medium", "large"]

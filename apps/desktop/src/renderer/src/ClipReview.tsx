@@ -1,6 +1,11 @@
 import { useState, useEffect, useCallback } from "react"
-import type { Clip, ClipJudgeRecord, JudgeGrade } from "@video-editor/types"
-import { parseClipJudge } from "@video-editor/types"
+import type { Clip, ClipJudgeRecord, ClipProfileId, JudgeGrade } from "@video-editor/types"
+import {
+  CLIP_PROFILE_DISPLAY,
+  CLIP_PROFILE_IDS,
+  describeClipProfile,
+  parseClipJudge,
+} from "@video-editor/types"
 import type { CaptionStyle } from "@video-editor/types"
 import { Spinner, Badge, Progress, Button } from "@video-editor/ui"
 
@@ -132,6 +137,10 @@ export function ClipReview({
   const [lastReportPath, setLastReportPath] = useState<string | null>(null)
   const [reselectError, setReselectError] = useState<string | null>(null)
   const [progressMessage, setProgressMessage] = useState<string | null>(null)
+  const [profileInfo, setProfileInfo] = useState<{
+    analysis: Parameters<typeof describeClipProfile>[0]["analysis"]
+    override: ClipProfileId | null
+  } | null>(null)
 
   const loadClips = useCallback(async () => {
     try {
@@ -177,23 +186,58 @@ export function ClipReview({
     loadLastReport()
   }, [loadLastReport])
 
-  const handleReselect = useCallback(async () => {
-    setReselecting(true)
-    setReselectError(null)
+  // The stored analysis and override. Reloaded after every run, failed ones included: a failed
+  // override change is rolled back in the main process, and the control must show what is stored
+  // rather than what was asked for.
+  const loadProfile = useCallback(async () => {
     try {
-      const result = await window.api.invoke("clip:reselect", { projectId })
-      setLastReportPath(result.reportMarkdownPath)
-      // Reload from the DB rather than trusting the returned count — approved/exported clips
-      // survive the replace, so the visible list is not only the new suggestions.
-      await loadClips()
-      onReselectComplete?.()
+      const { analysis, override } = await window.api.invoke("project:get-clip-profile", {
+        projectId,
+      })
+      setProfileInfo({ analysis, override })
     } catch (err) {
-      setReselectError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setReselecting(false)
-      setProgressMessage(null)
+      console.error("Failed to load clip profile:", err)
     }
-  }, [projectId, loadClips, onReselectComplete])
+  }, [projectId])
+
+  useEffect(() => {
+    void loadProfile()
+  }, [loadProfile, refreshTrigger])
+
+  // One path for both ways of re-running — the plain button and a genre change — so the busy
+  // state, the error text and the reloads cannot drift apart.
+  const runSelection = useCallback(
+    async (run: () => Promise<{ reportMarkdownPath: string }>) => {
+      setReselecting(true)
+      setReselectError(null)
+      try {
+        const result = await run()
+        setLastReportPath(result.reportMarkdownPath)
+        // Reload from the DB rather than trusting the returned count — approved/exported clips
+        // survive the replace, so the visible list is not only the new suggestions.
+        await loadClips()
+        onReselectComplete?.()
+      } catch (err) {
+        setReselectError(err instanceof Error ? err.message : String(err))
+      } finally {
+        await loadProfile()
+        setReselecting(false)
+        setProgressMessage(null)
+      }
+    },
+    [loadClips, loadProfile, onReselectComplete],
+  )
+
+  const handleReselect = useCallback(
+    () => runSelection(() => window.api.invoke("clip:reselect", { projectId })),
+    [runSelection, projectId],
+  )
+
+  const handleProfileChange = useCallback(
+    (override: ClipProfileId | null) =>
+      runSelection(() => window.api.invoke("project:set-clip-profile", { projectId, override })),
+    [runSelection, projectId],
+  )
 
   const handleOpenReport = useCallback(async () => {
     if (!lastReportPath) return
@@ -282,8 +326,68 @@ export function ClipReview({
   // Rendered above both the empty and populated states: a project that found no clips is exactly
   // the case where re-running is most worth trying, so hiding the button there would remove the
   // only control that can act on it.
+  const profile = describeClipProfile({
+    analysis: profileInfo?.analysis ?? null,
+    override: profileInfo?.override ?? null,
+  })
+
   const toolbar = (
     <div className="space-y-1.5">
+      <div className="space-y-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor="clip-genre" className="text-[11px] text-neutral-500">
+            Genre
+          </label>
+          <select
+            id="clip-genre"
+            value={profileInfo?.override ?? "auto"}
+            // Nothing to re-run before the first selection: `project:set-clip-profile` refuses a
+            // project with no transcript, so offering it would only produce an error.
+            // (Choosing the genre before the first run is #108.)
+            disabled={
+              reselectDisabled ||
+              profileInfo === null ||
+              (profile.state === "none" && !analysisComplete)
+            }
+            onChange={(e) =>
+              void handleProfileChange(
+                e.target.value === "auto" ? null : (e.target.value as ClipProfileId),
+              )
+            }
+            title={
+              pipelineRunning
+                ? "Wait for the current pipeline run to finish"
+                : "Changing the genre re-runs clip selection from the stored transcript"
+            }
+            className="rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200 disabled:opacity-50"
+          >
+            <option value="auto">Auto (detect)</option>
+            {CLIP_PROFILE_IDS.map((id) => (
+              <option key={id} value={id}>
+                {CLIP_PROFILE_DISPLAY[id].label}
+              </option>
+            ))}
+          </select>
+          <span className="text-[11px] text-neutral-400">{profile.headline}</span>
+        </div>
+        {profile.lookingFor && (
+          <p className="text-[11px] text-neutral-500">Looking for: {profile.lookingFor}</p>
+        )}
+        {profile.alsoLooksLike && (
+          <p className="text-[11px] text-neutral-500">Also looks like: {profile.alsoLooksLike}</p>
+        )}
+        {profile.lowConfidence && (
+          <p className="text-[11px] text-yellow-500/80">
+            The detector was unsure. If this is wrong, pick the genre above to re-run.
+          </p>
+        )}
+        {profile.visualWarning && (
+          <p className="text-[11px] text-yellow-500/80">
+            This looks like a mostly visual video. Clips are chosen from the spoken words only, so
+            expect weaker picks.
+          </p>
+        )}
+      </div>
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="primary"
