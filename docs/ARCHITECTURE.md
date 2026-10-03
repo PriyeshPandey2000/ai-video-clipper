@@ -146,8 +146,10 @@ words → sentences → topic segments                                  (package
 re-runs selection from the stored words, replaces only `suggested` clips (approved, rejected and
 exported ones are kept), and restores the previous override if the run fails.
 
-**Not built yet:** the renderer has no profile display or override control (the IPC exists), the UI
-does not show the judge's ranking order (the list is sorted by time), and the progress message does
+The genre control (detected profile, confidence, override dropdown, `visual` warning) is in
+`ClipReview`; its wording comes from `describeClipProfile` in `@video-editor/types`.
+
+**Not built yet:** the UI does not show the judge's ranking order (the list is sorted by time), and the progress message does
 not name the judging phase.
 
 ## Project storage
