@@ -113,7 +113,7 @@ Goal: the best clips across the whole video, judged on what is actually exported
 - [x] **#99** Judge every final cut, rank globally (#110) — recall-first generation, one judge call per refined clip, graded answers, hard `standalone`/`payoff` gate, global ranking, real scores, `judge_json` + chips in `ClipReview`. Removed: `strong`, Borda re-rank, random shuffle, hook-first trim, round-robin interleaving
 - [ ] **#100** Judge-chosen opening sentence (replaces the regex hook-trim; `bestOpeningSentence` is already stored)
 - [ ] **#101** The 5-video manual test: profile accuracy, your 15 reference moments, model comparison, chunking decision. Run this before building more knobs
-- [ ] **#102** Clip settings: length range, clip count, profile override UI, free-text topic steer
+- [ ] **#102** Clip settings: length range, clip count, free-text topic steer (the genre override itself shipped with #98)
 - [ ] **#103** Topic diversity cap (only if #101 shows clustering)
 - [ ] **#104** One-tap reject reasons + feedback per pipeline version
 - [ ] **#105** Speaker labels (diarization) for conversation videos

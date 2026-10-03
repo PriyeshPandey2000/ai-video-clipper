@@ -383,8 +383,8 @@ export function ClipReview({
         )}
         {profile.visualWarning && (
           <p className="text-[11px] text-yellow-500/80">
-            This looks like a mostly visual video. Clips are chosen from the spoken words only, so
-            expect weaker picks.
+            Visual videos are mostly decided by what is on screen. Clips are chosen from the spoken
+            words only, so expect weaker picks.
           </p>
         )}
       </div>
