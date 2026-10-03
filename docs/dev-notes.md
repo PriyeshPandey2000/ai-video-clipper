@@ -186,7 +186,19 @@ Windows: `WIN_CSC_LINK` + `WIN_CSC_KEY_PASSWORD`, same idea. Not set up — Wind
 
 `apps/desktop/build/entitlements.mac.plist` — hardened runtime entitlements. `disable-library-validation` is required because `better-sqlite3` and `onnxruntime-node` are unsigned native binaries loaded at runtime; without it, hardened runtime refuses to load them even on a correctly signed app. `allow-jit`/`allow-unsigned-executable-memory` are required for V8/Node's JIT under hardened runtime. `network.client` for outbound API calls (Groq, model downloads).
 
-## Wave 3 clip-selection decisions
+## Clip selection after #98/#99 (current)
+
+The Wave 3 notes below describe how the pipeline looked before the genre profile and the judge. What
+changed, in one place (full detail in `docs/ARCHITECTURE.md` and `docs/PIPELINE-DEVLOG.md` Session 9):
+
+- **C4 content-type rubric — replaced.** `detectContentType` is gone; an LLM call picks one of six profiles (`packages/ai/src/profiles.ts`, `video-analysis.ts`).
+- **D5 hook-first opening — removed.** `hookFirstAdjust` is deleted; `HOOK_RE` now only drives the `{hook}` prompt tag and the "weak opening" warning. #100 replaces it with a judge-chosen opening.
+- **Borda re-rank — removed**, along with the random shuffle. Ranking is by judge score across all chunks (`clip-judge.ts`).
+- **Still true:** chunk overlap (150 s), B12 stays dropped, the dropped SenseVoice/laughter/active-speaker items stay dropped.
+
+Debugging a bad selection: open the latest `<project>/selection-reports/*.md` (path from `clip:last-report`), re-run with "Re-run clip selection", and compare `pipelineHash` before drawing conclusions. To re-tune weights, the stored answers (`clips.judge_json`, or the report JSON) re-score offline with `scoreAnswers`.
+
+## Wave 3 clip-selection decisions (historical — see the section above for what is current)
 
 ### Implemented
 
