@@ -8,7 +8,7 @@
 // This lives in the desktop app rather than `packages/ai` because `packages/ai` deliberately
 // knows nothing about files: `selectClips` returns trace data, the caller decides to persist it.
 
-import { mkdir, readdir, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import type { ClipSelectionProvenance, ClipSelectionTrace, TraceEntry } from "@video-editor/ai"
 import { CLIP_PROFILES, renderVideoContext } from "@video-editor/ai"
@@ -95,6 +95,70 @@ export async function writeSelectionReport(
  * survives a file copy or a sync that scrambles mtimes. The `.md` is preferred over the `.json`
  * because it is what a human opens.
  */
+/** Where the candidates in a run went, in pipeline order. The empty state's honest answer. */
+export interface SelectionFunnelStep {
+  outcome: TraceEntry["outcome"]
+  /** Human wording, resolved here so the renderer never has to keep its own copy in sync. */
+  label: string
+  count: number
+}
+
+export interface SelectionFunnel {
+  chunkCount: number
+  /** Chunks whose model call failed outright — these contributed nothing at all. */
+  failedChunkCount: number
+  /** Candidates that reached the ranking stage. */
+  candidateCount: number
+  /** Over-cap candidates that were dropped before judging. */
+  droppedCandidateCount: number
+  keptCount: number
+  steps: SelectionFunnelStep[]
+}
+
+/**
+ * The funnel for the most recent report, or null when there is no readable report.
+ *
+ * Recomputed from the trace rather than read from the report's embedded `summary`: reports written
+ * before a field existed are still on disk, and a stored `summary` is the one shape here that could
+ * be stale. `?? 0` on the drop count is what keeps an older file from summing to NaN.
+ */
+export async function readLastReportFunnel(projectDir: string): Promise<SelectionFunnel | null> {
+  const markdownPath = await findLastReport(projectDir)
+  if (!markdownPath) return null
+  try {
+    const report = JSON.parse(
+      await readFile(markdownPath.replace(/\.md$/, ".json"), "utf-8"),
+    ) as SelectionReport
+    return buildFunnel(report)
+  } catch (err) {
+    // A report we cannot parse is not a reason to break the review screen. The screen falls back to
+    // its non-numeric copy, and the file is still there to open by hand.
+    console.warn("[selection-report] could not read the last report's funnel:", err)
+    return null
+  }
+}
+
+function buildFunnel(report: SelectionReport): SelectionFunnel {
+  const tally: Record<string, number> = {}
+  for (const c of report.trace.candidates) {
+    tally[c.outcome] = (tally[c.outcome] ?? 0) + 1
+  }
+  // `Object.keys(OUTCOME_LABEL)` rather than the tally's own keys: the funnel should read in the
+  // order candidates actually pass through the pipeline, not in whatever order they happened to be
+  // recorded. Zero-count steps are dropped here so a healthy run shows a short list.
+  const steps = (Object.keys(OUTCOME_LABEL) as TraceEntry["outcome"][])
+    .map((outcome) => ({ outcome, label: OUTCOME_LABEL[outcome], count: tally[outcome] ?? 0 }))
+    .filter((s) => s.count > 0)
+  return {
+    chunkCount: report.trace.chunks.length,
+    failedChunkCount: report.trace.chunks.filter((c) => c.failed).length,
+    candidateCount: report.trace.candidates.length,
+    droppedCandidateCount: report.trace.chunks.reduce((n, c) => n + (c.candidatesDropped ?? 0), 0),
+    keptCount: report.finalRanked.length,
+    steps,
+  }
+}
+
 export async function findLastReport(projectDir: string): Promise<string | null> {
   let entries: string[]
   try {
@@ -117,6 +181,7 @@ function summarise(report: SelectionReport): {
   outcomes: Record<string, number>
   chunkCount: number
   failedChunkCount: number
+  droppedCandidateCount: number
 } {
   const outcomes: Record<string, number> = {}
   for (const c of report.trace.candidates) {
@@ -128,6 +193,7 @@ function summarise(report: SelectionReport): {
     outcomes,
     chunkCount: report.trace.chunks.length,
     failedChunkCount: report.trace.chunks.filter((c) => c.failed).length,
+    droppedCandidateCount: report.trace.chunks.reduce((n, c) => n + (c.candidatesDropped ?? 0), 0),
   }
 }
 
@@ -297,6 +363,13 @@ function renderMarkdown(report: SelectionReport): string {
       .join(", ")}) |`,
   )
   lines.push(`| clips kept | ${s.clipCount} |`)
+  if (s.droppedCandidateCount > 0) {
+    // A recall ceiling, so it belongs next to the totals: this run could not have suggested more
+    // than it did, and the number of moments that never got judged is otherwise invisible.
+    lines.push(
+      `| candidates dropped | ${s.droppedCandidateCount} — over the per-chunk cap, never judged |`,
+    )
+  }
   lines.push("")
 
   lines.push("## Chunks")
@@ -309,8 +382,11 @@ function renderMarkdown(report: SelectionReport): string {
     for (const c of trace.chunks) {
       // "0 candidates" and "the call failed" are different answers to why a chunk contributed
       // nothing, and this report is the only place either is visible.
+      // A non-zero drop count is stated rather than folded into the candidate total: those moments
+      // were never judged, so a run that hit the cap produced a smaller clip set than it could have.
+      const dropped = c.candidatesDropped > 0 ? ` (+${c.candidatesDropped} dropped)` : ""
       lines.push(
-        `| ${c.index} | #${c.firstSentence}–#${c.lastSentence} | ${c.candidateCount} | ${
+        `| ${c.index} | #${c.firstSentence}–#${c.lastSentence} | ${c.candidateCount}${dropped} | ${
           c.failed ? `**failed**${c.error ? `: ${c.error}` : ""}` : "answered"
         } |`,
       )

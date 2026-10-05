@@ -405,6 +405,18 @@ export interface IpcInvokeChannels {
   }
   /** Most recent selection report for this project, or null if it has never been re-run. */
   "clip:last-report": { args: { projectId: string }; result: string | null }
+  /** Where the last run's candidates went. Null when no readable report exists. */
+  "clip:last-report-funnel": {
+    args: { projectId: string }
+    result: {
+      chunkCount: number
+      failedChunkCount: number
+      candidateCount: number
+      droppedCandidateCount: number
+      keptCount: number
+      steps: { outcome: string; label: string; count: number }[]
+    } | null
+  }
   /**
    * The stored video analysis for this project, plus the user's override (#98).
    *

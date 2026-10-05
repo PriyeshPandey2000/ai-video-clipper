@@ -205,6 +205,18 @@ export interface TraceChunk {
   /** Candidates the model returned for this chunk, before interleaving. */
   candidateCount: number
   /**
+   * Candidates the model returned that we discarded to hold the chunk to
+   * `MAX_CANDIDATES_PER_CHUNK`. Zero on every run that stayed under the cap.
+   *
+   * This is a recall ceiling, not a safety valve: the model orders best-first, so what is dropped
+   * is its *worst* candidates, but on a dense chunk it is still N moments that can never be judged.
+   * It used to be worse than silent — the cap was enforced by the response schema, so a chunk
+   * returning 21 candidates failed validation, retried at temperature 0 (same answer), and lost
+   * every candidate including the good ones. Hence a schema-level cap is not the place to enforce a
+   * budget. Reported so a run that hit the ceiling is visible rather than quietly smaller.
+   */
+  candidatesDropped: number
+  /**
    * The chunk's model call failed even after the client's retries, so this chunk contributed
    * nothing — as opposed to a chunk the model answered with no candidates.
    *
@@ -663,8 +675,13 @@ async function selectFromChunk(
   profile: ClipProfile,
   contextBlock: string,
   arousalPerSec: number[] = [],
-): Promise<Candidate[]> {
-  const schema = zod.object({ clips: zod.array(CandidateSchema).max(MAX_CANDIDATES_PER_CHUNK) })
+): Promise<{ candidates: Candidate[]; dropped: number }> {
+  // No `.max()` on the array. The cap is a budget we impose on ourselves after the fact, and
+  // enforcing it here made a dense chunk fail validation — then fail its retries at temperature 0
+  // with the same oversized answer — and lose every candidate it had, good ones included. The
+  // prompt already asks for at most MAX_CANDIDATES_PER_CHUNK; this is the backstop for when the
+  // model ignores it, and it costs one `slice`.
+  const schema = zod.object({ clips: zod.array(CandidateSchema) })
   const firstIndex = chunk[0]!.index
   const lastIndex = chunk[chunk.length - 1]!.index
   const prompt = renderUserPrompt(chunk, words, arousalPerSec, contextBlock)
@@ -679,10 +696,22 @@ async function selectFromChunk(
     schema: schema as unknown as z.ZodType<{ clips: Candidate[] }>,
     system,
   })
-  const generated = result.clips.filter(
+  // Out-of-chunk ranges are malformed rather than surplus, so they go first: a model that invented
+  // a sentence index should not also spend our budget.
+  const inRange = result.clips.filter(
     (c) => c.startSentence >= firstIndex && c.endSentence <= lastIndex,
   )
-  return generated
+  // Reversed ranges (`start: 900, end: 100`) pass the filter above, and `refineClipBoundaries` swaps
+  // them rather than discarding them — a recoverable slip, not a broken one. So they are kept, but
+  // they must not be allowed to spend the budget: twenty reversed candidates would otherwise take all
+  // 20 slots and push out every well-formed one, which is the exact failure the cap was meant to
+  // prevent. Well-formed candidates are laid down first, so a reversed range can only use a slot no
+  // real candidate wanted, and the model's own best-first order still decides the winners.
+  const wellFormed = inRange.filter((c) => c.startSentence <= c.endSentence)
+  const reversed = inRange.filter((c) => c.startSentence > c.endSentence)
+  const ordered = [...wellFormed, ...reversed]
+  const candidates = ordered.slice(0, MAX_CANDIDATES_PER_CHUNK)
+  return { candidates, dropped: ordered.length - candidates.length }
 }
 
 export interface SelectClipsOptions {
@@ -762,7 +791,8 @@ export async function selectClips(
 
   // ── Step 1 — generate for recall, chunks in parallel ───────────────────────
   const chunks = topicsToChunks(sentences, topics)
-  type ChunkResult = { ok: true; candidates: Candidate[] } | { ok: false; error: string }
+  type ChunkResult =
+    { ok: true; candidates: Candidate[]; dropped: number } | { ok: false; error: string }
   // mapPool returns results in chunk order, so the trace and the candidate order are the same on
   // every run regardless of which response arrives first.
   const chunkResults = await mapPool(
@@ -772,11 +802,11 @@ export async function selectClips(
       // client.generateObject already retries malformed-JSON failures. If a chunk still fails after
       // that, drop just this chunk's candidates rather than aborting selection for the whole video.
       try {
-        const candidates = await withRateLimitRetry(
+        const { candidates, dropped } = await withRateLimitRetry(
           () => selectFromChunk(client, chunk, words, profile, contextBlock, arousalPerSec),
           sleep,
         )
-        return { ok: true, candidates }
+        return { ok: true, candidates, dropped }
       } catch (err) {
         console.error(
           `[clip-selector] chunk (sentences #${chunk[0]?.index}-#${chunk[chunk.length - 1]?.index}) failed after retries, skipping:`,
@@ -798,12 +828,23 @@ export async function selectClips(
     }
     if (result.ok) {
       perChunk.push(result.candidates)
-      trace.chunks.push({ ...base, candidateCount: result.candidates.length, failed: false })
+      trace.chunks.push({
+        ...base,
+        candidateCount: result.candidates.length,
+        candidatesDropped: result.dropped,
+        failed: false,
+      })
     } else {
       perChunk.push([])
       // Recorded even though it produced nothing: "chunk 3 of 5 returned no candidates" and
       // "chunk 3 of 5 never ran" are very different answers to why a long video yielded two clips.
-      trace.chunks.push({ ...base, candidateCount: 0, failed: true, error: result.error })
+      trace.chunks.push({
+        ...base,
+        candidateCount: 0,
+        candidatesDropped: 0,
+        failed: true,
+        error: result.error,
+      })
       failedChunks++
     }
   })

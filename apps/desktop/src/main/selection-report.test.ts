@@ -1,11 +1,16 @@
 import { describe, it, expect } from "vitest"
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import type { ClipSelectionTrace, TraceEntry } from "@video-editor/ai"
 import type { VideoAnalysis } from "@video-editor/types"
-import { findLastReport, reportFileStamp, writeSelectionReport } from "./selection-report"
+import {
+  findLastReport,
+  readLastReportFunnel,
+  reportFileStamp,
+  writeSelectionReport,
+} from "./selection-report"
 
 const provenance = {
   pipelineVersion: "v1-unmeasured",
@@ -32,7 +37,16 @@ function trace(overrides: Partial<ClipSelectionTrace> = {}): ClipSelectionTrace 
   return {
     temperature: 0,
     sentenceCount: 2,
-    chunks: [{ index: 0, firstSentence: 0, lastSentence: 41, candidateCount: 2, failed: false }],
+    chunks: [
+      {
+        index: 0,
+        firstSentence: 0,
+        lastSentence: 41,
+        candidateCount: 2,
+        candidatesDropped: 0,
+        failed: false,
+      },
+    ],
     candidates: [],
     judgeQuestions: [
       { id: "hook", text: "Would it stop the scroll?", weight: 3, hard: false },
@@ -444,5 +458,196 @@ describe("renderSelectionReportMarkdown", () => {
     )
     // No proposal: the report says so rather than staying silent.
     expect(md).toContain("- opening: kept 1:30 — no better opening suggested")
+  })
+})
+
+describe("readLastReportFunnel", () => {
+  /** A written report, so the funnel reader is exercised against the real file format. */
+  async function report(
+    dir: string,
+    t: ClipSelectionTrace,
+    finalRanked: number,
+    startedAtMs = Date.UTC(2026, 0, 2, 3, 4, 5, 6),
+  ): Promise<void> {
+    await writeSelectionReport(dir, {
+      header: {
+        projectId: "p1",
+        projectName: "My Video",
+        durationMs: 3_600_000,
+        startedAtMs,
+      },
+      provenance,
+      analysis: analysis(),
+      trace: t,
+      finalRanked: Array.from({ length: finalRanked }, (_, i) => ({
+        rank: i,
+        title: `Clip ${i}`,
+        reason: "r",
+        platform: "shorts",
+        startTimecode: "0:00",
+        endTimecode: "0:30",
+        durationMs: 30000,
+        text: "t",
+      })),
+    })
+  }
+
+  it("returns null when the project has no report at all", async () => {
+    const dir = await tmpDir()
+    expect(await readLastReportFunnel(dir)).toBeNull()
+  })
+
+  it("accounts for every candidate in the zero-clip case", async () => {
+    // The empty review screen's question is "why did nothing survive", and the answer has to add
+    // up. 6 candidates that reached ranking, none kept: the rest must be visible as gate
+    // rejections, otherwise the panel is guessing.
+    const dir = await tmpDir()
+    await report(
+      dir,
+      trace({
+        // Deliberately not in pipeline order. A funnel built from the tally's own insertion order
+        // would render these as they happen to appear in the trace, which is the order candidates
+        // were *generated*, not the order they were *eliminated* — and the list has to read as a
+        // sequence for it to explain the outcome.
+        candidates: [
+          entry({ outcome: "judge-rejected" }),
+          entry({ outcome: "gate-rejected" }),
+          entry({ outcome: "judge-failed" }),
+          entry({ outcome: "invalid-range" }),
+          entry({ outcome: "gate-rejected" }),
+          entry({ outcome: "duplicate" }),
+        ],
+      }),
+      0,
+    )
+    const funnel = await readLastReportFunnel(dir)
+    expect(funnel).not.toBeNull()
+    expect(funnel!.candidateCount).toBe(6)
+    expect(funnel!.keptCount).toBe(0)
+    expect(funnel!.steps).toEqual([
+      { outcome: "gate-rejected", label: "gate-rejected", count: 2 },
+      { outcome: "invalid-range", label: "invalid range", count: 1 },
+      { outcome: "duplicate", label: "duplicate", count: 1 },
+      { outcome: "judge-rejected", label: "judge-rejected", count: 1 },
+      { outcome: "judge-failed", label: "judge call failed", count: 1 },
+    ])
+    // The steps must account for every candidate that was ranked.
+    expect(funnel!.steps.reduce((n, s) => n + s.count, 0)).toBe(funnel!.candidateCount)
+  })
+
+  it("reports failed chunks separately from chunks that answered with nothing", async () => {
+    const dir = await tmpDir()
+    await report(
+      dir,
+      trace({
+        chunks: [
+          {
+            index: 0,
+            firstSentence: 0,
+            lastSentence: 40,
+            candidateCount: 1,
+            candidatesDropped: 0,
+            failed: false,
+          },
+          {
+            index: 1,
+            firstSentence: 40,
+            lastSentence: 80,
+            candidateCount: 0,
+            candidatesDropped: 0,
+            failed: true,
+            error: "429",
+          },
+        ],
+        candidates: [entry({})],
+      }),
+      1,
+    )
+    const funnel = await readLastReportFunnel(dir)
+    expect(funnel!.chunkCount).toBe(2)
+    expect(funnel!.failedChunkCount).toBe(1)
+  })
+
+  it("surfaces candidates dropped at the per-chunk cap", async () => {
+    const dir = await tmpDir()
+    await report(
+      dir,
+      trace({
+        chunks: [
+          {
+            index: 0,
+            firstSentence: 0,
+            lastSentence: 80,
+            candidateCount: 20,
+            candidatesDropped: 7,
+            failed: false,
+          },
+        ],
+        candidates: [entry({})],
+      }),
+      1,
+    )
+    const funnel = await readLastReportFunnel(dir)
+    // Never judged, so absent from the steps — but it must not be invisible either.
+    expect(funnel!.droppedCandidateCount).toBe(7)
+    expect(funnel!.steps.reduce((n, s) => n + s.count, 0)).toBe(funnel!.candidateCount)
+  })
+
+  it("reads a report written before the drop count existed", async () => {
+    // Reports already on disk have no `candidatesDropped`. Summing `undefined` would make the
+    // funnel report NaN and render as "NaN" in the UI, so old files have to stay readable.
+    const dir = await tmpDir()
+    await mkdir(join(dir, "selection-reports"), { recursive: true })
+    const stamp = reportFileStamp(Date.UTC(2026, 0, 2, 3, 4, 5, 6))
+    const legacy = {
+      header: {
+        projectId: "p1",
+        projectName: "My Video",
+        durationMs: 3_600_000,
+        startedAtMs: Date.UTC(2026, 0, 2, 3, 4, 5, 6),
+      },
+      provenance,
+      analysis: analysis(),
+      trace: {
+        temperature: 0,
+        sentenceCount: 2,
+        chunks: [
+          { index: 0, firstSentence: 0, lastSentence: 41, candidateCount: 1, failed: false },
+        ],
+        candidates: [entry({})],
+        judgeQuestions: [],
+      },
+      finalRanked: [],
+    }
+    await writeFile(join(dir, "selection-reports", `${stamp}.json`), JSON.stringify(legacy))
+    await writeFile(join(dir, "selection-reports", `${stamp}.md`), "# report")
+    const funnel = await readLastReportFunnel(dir)
+    expect(funnel!.droppedCandidateCount).toBe(0)
+    expect(Number.isNaN(funnel!.droppedCandidateCount)).toBe(false)
+  })
+
+  it("returns null for an unreadable report rather than throwing", async () => {
+    // A broken file must not take the review screen down with it.
+    const dir = await tmpDir()
+    await mkdir(join(dir, "selection-reports"), { recursive: true })
+    const stamp = reportFileStamp(Date.UTC(2026, 0, 2, 3, 4, 5, 6))
+    await writeFile(join(dir, "selection-reports", `${stamp}.md`), "# report")
+    await writeFile(join(dir, "selection-reports", `${stamp}.json`), "{ not json")
+    expect(await readLastReportFunnel(dir)).toBeNull()
+  })
+
+  it("reads the newest report when a project has several", async () => {
+    const dir = await tmpDir()
+    await report(dir, trace({ candidates: [entry({})] }), 1, Date.UTC(2026, 0, 2, 3, 4, 5, 6))
+    await report(
+      dir,
+      trace({
+        candidates: [entry({ outcome: "judge-rejected" })],
+      }),
+      0,
+      Date.UTC(2026, 0, 2, 9, 10, 11, 12),
+    )
+    const funnel = await readLastReportFunnel(dir)
+    expect(funnel!.keptCount).toBe(0)
   })
 })

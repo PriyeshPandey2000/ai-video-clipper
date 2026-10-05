@@ -19,6 +19,18 @@ export const END_SEARCH_MS = 5_000
  */
 export const COMPLETE_THOUGHT_PAUSE_MS = 900
 
+/**
+ * Largest silence backward growth will cross to pick up context.
+ *
+ * A gap this long means the preceding sentence is a finished thought — `COMPLETE_THOUGHT_PAUSE_MS`
+ * already treats 900ms that way — so crossing more than a breath or an edit means stitching two
+ * unrelated stretches together. Without this guard, a candidate starting after a 55-second silence
+ * satisfies `minMs` by including the pause: the duration is met, the speech is not, and the clip is
+ * mostly nothing. Forward growth is the better repair there — the material after the moment is at
+ * least about the same thing.
+ */
+export const MAX_BACKWARD_GAP_MS = 2_000
+
 /** D2 — cap on backward expansion, so one dangling word can't drag in a whole topic. */
 export const MAX_BACKWARD_SENTENCES = 3
 
@@ -130,8 +142,6 @@ export function refineClipBoundaries(
     startIdx--
     expansions++
   }
-  const danglingUnresolved = startsWithDanglingReference(sentences[startIdx]!)
-
   // D4 — extend forward to land on a complete thought.
   const completeAt = (idx: number): boolean => {
     const s = sentences[idx]!
@@ -151,8 +161,39 @@ export function refineClipBoundaries(
 
   // D6 — length clamp. Trim from the end so the hook at the start survives.
   while (span(startIdx, endIdx) > maxMs && endIdx > startIdx) endIdx--
-  // The growth loop needs its own maxMs guard, or reaching the minimum can push the range back
-  // over the maximum and leave endSentenceIndex pointing past where the cut actually lands.
+  // D6 — grow to the minimum, backwards first. The generator proposes the *moment*, not the clip:
+  // on a real 8-minute run it returned ranges of 1.4s–22s (mean 12s), so most candidates land under
+  // the floor. Growing forward-only therefore appended whatever followed the payoff, which is what
+  // the judge then reported as "lacks context" / "disjointed" on 10 of 13 candidates. Backward
+  // growth pulls in the setup the moment depends on, so it goes first; forward growth stays as the
+  // fallback for a candidate that already starts at the top of the transcript.
+  // Both loops carry their own maxMs guard, or reaching the minimum can push the range back over
+  // the maximum and leave endSentenceIndex pointing past where the cut actually lands.
+  while (
+    span(startIdx, endIdx) < minMs &&
+    startIdx > 0 &&
+    span(startIdx - 1, endIdx) <= maxMs &&
+    // Stop at a long silence rather than include it: `maxMs` alone would let one 55-second gap
+    // satisfy `minMs` with no speech at all. Falling through to the forward loop below keeps the
+    // clip on-topic, since what follows the moment is closer to it than what precedes a pause.
+    sentences[startIdx]!.startMs - sentences[startIdx - 1]!.endMs <= MAX_BACKWARD_GAP_MS
+  ) {
+    startIdx--
+  }
+  // D2 again, now that growth has moved the start. The first D2 pass ran against the *proposed*
+  // start, but backward growth can land it on a sentence beginning "And…" that the model never
+  // asked for — and without this the clip keeps an available referent outside it. Bounded by the
+  // same sentence cap and the `maxMs` guard, so the repair stays as cheap as the original.
+  while (
+    expansions < MAX_BACKWARD_SENTENCES &&
+    startIdx > 0 &&
+    startsWithDanglingReference(sentences[startIdx]!) &&
+    span(startIdx - 1, endIdx) <= maxMs &&
+    sentences[startIdx]!.startMs - sentences[startIdx - 1]!.endMs <= MAX_BACKWARD_GAP_MS
+  ) {
+    startIdx--
+    expansions++
+  }
   while (span(startIdx, endIdx) < minMs && endIdx < last && span(startIdx, endIdx + 1) <= maxMs) {
     endIdx++
   }
@@ -195,6 +236,9 @@ export function refineClipBoundaries(
 
   // Quality metadata is computed from the FINAL boundary. Capturing it before the D6 clamp let a
   // clip be extended onto an unterminated sentence and still report a complete ending.
+  // `danglingUnresolved` moves with it: backward length growth can land the start on a *different*
+  // sentence, so a flag captured before growth described an opener the clip no longer has.
+  const danglingUnresolved = startsWithDanglingReference(sentences[startIdx]!)
   return {
     startMs: Math.round(startMs),
     endMs: Math.round(endMs),

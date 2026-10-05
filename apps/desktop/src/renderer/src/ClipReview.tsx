@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import type { Clip, ClipJudgeRecord, ClipProfileId, JudgeGrade } from "@video-editor/types"
 import {
   CLIP_PROFILE_DISPLAY,
@@ -42,6 +42,26 @@ function formatDuration(ms: number): string {
   const s = Math.round(ms / 1000)
   if (s < 60) return `${s}s`
   return `${Math.floor(s / 60)}m${s % 60}s`
+}
+
+/** One line of the empty-state funnel: a stage, its count, and how much it should worry you. */
+function FunnelRow({
+  label,
+  value,
+  tone = "plain",
+}: {
+  label: string
+  value: string
+  tone?: "plain" | "warn" | "bad"
+}): React.ReactElement {
+  const toneClass =
+    tone === "bad" ? "text-red-400" : tone === "warn" ? "text-amber-400" : "text-neutral-400"
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <span className="text-neutral-500">{label}</span>
+      <span className={`font-mono ${toneClass}`}>{value}</span>
+    </div>
+  )
 }
 
 function scoreColor(score: number | null): "green" | "yellow" | "red" | "neutral" {
@@ -135,6 +155,13 @@ export function ClipReview({
   const [clipProgress, setClipProgress] = useState<Record<string, number>>({})
   const [reselecting, setReselecting] = useState(false)
   const [lastReportPath, setLastReportPath] = useState<string | null>(null)
+  /**
+   * The last run's funnel. Only read when it can change what this panel says: an empty result can
+   * mean the model found nothing, a chunk call failed, or every candidate was dropped later. The
+   * panel used to assert "nothing met the quality bar" in all three cases, which is a guess.
+   */
+  const [funnel, setFunnel] =
+    useState<Awaited<ReturnType<typeof window.api.invoke<"clip:last-report-funnel">>>>(null)
   const [reselectError, setReselectError] = useState<string | null>(null)
   const [progressMessage, setProgressMessage] = useState<string | null>(null)
   const [profileInfo, setProfileInfo] = useState<{
@@ -174,17 +201,36 @@ export function ClipReview({
     })
   }, [projectId])
 
+  /**
+   * Identifies the most recent report load, so a slow earlier one cannot overwrite a newer result.
+   *
+   * `refreshTrigger` can bump again while a load is still in flight — a re-selection the parent
+   * performed finishing before the previous IPC round trip returned. Both loads would then set state,
+   * and whichever resolved last would win regardless of which run it was for. A ref rather than state
+   * because only the callbacks read it, and a state write would re-render the panel to do it.
+   */
+  const lastReportLoadId = useRef(0)
+
   const loadLastReport = useCallback(async () => {
-    try {
-      setLastReportPath(await window.api.invoke("clip:last-report", { projectId }))
-    } catch {
-      setLastReportPath(null)
-    }
+    const loadId = ++lastReportLoadId.current
+    // Fetched together rather than one after the other: two sequential awaits could interleave with
+    // a competing load, leaving the path from one run beside the funnel from another.
+    const [path, nextFunnel] = await Promise.all([
+      window.api.invoke("clip:last-report", { projectId }).catch(() => null),
+      window.api.invoke("clip:last-report-funnel", { projectId }).catch(() => null),
+    ])
+    // A newer load started while these were in flight, so this one is stale — its numbers describe
+    // a run that is no longer the current one. Dropping it is the only correct outcome.
+    if (loadId !== lastReportLoadId.current) return
+    setLastReportPath(path)
+    setFunnel(nextFunnel)
   }, [projectId])
 
   useEffect(() => {
+    // `refreshTrigger` is included because a re-selection the parent performed bumps it, and that
+    // run has a new report on disk — the funnel shown next to an empty list has to be this run's.
     loadLastReport()
-  }, [loadLastReport])
+  }, [loadLastReport, refreshTrigger])
 
   // The stored analysis and override. Reloaded after every run, failed ones included: a failed
   // override change is rolled back in the main process, and the control must show what is stored
@@ -212,6 +258,10 @@ export function ClipReview({
       setReselectError(null)
       try {
         const result = await run()
+        // The funnel is reloaded rather than cleared, and before the new path is set: this run just
+        // wrote a report, so the previous run's counts would otherwise stay on screen and the empty
+        // state would explain a run that no longer happened.
+        await loadLastReport()
         setLastReportPath(result.reportMarkdownPath)
         // Reload from the DB rather than trusting the returned count — approved/exported clips
         // survive the replace, so the visible list is not only the new suggestions.
@@ -225,7 +275,7 @@ export function ClipReview({
         setProgressMessage(null)
       }
     },
-    [loadClips, loadProfile, onReselectComplete],
+    [loadClips, loadLastReport, loadProfile, onReselectComplete],
   )
 
   const handleReselect = useCallback(
@@ -434,13 +484,62 @@ export function ClipReview({
         {toolbar}
         <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 p-4 text-center">
           {analysisComplete ? (
-            <>
-              <p className="text-sm text-neutral-500">No strong moments found</p>
-              <p className="text-xs text-neutral-600 mt-1">
-                Nothing in this video met the quality bar. Returning weak clips would waste your
-                time.
-              </p>
-            </>
+            funnel ? (
+              <div className="space-y-3 text-left">
+                <p className="text-sm text-neutral-400 text-center">No clips kept</p>
+                <p className="text-xs text-neutral-600 text-center">
+                  Here is where every candidate went in the last run.
+                </p>
+                <div className="space-y-1">
+                  <FunnelRow label="Chunks run" value={String(funnel.chunkCount)} />
+                  {funnel.failedChunkCount > 0 && (
+                    // The one that is not about video quality at all: a chunk that never ran means
+                    // we never looked at that part of the transcript.
+                    <FunnelRow
+                      label="Chunks that failed"
+                      value={String(funnel.failedChunkCount)}
+                      tone="bad"
+                    />
+                  )}
+                  <FunnelRow label="Candidates found" value={String(funnel.candidateCount)} />
+                  {funnel.droppedCandidateCount > 0 && (
+                    <FunnelRow
+                      label="Dropped before judging"
+                      value={String(funnel.droppedCandidateCount)}
+                      tone="warn"
+                    />
+                  )}
+                  {funnel.steps
+                    .filter((s) => s.outcome !== "kept")
+                    .map((s) => (
+                      <FunnelRow
+                        key={s.outcome}
+                        label={`Rejected: ${s.label}`}
+                        value={String(s.count)}
+                      />
+                    ))}
+                  <FunnelRow label="Clips kept" value={String(funnel.keptCount)} />
+                </div>
+                {lastReportPath && (
+                  <p className="text-xs text-neutral-600 text-center">
+                    The full report has the per-candidate detail.
+                  </p>
+                )}
+              </div>
+            ) : (
+              // Two different null causes, and the wording must not conflate them: `lastReportPath`
+              // is set when a `.md` report exists, so a path with no funnel means the file could not
+              // be parsed — not that no report was written. Telling a user "no report was saved"
+              // when one is sitting on disk unread would send them looking for the wrong problem.
+              <>
+                <p className="text-sm text-neutral-500">No clips were kept</p>
+                <p className="text-xs text-neutral-600 mt-1">
+                  {lastReportPath
+                    ? "This run's report could not be read, so the reasons are not available here."
+                    : "No report was saved for this run, so the reasons are not available here."}
+                </p>
+              </>
+            )
           ) : (
             <>
               <p className="text-sm text-neutral-500">No clips generated yet</p>

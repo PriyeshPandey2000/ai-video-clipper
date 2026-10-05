@@ -81,7 +81,7 @@ import log from "./logger"
 import { beginActivity, endActivity } from "./activity"
 import { downloadUpdate, restartAndInstall, getUpdaterState } from "./updater"
 import { buildAssFile } from "@video-editor/captions"
-import { findLastReport, writeSelectionReport } from "./selection-report"
+import { findLastReport, readLastReportFunnel, writeSelectionReport } from "./selection-report"
 import type { CaptionStyle } from "@video-editor/types"
 
 // Typed wrapper around ipcMain.handle — channel and callback args are checked against
@@ -730,6 +730,13 @@ export function registerIpcHandlers(): void {
 
   handle("clip:last-report", async (_event, { projectId }: { projectId: string }) => {
     return findLastReport(projectDir(projectId))
+  })
+
+  // The counts behind an empty review screen. Without these the panel can only assert that nothing
+  // met the bar, which is a claim — it cannot say whether the model found nothing, the chunk call
+  // failed, or every candidate was dropped at a later gate.
+  handle("clip:last-report-funnel", async (_event, { projectId }: { projectId: string }) => {
+    return readLastReportFunnel(projectDir(projectId))
   })
 
   handle(
