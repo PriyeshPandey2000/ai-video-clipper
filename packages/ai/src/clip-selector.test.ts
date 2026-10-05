@@ -188,23 +188,26 @@ describe("per-chunk candidate budget", () => {
     expect(trace.chunks.every((c) => c.candidatesDropped === 0)).toBe(true)
   })
 
-  it("does not let reversed ranges consume the budget", async () => {
-    // A reversed range passes `start >= first && end <= last` but has no interpretation we can
-    // trust. Since the cap is applied to this filtered list, twenty reversed candidates would take
-    // all 20 slots and push out the one well-formed candidate behind them.
+  it("keeps a reversed range out of the budget ahead of well-formed candidates", async () => {
+    // `refineClipBoundaries` swaps a reversed range rather than discarding it, so these are
+    // recoverable and worth keeping — but they must not outrank real candidates for the 20 slots. With
+    // only `start >= first && end <= last` as the filter, twenty reversed candidates take every slot
+    // and the one well-formed candidate behind them is reported as dropped.
     const reversedFirst: Handler = (prompt) => {
       const r = range(prompt)
       if (!r) return { ranking: [] }
       const [lo, hi] = r
+      // Strictly reversed throughout: the start must stay above the end for every i, or later
+      // entries become well-formed by accident and the fixture stops testing what it claims.
       const clips = Array.from({ length: 20 }, (_, i) => ({
         startSentence: hi - i,
-        endSentence: lo + i,
+        endSentence: lo + 20 - i - 1,
         title: `reversed-${i}`,
         reason: "r",
         strong: true,
         platform: "shorts",
       }))
-      // The good candidate is last in the model's own order — the worst place for it to be.
+      // Last in the model's own order — the worst place for the one candidate that matters.
       clips.push({
         startSentence: lo,
         endSentence: Math.min(lo + 2, hi),
@@ -216,11 +219,41 @@ describe("per-chunk candidate budget", () => {
       return { clips }
     }
     const { trace } = await selectClips(mockClient(reversedFirst), words, sentences)
-    // The reversed ones were rejected, so the budget held 1 real candidate rather than 20 junk ones.
+    const seen = trace.candidates.filter((c) => c.title === "well-formed")
+    expect(seen.length).toBeGreaterThan(0)
+    // 21 candidates against a 20 budget, so exactly one is dropped — and it has to be a reversed
+    // range. Before this ordering the well-formed candidate was the one that got dropped, which is
+    // the whole defect.
+    for (const chunk of trace.chunks) {
+      if (chunk.failed) continue
+      expect(chunk.candidateCount).toBeLessThanOrEqual(20)
+      expect(chunk.candidatesDropped).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it("still keeps a reversed range when it is the only candidate offered", async () => {
+    // The ordering change must not turn a recoverable slip into a lost clip. A chunk where every
+    // candidate is reversed should still contribute, because `refineClipBoundaries` repairs them.
+    const allReversed: Handler = (prompt) => {
+      const r = range(prompt)
+      if (!r) return { ranking: [] }
+      const [lo, hi] = r
+      return {
+        clips: [
+          {
+            startSentence: hi - 20,
+            endSentence: lo + 20,
+            title: "reversed-only",
+            reason: "r",
+            strong: true,
+            platform: "shorts",
+          },
+        ],
+      }
+    }
+    const { clips, trace } = await selectClips(mockClient(allReversed), words, sentences)
+    expect(clips.length).toBeGreaterThan(0)
     expect(trace.chunks.some((c) => c.candidateCount > 0)).toBe(true)
-    expect(trace.chunks.every((c) => c.candidateCount <= 1)).toBe(true)
-    // Nothing was discarded by the cap — the reversed ranges never got that far.
-    expect(trace.chunks.every((c) => c.candidatesDropped === 0)).toBe(true)
   })
 
   it("does not spend the budget on out-of-chunk ranges", async () => {

@@ -698,19 +698,20 @@ async function selectFromChunk(
   })
   // Out-of-chunk ranges are malformed rather than surplus, so they go first: a model that invented
   // a sentence index should not also spend our budget.
-  // Chained comparisons, so a reversed range fails too. `start >= first && end <= last` alone lets
-  // `start: 900, end: 100` through — and because the budget is applied to this filtered list, twenty
-  // such candidates would consume all 20 slots and push out every well-formed one. A reversed range
-  // is a model slip with no interpretation we can trust, so it is malformed rather than surplus.
   const inRange = result.clips.filter(
-    (c) =>
-      c.startSentence >= firstIndex &&
-      c.startSentence <= c.endSentence &&
-      c.endSentence <= lastIndex,
+    (c) => c.startSentence >= firstIndex && c.endSentence <= lastIndex,
   )
-  // The model is asked to order best-first, so keeping the head of the list keeps the best.
-  const candidates = inRange.slice(0, MAX_CANDIDATES_PER_CHUNK)
-  return { candidates, dropped: inRange.length - candidates.length }
+  // Reversed ranges (`start: 900, end: 100`) pass the filter above, and `refineClipBoundaries` swaps
+  // them rather than discarding them — a recoverable slip, not a broken one. So they are kept, but
+  // they must not be allowed to spend the budget: twenty reversed candidates would otherwise take all
+  // 20 slots and push out every well-formed one, which is the exact failure the cap was meant to
+  // prevent. Well-formed candidates are laid down first, so a reversed range can only use a slot no
+  // real candidate wanted, and the model's own best-first order still decides the winners.
+  const wellFormed = inRange.filter((c) => c.startSentence <= c.endSentence)
+  const reversed = inRange.filter((c) => c.startSentence > c.endSentence)
+  const ordered = [...wellFormed, ...reversed]
+  const candidates = ordered.slice(0, MAX_CANDIDATES_PER_CHUNK)
+  return { candidates, dropped: ordered.length - candidates.length }
 }
 
 export interface SelectClipsOptions {
