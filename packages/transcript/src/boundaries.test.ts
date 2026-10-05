@@ -266,6 +266,71 @@ describe("refineClipBoundaries", () => {
     const r = refineClipBoundaries(w, s, 0, 0)
     if (r) expect(r.durationMs).toBeLessThanOrEqual(MAX_CLIP_MS)
   })
+
+  it("D6: grows backwards to reach the minimum, so the setup leads the payoff", () => {
+    // The regression this guards: the generator proposes the *moment*, so a mid-transcript pick is
+    // routinely under MIN_CLIP_MS. Growing forward-only appended post-payload material and the judge
+    // called the result disjointed. The clip must reach the minimum by extending its start.
+    const r = refineClipBoundaries(words, sentences, 20, 20)
+    expect(r).not.toBeNull()
+    // Grew backwards…
+    expect(r!.startSentenceIndex).toBeLessThan(20)
+    // …and did NOT reach for trailing material to get there.
+    expect(r!.endSentenceIndex).toBe(20)
+    expect(r!.durationMs).toBeGreaterThanOrEqual(MIN_CLIP_MS)
+  })
+
+  it("D6: still grows forwards when the candidate already starts the transcript", () => {
+    const r = refineClipBoundaries(words, sentences, 0, 0)
+    expect(r).not.toBeNull()
+    expect(r!.startSentenceIndex).toBe(0)
+    expect(r!.endSentenceIndex).toBeGreaterThan(0)
+    expect(r!.durationMs).toBeGreaterThanOrEqual(MIN_CLIP_MS)
+  })
+
+  it("D6: backward growth does not push the range over the maximum", () => {
+    const w: Word[] = [
+      {
+        id: "a",
+        projectId: "p",
+        text: "Long.",
+        startMs: 0,
+        endMs: 200_000,
+        confidence: 0.9,
+        speakerLabel: null,
+      },
+      {
+        id: "b",
+        projectId: "p",
+        text: "Now.",
+        startMs: 200_000,
+        endMs: 200_500,
+        confidence: 0.9,
+        speakerLabel: null,
+      },
+      {
+        id: "c",
+        projectId: "p",
+        text: "Then.",
+        startMs: 201_000,
+        endMs: 202_000,
+        confidence: 0.9,
+        speakerLabel: null,
+      },
+    ]
+    const s = buildSentences(w)
+    const r = refineClipBoundaries(w, s, 1, 1)
+    // The preceding sentence is 200s, so backward growth must be refused rather than blow the cap.
+    expect(r!.startSentenceIndex).toBe(1)
+    expect(r!.durationMs).toBeLessThanOrEqual(MAX_CLIP_MS)
+  })
+
+  it("reports the dangling flag for the start the clip actually has", () => {
+    // Sentence 20 opens with "Revenue", which is not a dangling opener, and backward growth only
+    // moves to earlier sentences, so the flag must stay false for the final boundary.
+    const r = refineClipBoundaries(words, sentences, 20, 20)
+    expect(r!.danglingUnresolved).toBe(false)
+  })
 })
 
 describe("passesQualityGate", () => {
