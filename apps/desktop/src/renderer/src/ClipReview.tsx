@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import type { Clip, ClipJudgeRecord, ClipProfileId, JudgeGrade } from "@video-editor/types"
 import {
   CLIP_PROFILE_DISPLAY,
@@ -201,16 +201,29 @@ export function ClipReview({
     })
   }, [projectId])
 
+  /**
+   * Identifies the most recent report load, so a slow earlier one cannot overwrite a newer result.
+   *
+   * `refreshTrigger` can bump again while a load is still in flight — a re-selection the parent
+   * performed finishing before the previous IPC round trip returned. Both loads would then set state,
+   * and whichever resolved last would win regardless of which run it was for. A ref rather than state
+   * because only the callbacks read it, and a state write would re-render the panel to do it.
+   */
+  const lastReportLoadId = useRef(0)
+
   const loadLastReport = useCallback(async () => {
-    try {
-      setLastReportPath(await window.api.invoke("clip:last-report", { projectId }))
-      setFunnel(await window.api.invoke("clip:last-report-funnel", { projectId }))
-    } catch {
-      // No report to explain this run with. The empty state degrades to its non-numeric wording
-      // rather than showing counts from nothing.
-      setLastReportPath(null)
-      setFunnel(null)
-    }
+    const loadId = ++lastReportLoadId.current
+    // Fetched together rather than one after the other: two sequential awaits could interleave with
+    // a competing load, leaving the path from one run beside the funnel from another.
+    const [path, nextFunnel] = await Promise.all([
+      window.api.invoke("clip:last-report", { projectId }).catch(() => null),
+      window.api.invoke("clip:last-report-funnel", { projectId }).catch(() => null),
+    ])
+    // A newer load started while these were in flight, so this one is stale — its numbers describe
+    // a run that is no longer the current one. Dropping it is the only correct outcome.
+    if (loadId !== lastReportLoadId.current) return
+    setLastReportPath(path)
+    setFunnel(nextFunnel)
   }, [projectId])
 
   useEffect(() => {
