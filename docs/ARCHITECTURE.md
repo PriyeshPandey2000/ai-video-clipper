@@ -1,5 +1,9 @@
 # Architecture
 
+![Clipper architecture](architecture.svg)
+
+The diagram shows the architecture once the clip-selection roadmap (#100–#105 and #108) has landed; `ROADMAP.md` lists what is built today. The sections below describe the pieces in detail.
+
 ## Core principle
 
 Pipeline-first. Not a video editor. Long recording → AI → publishable content.

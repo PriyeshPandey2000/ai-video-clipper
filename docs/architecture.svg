@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1250" width="1280" height="1250" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" role="img" aria-label="Clipper architecture">
+<defs>
+<marker id="a-6ea8fe" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,1 L9,5 L0,9 z" fill="#6ea8fe"/></marker>
+<marker id="a-e0a53c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,1 L9,5 L0,9 z" fill="#e0a53c"/></marker>
+<marker id="a-4fd1b5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,1 L9,5 L0,9 z" fill="#4fd1b5"/></marker>
+<marker id="a-b394f6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,1 L9,5 L0,9 z" fill="#b394f6"/></marker>
+<marker id="a-aab2bd" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,1 L9,5 L0,9 z" fill="#aab2bd"/></marker>
+</defs>
+<rect width="1280" height="1250" fill="#06070a"/>
+<text x="40" y="52" fill="#d7dbe0" font-size="19" letter-spacing="2.4">CLIPPER ARCHITECTURE</text>
+<text x="40" y="84" fill="#8b94a0" font-size="15">One conductor. Pure packages. Every clip judged on what is exported.</text>
+<rect x="40" y="130" width="580" height="250" fill="none" stroke="#6ea8fe" stroke-width="1.6"/>
+<rect x="62" y="120" width="386.0" height="20" fill="#06070a"/>
+<text x="72" y="135" fill="#6ea8fe" font-size="14" letter-spacing="1.4">RENDERER  React 19 · Vite · Tailwind</text>
+<text x="60" y="168" fill="#8b94a0" font-size="13" text-anchor="start" style="white-space:pre">Display only. No filesystem, DB or AI access.</text>
+<rect x="60" y="196" width="268" height="130" fill="none" stroke="#6ea8fe" stroke-width="1.2"/>
+<rect x="82" y="186" width="136.0" height="20" fill="#06070a"/>
+<text x="92" y="201" fill="#6ea8fe" font-size="14" letter-spacing="1.4">CLIP REVIEW</text>
+<text x="78" y="236" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">judge chips + one-line note</text>
+<text x="78" y="258" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">one-tap reject reasons</text>
+<text x="78" y="280" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">more from this topic</text>
+<text x="78" y="302" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">trim · crop · approve</text>
+<rect x="346" y="196" width="254" height="130" fill="none" stroke="#6ea8fe" stroke-width="1.2"/>
+<rect x="368" y="186" width="156.0" height="20" fill="#06070a"/>
+<text x="378" y="201" fill="#6ea8fe" font-size="14" letter-spacing="1.4">CLIP SETTINGS</text>
+<text x="364" y="236" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">genre: Auto or pick</text>
+<text x="364" y="258" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">length · count · steer</text>
+<text x="364" y="280" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">re-run with changes</text>
+<text x="364" y="302" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">detected genre shown</text>
+<text x="60" y="358" fill="#8b94a0" font-size="13" text-anchor="start" style="white-space:pre">Transcript with speaker labels · captions · export</text>
+<rect x="740" y="130" width="460" height="250" fill="none" stroke="#e0a53c" stroke-width="1.6"/>
+<rect x="762" y="120" width="156.0" height="20" fill="#06070a"/>
+<text x="772" y="135" fill="#e0a53c" font-size="14" letter-spacing="1.4">ELECTRON MAIN</text>
+<text x="760" y="172" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">apps/desktop/src/main — owns all I/O</text>
+<text x="760" y="204" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">ipc.ts: project · pipeline · clip · export</text>
+<text x="760" y="236" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">runClipSelection + runReselection, one path</text>
+<text x="760" y="268" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">selection reports · feedback summary</text>
+<text x="760" y="300" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">genre + clip settings stored per project</text>
+<text x="760" y="332" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">auto-update · API key · native dialogs</text>
+<path d="M620,226 H740" fill="none" stroke="#6ea8fe" stroke-width="1.6" marker-end="url(#a-6ea8fe)"/>
+<text x="680" y="216" fill="#6ea8fe" font-size="13" text-anchor="middle">invoke</text>
+<path d="M740,276 H620" fill="none" stroke="#e0a53c" stroke-width="1.6" marker-end="url(#a-e0a53c)"/>
+<text x="680" y="268" fill="#e0a53c" font-size="13" text-anchor="middle">events</text>
+<text x="680" y="318" fill="#8b94a0" font-size="13" text-anchor="middle">typed IPC</text>
+<rect x="40" y="450" width="580" height="250" fill="none" stroke="#4fd1b5" stroke-width="1.6"/>
+<rect x="62" y="440" width="196.0" height="20" fill="#06070a"/>
+<text x="72" y="455" fill="#4fd1b5" font-size="14" letter-spacing="1.4">PIPELINE PACKAGES</text>
+<text x="60" y="494" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">whisper      whisper.cpp, local transcription</text>
+<text x="60" y="528" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">diarization  who speaks when (ONNX, optional)</text>
+<text x="60" y="562" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">ffmpeg       proxy · audio · loudness · 9:16 export</text>
+<text x="60" y="596" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">transcript   sentences (split at speaker change),</text>
+<text x="60" y="630" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">             topic segments · boundaries · fillers</text>
+<text x="60" y="664" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">captions · export · database · types · utils · ui</text>
+<rect x="740" y="450" width="460" height="250" fill="none" stroke="#e0a53c" stroke-width="1.6"/>
+<rect x="762" y="440" width="156.0" height="20" fill="#06070a"/>
+<text x="772" y="455" fill="#e0a53c" font-size="14" letter-spacing="1.4">LOCAL STORAGE</text>
+<text x="760" y="494" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">SQLite project.db (Drizzle, migrations)</text>
+<text x="760" y="524" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">projects  genre override · clip settings</text>
+<text x="760" y="554" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">words     text · timing · speaker</text>
+<text x="760" y="584" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">clips     score · judge answers · original cut</text>
+<text x="760" y="614" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">          reject reason · pipeline hash</text>
+<text x="760" y="644" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">outputs   video analysis · captions</text>
+<text x="760" y="674" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">files     media · selection-reports/ · exports/</text>
+<path d="M970,380 V450" fill="none" stroke="#e0a53c" stroke-width="1.6" marker-end="url(#a-e0a53c)" marker-start="url(#a-e0a53c)"/>
+<text x="985" y="420" fill="#e0a53c" font-size="13" text-anchor="start">read / write</text>
+<path d="M760,380 V415 H330 V450" fill="none" stroke="#e0a53c" stroke-width="1.6" marker-end="url(#a-e0a53c)"/>
+<text x="345" y="408" fill="#e0a53c" font-size="13" text-anchor="start">calls</text>
+<path d="M680,415 V770" fill="none" stroke="#e0a53c" stroke-width="1.6" marker-end="url(#a-e0a53c)"/>
+<text x="668" y="600" fill="#e0a53c" font-size="13" text-anchor="middle" transform="rotate(-90 668 600)">selectClips</text>
+<rect x="40" y="770" width="1160" height="290" fill="none" stroke="#b394f6" stroke-width="1.6"/>
+<rect x="62" y="760" width="296.0" height="20" fill="#06070a"/>
+<text x="72" y="775" fill="#b394f6" font-size="14" letter-spacing="1.4">CLIP SELECTION  packages/ai</text>
+<rect x="60.0" y="826" width="173" height="118" fill="none" stroke="#b394f6" stroke-width="1.2"/>
+<rect x="82.0" y="816" width="96.0" height="20" fill="#06070a"/>
+<text x="92.0" y="831" fill="#b394f6" font-size="14" letter-spacing="1.4">ANALYZE</text>
+<text x="74.0" y="866" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">genre · confidence</text>
+<text x="74.0" y="890" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">summary · topics</text>
+<text x="74.0" y="914" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">speaker labels</text>
+<path d="M234.0,885 H248.4" fill="none" stroke="#b394f6" stroke-width="1.6" marker-end="url(#a-b394f6)"/>
+<rect x="249.4" y="826" width="173" height="118" fill="none" stroke="#b394f6" stroke-width="1.2"/>
+<rect x="271.4" y="816" width="106.0" height="20" fill="#06070a"/>
+<text x="281.4" y="831" fill="#b394f6" font-size="14" letter-spacing="1.4">GENERATE</text>
+<text x="263.4" y="866" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">chunks, 3 parallel</text>
+<text x="263.4" y="890" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">rubric + context</text>
+<text x="263.4" y="914" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">length · steer</text>
+<path d="M423.4,885 H437.79999999999995" fill="none" stroke="#b394f6" stroke-width="1.6" marker-end="url(#a-b394f6)"/>
+<rect x="438.8" y="826" width="173" height="118" fill="none" stroke="#b394f6" stroke-width="1.2"/>
+<rect x="460.8" y="816" width="86.0" height="20" fill="#06070a"/>
+<text x="470.8" y="831" fill="#b394f6" font-size="14" letter-spacing="1.4">REFINE</text>
+<text x="452.8" y="866" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">word-edge snapping</text>
+<text x="452.8" y="890" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">fix dangling start</text>
+<text x="452.8" y="914" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">drop seam dupes</text>
+<path d="M612.8,885 H627.1999999999999" fill="none" stroke="#b394f6" stroke-width="1.6" marker-end="url(#a-b394f6)"/>
+<rect x="628.2" y="826" width="173" height="118" fill="none" stroke="#b394f6" stroke-width="1.2"/>
+<rect x="650.2" y="816" width="76.0" height="20" fill="#06070a"/>
+<text x="660.2" y="831" fill="#b394f6" font-size="14" letter-spacing="1.4">JUDGE</text>
+<text x="642.2" y="866" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">1 call per clip</text>
+<text x="642.2" y="890" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">yes / partly / no</text>
+<text x="642.2" y="914" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">steer question</text>
+<path d="M802.2,885 H816.6" fill="none" stroke="#b394f6" stroke-width="1.6" marker-end="url(#a-b394f6)"/>
+<rect x="817.6" y="826" width="173" height="118" fill="none" stroke="#b394f6" stroke-width="1.2"/>
+<rect x="839.6" y="816" width="96.0" height="20" fill="#06070a"/>
+<text x="849.6" y="831" fill="#b394f6" font-size="14" letter-spacing="1.4">OPENING</text>
+<text x="831.6" y="866" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">judge picks start</text>
+<text x="831.6" y="890" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">re-judge once</text>
+<text x="831.6" y="914" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">keep the better</text>
+<path d="M991.6,885 H1006.0" fill="none" stroke="#b394f6" stroke-width="1.6" marker-end="url(#a-b394f6)"/>
+<rect x="1007.0" y="826" width="173" height="118" fill="none" stroke="#b394f6" stroke-width="1.2"/>
+<rect x="1029.0" y="816" width="66.0" height="20" fill="#06070a"/>
+<text x="1039.0" y="831" fill="#b394f6" font-size="14" letter-spacing="1.4">RANK</text>
+<text x="1021.0" y="866" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">all chunks merged</text>
+<text x="1021.0" y="890" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">dedupe · topic cap</text>
+<text x="1021.0" y="914" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">top N clips</text>
+<text x="60" y="980" fill="#8b94a0" font-size="13" text-anchor="start" style="white-space:pre">Model picks sentence indices, never timestamps. A clip's score is a pure function of its stored answers.</text>
+<text x="60" y="1004" fill="#8b94a0" font-size="13" text-anchor="start" style="white-space:pre">Failures throw before any write. Temperature 0. A pipeline hash fingerprints every prompt, rubric and weight.</text>
+<text x="60" y="1028" fill="#8b94a0" font-size="13" text-anchor="start" style="white-space:pre">Feedback loop: reject reasons and trims feed per-version approval stats, compared by pipeline hash.</text>
+<rect x="40" y="1130" width="700" height="96" fill="none" stroke="#aab2bd" stroke-width="1.6"/>
+<rect x="62" y="1120" width="206.0" height="20" fill="#06070a"/>
+<text x="72" y="1135" fill="#aab2bd" font-size="14" letter-spacing="1.4">GROQ API  your key</text>
+<text x="60" y="1170" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">gpt-oss-120b · analysis, generation, judging, captions</text>
+<text x="60" y="1194" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">structured JSON · temperature 0 · 429 backoff</text>
+<rect x="760" y="1130" width="440" height="96" fill="none" stroke="#aab2bd" stroke-width="1.6"/>
+<rect x="782" y="1120" width="116.0" height="20" fill="#06070a"/>
+<text x="792" y="1135" fill="#aab2bd" font-size="14" letter-spacing="1.4">DOWNLOADS</text>
+<text x="780" y="1170" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">GitHub Releases: DMG/ZIP + update manifest</text>
+<text x="780" y="1194" fill="#d7dbe0" font-size="13" text-anchor="start" style="white-space:pre">Hugging Face: whisper + speaker models</text>
+<path d="M390,1060 V1130" fill="none" stroke="#aab2bd" stroke-width="1.6" marker-end="url(#a-aab2bd)" marker-start="url(#a-aab2bd)"/>
+<text x="402" y="1100" fill="#aab2bd" font-size="13" text-anchor="start">HTTPS</text>
+<path d="M1200,250 H1240 V1178 H1200" fill="none" stroke="#aab2bd" stroke-width="1.6" marker-end="url(#a-aab2bd)"/>
+<text x="1258" y="700" fill="#aab2bd" font-size="13" text-anchor="middle" transform="rotate(-90 1258 700)">HTTPS · updates · models</text>
+</svg>
