@@ -1,12 +1,12 @@
 # Clipper
 
-Open-source alternative to OpusClip, Descript & Submagic. Turn long recordings into viral shorts for TikTok, Reels & YouTube Shorts — runs fully local, bring your own API key, no subscription, no watermark.
+Open-source alternative to OpusClip, Descript & Submagic. Turn long recordings into viral shorts for TikTok, Reels & YouTube Shorts — transcribes locally, bring your own API key, no subscription, no watermark.
 
 **Mac only for now.** Windows support planned.
 
 ## What it does
 
-- Transcribes video locally via Whisper (no data leaves your machine)
+- Transcribes locally via Whisper. Your video never leaves your machine; only the transcript text is sent to Groq, with your own API key, to pick clips
 - AI works out what kind of video it is (podcast, tutorial, comedy…), proposes clips, then judges each one on its exact text and ranks the best across the whole video
 - Review, trim, and approve clips in a visual editor
 - Export clips as 9:16 vertical video with burned-in subtitles
@@ -73,44 +73,9 @@ flowchart LR
 
 The diagram shows the architecture once the clip-selection roadmap (#100–#105 and #108) has landed. [`docs/ROADMAP.md`](docs/ROADMAP.md) lists what is built today.
 
-The packages are pure, stateless "stations" — no package but `database` ever touches SQLite. One conductor, [`apps/desktop/src/main/ipc.ts`](apps/desktop/src/main/ipc.ts), drives every station in order and persists the result after each one. The UI lives in [`apps/desktop/src/renderer`](apps/desktop/src/renderer) and only ever talks to the conductor over IPC.
+Each package does one job and keeps no shared state, and no package but `database` ever touches SQLite. One conductor, [`apps/desktop/src/main/ipc.ts`](apps/desktop/src/main/ipc.ts), calls them in order and persists the result after each step. The UI lives in [`apps/desktop/src/renderer`](apps/desktop/src/renderer) and only ever talks to the conductor over typed IPC.
 
-```mermaid
-flowchart TD
-    classDef foundation fill:#2d3748,stroke:#a0aec0,color:#edf2f7,stroke-width:2px
-    classDef engine fill:#0f4c4c,stroke:#4fd1c5,color:#ecfeff,stroke-width:2px
-    classDef orchestrator fill:#5a3d0f,stroke:#e0a72e,color:#fff7ed,stroke-width:2px
-    classDef store fill:#1e3a5f,stroke:#63b3ed,color:#eff6ff,stroke-width:2px
-
-    Main["apps/desktop/main/ipc.ts<br/>the conductor"]:::orchestrator
-    DB[("database<br/>SQLite — source of truth")]:::store
-
-    subgraph line["packages/ — pure, stateless, one job each"]
-        direction LR
-        FF["ffmpeg<br/>proxy + audio"]:::engine
-        WH["whisper<br/>transcript"]:::engine
-        TR["transcript<br/>filler + silence"]:::engine
-        AI["ai<br/>clip picks"]:::engine
-        CAP["captions<br/>ASS styles"]:::engine
-        EXP["export<br/>cut + burn"]:::engine
-        FF --> WH --> TR --> AI --> CAP --> EXP
-    end
-
-    subgraph shared["shared foundation — no side effects"]
-        direction LR
-        TY["types"]:::foundation
-        UT["utils"]:::foundation
-        UI["ui / player"]:::foundation
-    end
-
-    Main -->|drives every step| FF
-    EXP -->|clip ready| Main
-    Main -->|persists after each step| DB
-    DB -.state read back.-> Main
-    shared -.depended on by.-> line
-```
-
-- Want to improve clip picking? Start at `packages/ai`
+- Want to improve clip picking? Start at `packages/ai` (`clip-selector.ts` runs the pipeline, `clip-judge.ts` judges each clip, `profiles.ts` holds the genre rubrics)
 - Fix a transcription quirk? Start at `packages/whisper` or `packages/transcript`
 - Change the export pipeline? Start at `packages/ffmpeg`, `packages/captions`, or `packages/export`
 
@@ -129,6 +94,7 @@ bash scripts/setup.sh  # first-time setup
 pnpm dev               # start app
 pnpm turbo typecheck   # type check all packages
 pnpm turbo lint        # lint all packages
+pnpm test              # run the unit tests
 ```
 
 ## License
