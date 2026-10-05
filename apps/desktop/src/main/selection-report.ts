@@ -186,6 +186,26 @@ function judgeLines(c: TraceEntry, questions: ClipSelectionTrace["judgeQuestions
   return out
 }
 
+/**
+ * What the judge proposed for the opening sentence, and what became of it (#100).
+ *
+ * Both scores are printed whenever a second judgement exists, including when the proposal lost.
+ * The step exists to show the proposal was measured rather than trusted, so a report that printed
+ * only the winning score could not tell a reviewer whether moving the opening actually helped.
+ */
+function openingLines(c: TraceEntry): string[] {
+  const o = c.opening
+  if (!o) return []
+  const scores =
+    o.retryScore !== null ? ` [${o.originalScore.toFixed(2)} vs ${o.retryScore.toFixed(2)}]` : ""
+  if (o.adopted) {
+    return [
+      `- opening: MOVED ${tc(o.originalStartTimecode)} → ${tc(o.retryStartTimecode)}${scores} — ${o.note}`,
+    ]
+  }
+  return [`- opening: kept ${tc(o.originalStartTimecode)}${scores} — ${o.note}`]
+}
+
 function renderJudgeQuestions(trace: ClipSelectionTrace): string[] {
   const lines = ["## Judge questions", "", "| id | weight | hard | question |", "|---|---|---|---|"]
   for (const q of trace.judgeQuestions) {
@@ -367,6 +387,7 @@ function renderMarkdown(report: SelectionReport): string {
       lines.push(`- model range: #${c.startSentence}–#${c.endSentence}`)
       lines.push(`- refined: ${tc(c.startTimecode)}–${tc(c.endTimecode)}`)
       lines.push(...judgeLines(c, trace.judgeQuestions))
+      lines.push(...openingLines(c))
       if (c.boundary) {
         lines.push(
           `- boundary flags: danglingUnresolved=${c.boundary.danglingUnresolved}, ` +

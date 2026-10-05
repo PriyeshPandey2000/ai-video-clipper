@@ -62,6 +62,7 @@ function entry(overrides: Partial<TraceEntry>): TraceEntry {
     duplicateOf: null,
     finalRank: 0,
     text: "Nobody expected this.",
+    opening: null,
     ...overrides,
   }
 }
@@ -375,5 +376,73 @@ describe("renderSelectionReportMarkdown", () => {
     expect(md).toContain("judge-rejected — Judged reject")
     expect(md).toContain("judge: score 0.60 — hook ✓ · payoff ✗")
     expect(md).toContain("judge verdict: fails payoff")
+  })
+
+  it("shows whether the opening was moved, and both scores, whether or not it won (#100)", async () => {
+    const dir = await tmpDir()
+    const { reportMarkdownPath } = await writeSelectionReport(dir, {
+      header: { projectId: "p1", projectName: "My Video", durationMs: 60000, startedAtMs: 0 },
+      provenance,
+      analysis: analysis(),
+      trace: trace({
+        candidates: [
+          entry({
+            finalRank: 0,
+            title: "Moved opener",
+            opening: {
+              originalStartMs: 1000,
+              originalStartTimecode: "0:01",
+              suggestedSentence: 6,
+              originalScore: 0.54,
+              retryStartMs: 21000,
+              retryStartTimecode: "0:21",
+              retryScore: 0.86,
+              adopted: true,
+              note: "judge proposed sentence #6",
+            },
+          }),
+          entry({
+            finalRank: 1,
+            title: "Kept opener",
+            opening: {
+              originalStartMs: 40000,
+              originalStartTimecode: "0:40",
+              suggestedSentence: 44,
+              originalScore: 0.79,
+              retryStartMs: 58000,
+              retryStartTimecode: "0:58",
+              retryScore: 0.61,
+              adopted: false,
+              note: "re-judged opening did not score higher",
+            },
+          }),
+          entry({
+            finalRank: 2,
+            title: "No proposal",
+            opening: {
+              originalStartMs: 90000,
+              originalStartTimecode: "1:30",
+              suggestedSentence: null,
+              originalScore: 0.71,
+              retryStartMs: null,
+              retryStartTimecode: null,
+              retryScore: null,
+              adopted: false,
+              note: "no better opening suggested",
+            },
+          }),
+        ],
+      }),
+      finalRanked: [],
+    })
+    const md = await readFile(reportMarkdownPath, "utf-8")
+    // Adopted: both timecodes and the score it moved between.
+    expect(md).toContain("- opening: MOVED 0:01 → 0:21 [0.54 vs 0.86] — judge proposed sentence #6")
+    // Lost proposal: the losing score is still printed, which is the point of keeping both.
+    expect(md).toContain(
+      "- opening: kept 0:40 [0.79 vs 0.61] — re-judged opening did not score higher",
+    )
+    // No proposal: the report says so rather than staying silent.
+    expect(md).toContain("- opening: kept 1:30 — no better opening suggested")
   })
 })
