@@ -61,11 +61,17 @@ flowchart LR
 
 1. Drop a video file into the app
 2. Pick a Whisper model and click Transcribe
-3. AI suggests the best clips with reasons; the app assigns display scores — review and approve
+3. AI works out what kind of video it is, proposes clips, and judges each one on its exact text — review and approve
 4. Toggle 9:16 reframe if needed, drag to set crop position
 5. Click Export Clips or Export Episode
 
 ## Architecture
+
+<p align="center">
+  <img src="docs/architecture.svg" alt="Clipper architecture: renderer, Electron main, pipeline packages, local storage, clip selection and external services" width="100%">
+</p>
+
+The diagram shows the architecture once the clip-selection roadmap (#100–#105 and #108) has landed. [`docs/ROADMAP.md`](docs/ROADMAP.md) lists what is built today.
 
 The packages are pure, stateless "stations" — no package but `database` ever touches SQLite. One conductor, [`apps/desktop/src/main/ipc.ts`](apps/desktop/src/main/ipc.ts), drives every station in order and persists the result after each one. The UI lives in [`apps/desktop/src/renderer`](apps/desktop/src/renderer) and only ever talks to the conductor over IPC.
 
