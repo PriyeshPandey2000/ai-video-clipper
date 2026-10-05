@@ -698,8 +698,15 @@ async function selectFromChunk(
   })
   // Out-of-chunk ranges are malformed rather than surplus, so they go first: a model that invented
   // a sentence index should not also spend our budget.
+  // Chained comparisons, so a reversed range fails too. `start >= first && end <= last` alone lets
+  // `start: 900, end: 100` through — and because the budget is applied to this filtered list, twenty
+  // such candidates would consume all 20 slots and push out every well-formed one. A reversed range
+  // is a model slip with no interpretation we can trust, so it is malformed rather than surplus.
   const inRange = result.clips.filter(
-    (c) => c.startSentence >= firstIndex && c.endSentence <= lastIndex,
+    (c) =>
+      c.startSentence >= firstIndex &&
+      c.startSentence <= c.endSentence &&
+      c.endSentence <= lastIndex,
   )
   // The model is asked to order best-first, so keeping the head of the list keeps the best.
   const candidates = inRange.slice(0, MAX_CANDIDATES_PER_CHUNK)

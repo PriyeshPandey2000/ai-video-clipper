@@ -188,6 +188,41 @@ describe("per-chunk candidate budget", () => {
     expect(trace.chunks.every((c) => c.candidatesDropped === 0)).toBe(true)
   })
 
+  it("does not let reversed ranges consume the budget", async () => {
+    // A reversed range passes `start >= first && end <= last` but has no interpretation we can
+    // trust. Since the cap is applied to this filtered list, twenty reversed candidates would take
+    // all 20 slots and push out the one well-formed candidate behind them.
+    const reversedFirst: Handler = (prompt) => {
+      const r = range(prompt)
+      if (!r) return { ranking: [] }
+      const [lo, hi] = r
+      const clips = Array.from({ length: 20 }, (_, i) => ({
+        startSentence: hi - i,
+        endSentence: lo + i,
+        title: `reversed-${i}`,
+        reason: "r",
+        strong: true,
+        platform: "shorts",
+      }))
+      // The good candidate is last in the model's own order — the worst place for it to be.
+      clips.push({
+        startSentence: lo,
+        endSentence: Math.min(lo + 2, hi),
+        title: "well-formed",
+        reason: "r",
+        strong: true,
+        platform: "shorts",
+      })
+      return { clips }
+    }
+    const { trace } = await selectClips(mockClient(reversedFirst), words, sentences)
+    // The reversed ones were rejected, so the budget held 1 real candidate rather than 20 junk ones.
+    expect(trace.chunks.some((c) => c.candidateCount > 0)).toBe(true)
+    expect(trace.chunks.every((c) => c.candidateCount <= 1)).toBe(true)
+    // Nothing was discarded by the cap — the reversed ranges never got that far.
+    expect(trace.chunks.every((c) => c.candidatesDropped === 0)).toBe(true)
+  })
+
   it("does not spend the budget on out-of-chunk ranges", async () => {
     // Malformed, not surplus: a candidate pointing outside the chunk is dropped before the cap is
     // applied, so a chunk full of hallucinations still cannot push real candidates out of the
@@ -465,9 +500,9 @@ describe("hostile input", () => {
 
   it("survives out-of-range and reversed sentence indices", async () => {
     // Schema-valid but wrong: both indices are non-negative integers, so they parse and have to be
-    // caught by the in-chunk range filter and the reversed-range rejection instead. A negative index
-    // cannot appear here at all — `CandidateSchema` has `.min(0)`, so the real client would reject
-    // and retry the response, which the neighbouring test covers.
+    // caught by the in-chunk range filter instead. A negative index cannot appear here at all —
+    // `CandidateSchema` has `.min(0)`, so the real client would reject and retry the response,
+    // which the neighbouring test covers.
     const insane: Handler = () => ({
       clips: [
         {
@@ -482,6 +517,16 @@ describe("hostile input", () => {
           startSentence: 900,
           endSentence: 100,
           title: "reversed",
+          reason: "r",
+          strong: true,
+          platform: "shorts",
+        },
+        // One usable candidate, so the run still produces a clip: the assertion is that the hostile
+        // two are discarded, not that the pipeline can manufacture a clip from nonsense.
+        {
+          startSentence: 20,
+          endSentence: 40,
+          title: "usable",
           reason: "r",
           strong: true,
           platform: "shorts",

@@ -214,8 +214,10 @@ export function ClipReview({
   }, [projectId])
 
   useEffect(() => {
+    // `refreshTrigger` is included because a re-selection the parent performed bumps it, and that
+    // run has a new report on disk — the funnel shown next to an empty list has to be this run's.
     loadLastReport()
-  }, [loadLastReport])
+  }, [loadLastReport, refreshTrigger])
 
   // The stored analysis and override. Reloaded after every run, failed ones included: a failed
   // override change is rolled back in the main process, and the control must show what is stored
@@ -243,6 +245,10 @@ export function ClipReview({
       setReselectError(null)
       try {
         const result = await run()
+        // The funnel is reloaded rather than cleared, and before the new path is set: this run just
+        // wrote a report, so the previous run's counts would otherwise stay on screen and the empty
+        // state would explain a run that no longer happened.
+        await loadLastReport()
         setLastReportPath(result.reportMarkdownPath)
         // Reload from the DB rather than trusting the returned count — approved/exported clips
         // survive the replace, so the visible list is not only the new suggestions.
@@ -256,7 +262,7 @@ export function ClipReview({
         setProgressMessage(null)
       }
     },
-    [loadClips, loadProfile, onReselectComplete],
+    [loadClips, loadLastReport, loadProfile, onReselectComplete],
   )
 
   const handleReselect = useCallback(
@@ -508,12 +514,16 @@ export function ClipReview({
                 )}
               </div>
             ) : (
-              // No readable report. This wording is deliberately a non-claim: the run either found
-              // nothing strong, or could not be inspected, and the panel does not know which.
+              // Two different null causes, and the wording must not conflate them: `lastReportPath`
+              // is set when a `.md` report exists, so a path with no funnel means the file could not
+              // be parsed — not that no report was written. Telling a user "no report was saved"
+              // when one is sitting on disk unread would send them looking for the wrong problem.
               <>
                 <p className="text-sm text-neutral-500">No clips were kept</p>
                 <p className="text-xs text-neutral-600 mt-1">
-                  No report was saved for this run, so the reasons are not available here.
+                  {lastReportPath
+                    ? "This run's report could not be read, so the reasons are not available here."
+                    : "No report was saved for this run, so the reasons are not available here."}
                 </p>
               </>
             )

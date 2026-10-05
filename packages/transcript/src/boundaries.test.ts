@@ -331,6 +331,101 @@ describe("refineClipBoundaries", () => {
     const r = refineClipBoundaries(words, sentences, 20, 20)
     expect(r!.danglingUnresolved).toBe(false)
   })
+
+  it("D6: repairs a dangling opener that length growth introduced", () => {
+    // Growth moves the start, and the first D2 pass only ran against the *proposed* start. Here the
+    // proposed start ("The launch failed") is a clean sentence, so D2 correctly does nothing — then
+    // backward growth lands on "And nobody told me", which the model never chose. Without a second
+    // D2 pass the clip opens mid-thought while the referent sits one sentence earlier.
+    //
+    // Timings are explicit so the growth loop stops exactly where intended: s1+s2 already exceed
+    // MIN_CLIP_MS, so growth takes the start to s1 and halts on the length check rather than
+    // running past the dangling sentence on its own.
+    const w: Word[] = []
+    let ms = 0
+    const addSentence = (text: string, spanMs: number) => {
+      const tokens = text.split(" ")
+      const step = Math.floor(spanMs / tokens.length)
+      for (const token of tokens) {
+        w.push({
+          id: `w${w.length}`,
+          projectId: "p",
+          text: token,
+          startMs: ms,
+          endMs: ms + step,
+          confidence: 0.9,
+          speakerLabel: null,
+        })
+        ms += step
+      }
+    }
+    addSentence("We lost the account that spring.", 5_000)
+    addSentence("And nobody told me until the renewal came up.", 9_000)
+    addSentence("The launch failed in the first ten minutes of it.", 9_000)
+    const s = buildSentences(w)
+    expect(s).toHaveLength(3)
+    expect(startsWithDanglingReference(s[1]!)).toBe(true)
+    expect(startsWithDanglingReference(s[2]!)).toBe(false)
+
+    const r = refineClipBoundaries(w, s, 2, 2)
+    expect(r).not.toBeNull()
+    // Growth moved the start onto the dangling opener at #1, then the post-growth D2 pass resolved
+    // it by taking in #0. Ending on #0 also means the clip no longer opens mid-thought, which is the
+    // whole point: `danglingUnresolved` describes the boundary the viewer sees, not the one the
+    // model proposed.
+    expect(r!.startSentenceIndex).toBe(0)
+    expect(r!.danglingUnresolved).toBe(false)
+    expect(r!.durationMs).toBeGreaterThanOrEqual(MIN_CLIP_MS)
+  })
+
+  it("D6: does not cross a long silence just to reach the minimum", () => {
+    // A 55-second gap satisfies `minMs` if the guard is only `maxMs` — the duration is met while
+    // the clip is mostly silence. Forward growth is the better repair, so the start must not move
+    // across the pause.
+    const phrases: Array<[string, number?]> = []
+    for (let i = 0; i < 12; i++) phrases.push([`Setup line number ${i} about the business.`])
+    phrases.push(["That is the whole story so far.", 55_000])
+    phrases.push(["The moment everyone remembers."])
+    // Room after the candidate on purpose: forward growth is the repair being asserted, so the
+    // clip has to be able to fill that way instead of crossing the pause.
+    for (let i = 0; i < 12; i++) phrases.push([`Aftermath line number ${i} of the fallout.`])
+    const w = transcript(phrases)
+    const s = buildSentences(w)
+    const moment = s.findIndex((x) => x.text.startsWith("The moment everyone"))
+    expect(moment).toBeGreaterThan(12)
+
+    const r = refineClipBoundaries(w, s, moment, moment)
+    expect(r).not.toBeNull()
+    // Did not jump back across the 55s pause to the sentence before it.
+    expect(r!.startSentenceIndex).toBe(moment)
+    // …and reached the floor the other way, which is what makes this a real choice rather than a
+    // clip that simply ran out of room.
+    expect(r!.endSentenceIndex).toBeGreaterThan(moment)
+    expect(r!.durationMs).toBeGreaterThanOrEqual(MIN_CLIP_MS)
+  })
+
+  it("D6: a long silence blocks the post-growth dangling repair too", () => {
+    // Same guard, applied to the second D2 pass: a dangling opener whose referent is behind a long
+    // pause is worse to include than to leave, so the repair stops and the flag reports it.
+    const phrases: Array<[string, number?]> = []
+    for (let i = 0; i < 12; i++) phrases.push([`Setup line number ${i} about the business.`])
+    phrases.push(["The demo got cancelled.", 30_000])
+    phrases.push(["And nobody told me."])
+    phrases.push(["I shipped it anyway."])
+    for (let i = 0; i < 12; i++) phrases.push([`Aftermath line number ${i} of the fallout.`])
+    const w = transcript(phrases)
+    const s = buildSentences(w)
+    const dangling = s.findIndex((x) => x.text.startsWith("And nobody"))
+    expect(dangling).toBeGreaterThan(12)
+
+    // The candidate is the sentence *after* the dangling one, so growth has to step onto "And
+    // nobody told me" first — which is the only way the post-growth D2 pass gets exercised at all.
+    const r = refineClipBoundaries(w, s, dangling + 1, dangling + 1)
+    expect(r).not.toBeNull()
+    // Growth may land on the opener, but the repair must not cross the 30s pause to resolve it.
+    expect(r!.startSentenceIndex).toBe(dangling)
+    expect(r!.danglingUnresolved).toBe(true)
+  })
 })
 
 describe("passesQualityGate", () => {
