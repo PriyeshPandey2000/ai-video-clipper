@@ -1324,11 +1324,14 @@ describe("judge-chosen opening (#100)", () => {
     expect(kept.every((c) => c.opening !== null)).toBe(true)
   })
 
-  it("never lets a regex decide or move a clip start", () => {
-    // HOOK_RE is gone, so nothing in the shipped prompt advertises a hook signal any more.
+  it("never lets a regex decide or move a clip start", async () => {
+    // Awaited: `selectClips` awaits `analyzeVideo` before it builds any chunk prompt, so reading
+    // `prompts` without awaiting inspected an empty array and passed whatever the prompt said.
+    // Asserting the annotated prompt was actually captured keeps that failure mode closed.
     const prompts: string[] = []
-    void selectClips(mockClient(twoPerChunk, prompts), words, sentences)
-    const annotated = prompts.find((p) => p.includes("Signal tags")) ?? ""
-    expect(annotated).not.toContain("{hook")
+    await selectClips(mockClient(twoPerChunk, prompts), words, sentences)
+    const annotated = prompts.filter((p) => /Sentences #\d+ to #\d+/.test(p))
+    expect(annotated.length).toBeGreaterThan(0)
+    for (const p of annotated) expect(p).not.toMatch(/\{[^}]*hook/)
   })
 })
