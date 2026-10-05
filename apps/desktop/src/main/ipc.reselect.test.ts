@@ -166,6 +166,7 @@ function traceEntry(overrides: Partial<TraceEntry> = {}): TraceEntry {
     duplicateOf: null,
     finalRank: 0,
     text: "some words",
+    opening: null,
     ...overrides,
   }
 }

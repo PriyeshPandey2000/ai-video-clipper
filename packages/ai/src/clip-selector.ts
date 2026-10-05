@@ -162,6 +162,39 @@ export interface TraceEntry extends TraceCandidate {
    * table cannot, because a user trim rewrites startMs/endMs in place.
    */
   text: string | null
+  /**
+   * What the judge's `bestOpeningSentence` proposed, and what was done about it (#100). Present for
+   * every clip that reached the opening step — including when nothing was proposed, so the report
+   * can say "no better opening" rather than leaving the question open. Null only when the clip was
+   * rejected before that step.
+   */
+  opening: OpeningRetry | null
+}
+
+/**
+ * The record of one attempt to move a clip's opening sentence (#100).
+ *
+ * Both scores are kept, never just the winner's: the point of the step is to show that the judge's
+ * proposal was measured rather than trusted, and a report that only printed the adopted score could
+ * not tell a reviewer whether moving the opening helped.
+ */
+export interface OpeningRetry {
+  /** The clip's start before any retry. */
+  originalStartMs: number
+  originalStartTimecode: string
+  /** Sentence the judge proposed as the strongest opening, or null when it proposed none. */
+  suggestedSentence: number | null
+  /** Score of the original cut. */
+  originalScore: number
+  /** The re-judged cut's start. Null when no alternative was ever built. */
+  retryStartMs: number | null
+  retryStartTimecode: string | null
+  /** Score of the re-judged cut. Null when no call was made, or it failed. */
+  retryScore: number | null
+  /** True when the re-judged cut replaced the original. */
+  adopted: boolean
+  /** Why the step ended the way it did, in one clause. The report's human-readable explanation. */
+  note: string
 }
 
 /** Chunk layout for the run. Decides which sentences the model ever saw. */
@@ -212,11 +245,10 @@ type Candidate = zod.infer<typeof CandidateSchema>
 const SYSTEM_PROMPT = `You are a short-form video editor selecting clips from a long transcript.
 
 The transcript is given as numbered sentences with optional signal tags in {braces}:
-#12 [10500-14200] {hook,fast} Nobody expected this outcome.
+#12 [10500-14200] {fast} Nobody expected this outcome.
 #13 [14200-16000] So then everything changed.
 
 Signal tags — use as extra evidence, not hard rules:
-  {hook}        — question, number, superlative, reveal, or contrarian framing detected
   {fast}        — speech rate significantly above speaker's rolling baseline (excitement)
   {slow}        — speech rate below baseline (deliberate emphasis or emotional weight)
   {loud}        — audio energy significantly above speaker's rolling baseline (emotional peak)
@@ -353,8 +385,6 @@ const MAX_CANDIDATES_PER_CHUNK = 20
 /** Default clip count per video. Overridable per call, so the effective value is hashed per run. */
 const DEFAULT_MAX_CLIPS = 10
 
-const HOOK_RE =
-  /(?:\?$)|(?:\b\d{2,})|(?:\b(?:best|worst|biggest|most|least|first|last|only|never|always|ever)\b)|(?:\b(?:nobody|don't tell|secret|hidden|misconception|myth)\b)|(?:\b(?:here.?s why|that.?s why|turns out|here.?s the thing|the truth is)\b)/i
 const FILLER_SET = new Set([
   "um",
   "uh",
@@ -429,7 +459,6 @@ function buildAnnotatedPrompt(
       prevEndMs = s.endMs
 
       const tags = [
-        HOOK_RE.test(s.text) ? "hook" : "",
         wps > wpsBaseline * WPS_FAST_RATIO ? "fast" : "",
         wps < wpsBaseline * WPS_SLOW_RATIO ? "slow" : "",
         loudTag,
@@ -496,8 +525,14 @@ function renderUserPrompt(
  * v3 — generation is for recall; every refined clip is judged on its exact text and ranked across
  * all chunks (#99). The per-chunk `strong` flag, the title-only Borda re-rank, round-robin
  * interleaving and the hook-first trim are gone.
+ *
+ * v4 — the judge's `bestOpeningSentence` chooses the opening sentence (#100). `HOOK_RE` is deleted,
+ * along with the `{hook}` prompt tag and the regex "weak opening" warning it fed: a tag that fires
+ * on most ordinary sentences tells the model nothing. The version moves because what decides a clip
+ * start changed, from a regex to a model — which no constant in the fingerprint can see, though the
+ * hash does move on its own via `judgeSystem`.
  */
-export const PIPELINE_VERSION = "v3-judge-global-rank"
+export const PIPELINE_VERSION = "v4-judge-chosen-opening"
 
 /**
  * sha256 over every prompt template and heuristic threshold the clip-selection path reads, so a
@@ -577,7 +612,10 @@ export function computePipelineFingerprint(
           .map((id) => `judgeProfileQ:${id}=${JSON.stringify(profiles[id].judgeQuestions)}`),
         `maxJudgeFailureRatio:${MAX_JUDGE_FAILURE_RATIO}`,
         `preJudgeDuplicateOverlap:${PRE_JUDGE_DUPLICATE_OVERLAP}`,
-        `hookRe:${HOOK_RE.source}`,
+        // #100 — the judge prompt is already hashed above as `judgeSystem`, which is where the
+        // opening-sentence instruction now lives, so the retry needs no entry of its own. What did
+        // change is that HOOK_RE no longer exists: `hookRe` and `hookFirstMaxTrim` are gone from the
+        // hash because nothing reads them.
         // Sorted: FILLER_SET is a Set, and its iteration order is not a stable thing to hash.
         `filler:${[...FILLER_SET].sort().join(",")}`,
         `danglingOpeners:${[...DANGLING_OPENERS].sort().join(",")}`,
@@ -722,8 +760,6 @@ export async function selectClips(
     })${analysis.fallback ? " — analysis unavailable" : ""}${analysis.secondaryProfile ? `, also ${analysis.secondaryProfile}` : ""}`,
   )
 
-  const sentenceByIndex = new Map(sentences.map((s) => [s.index, s]))
-
   // ── Step 1 — generate for recall, chunks in parallel ───────────────────────
   const chunks = topicsToChunks(sentences, topics)
   type ChunkResult = { ok: true; candidates: Candidate[] } | { ok: false; error: string }
@@ -817,6 +853,7 @@ export async function selectClips(
         duplicateOf: null,
         finalRank: null,
         text: null,
+        opening: null,
       }
       trace.candidates.push(entry)
 
@@ -860,11 +897,8 @@ export async function selectClips(
         continue
       }
 
-      // D2's backward expansion can walk the start earlier than the model's, so re-check HOOK_RE
-      // against the sentence the clip actually opens on.
-      const finalOpener = sentenceByIndex.get(boundary.startSentenceIndex)
-      const noHook = !finalOpener || !HOOK_RE.test(finalOpener.text)
-
+      // The judge's `hook` answer (#99) and its `bestOpeningSentence` (#100) replace the old regex
+      // "weak opening" warning, which fired on most ordinary sentences and so carried no information.
       const suggestion: ClipSuggestion = {
         title: candidate.title,
         startMs: boundary.startMs,
@@ -873,7 +907,7 @@ export async function selectClips(
         score: 0,
         reason: candidate.reason,
         platform: candidate.platform,
-        warnings: [...gate.warnings, ...(noHook ? ["weak opening"] : [])],
+        warnings: [...gate.warnings],
       }
 
       // Chunk overlap makes the same moment arrive twice with near-identical bounds. Drop the
@@ -942,6 +976,147 @@ export async function selectClips(
       return
     }
     scored.push(s)
+  })
+
+  // ── Step 3.5 — a judge-chosen opening, replacing the regex hook-trim (#100) ──
+  //
+  // The first two seconds decide whether a viewer swipes, so the opening sentence matters more than
+  // any other choice in the cut. It used to be made by a regex matching questions, numbers and
+  // superlatives, which fires on so much ordinary speech that it carried no information and often
+  // deleted the setup that made the clip make sense. The judge reads the real text instead.
+  //
+  // One extra call per clip that has a proposal, and exactly one: a second round would let the
+  // model keep trading sentences until the score went up, which measures nothing but the model's
+  // persistence. Adoption requires a STRICTLY higher score, so a tie leaves the original in place.
+  //
+  // Runs before ranking, because it can change the score the ranking depends on — and before the
+  // overlap dedupe, because a later start can stop two clips overlapping.
+  const openingRetries = scored.filter((s) => s.entry.judge?.bestOpeningSentence != null).length
+  console.log(`[clips] ${openingRetries} clip(s) have a judge-suggested opening to try`)
+
+  await mapPool(scored, JUDGE_CONCURRENCY, async (s) => {
+    const original = s.entry.judge!
+    const suggested = original.bestOpeningSentence
+    /** The alternative cut, once one exists. Null until the re-judge returns. */
+    type OpeningFacts = { startMs: number; timecode: string; score: number }
+    const base = {
+      originalStartMs: s.boundary.startMs,
+      originalStartTimecode: s.entry.startTimecode!,
+      suggestedSentence: suggested,
+      originalScore: original.score,
+      retryStartMs: null,
+      retryStartTimecode: null,
+      retryScore: null,
+      adopted: false,
+    }
+    const keep = (note: string, retry?: OpeningFacts): void => {
+      s.entry.opening = {
+        ...base,
+        retryStartMs: retry?.startMs ?? null,
+        retryStartTimecode: retry?.timecode ?? null,
+        // Recorded even when the proposal loses. A report that could only show the winner's score
+        // could not answer whether moving the opening helped, which is the whole point of the step.
+        retryScore: retry?.score ?? null,
+        adopted: false,
+        note,
+      }
+    }
+
+    if (suggested == null) {
+      keep("no better opening suggested")
+      return
+    }
+    // Only ever moves the start forward. A proposal at or before the current start has already been
+    // weighed by the judge as the first line of this cut, so there is nothing to try.
+    if (suggested <= s.boundary.startSentenceIndex) {
+      keep("suggested opening is not later than the current one")
+      return
+    }
+
+    // D2 still runs, and that is the point: it expands backward over a dangling opener, repairing
+    // the new start instead of fighting a regex for it.
+    const boundary = refineClipBoundaries(words, sentences, suggested, s.boundary.endSentenceIndex)
+    if (!boundary) {
+      keep("suggested opening produced no valid range")
+      return
+    }
+    if (boundary.startSentenceIndex === s.boundary.startSentenceIndex) {
+      keep("D2 repaired the suggested opening back to the current start")
+      return
+    }
+    // Starting later runs the length clamp again, so the alternative can fail the mechanical gate
+    // the original passed. A cut that cannot ship is not an improvement, whatever the judge says.
+    const gate = passesQualityGate(boundary)
+    if (!gate.passed) {
+      keep(`suggested opening fails the quality gate: ${gate.reasons.join("; ")}`)
+      return
+    }
+
+    const retryStartMs = boundary.startMs
+    const retryStartTimecode = toTimecode(boundary.startMs)
+    let judgement: ClipJudgement
+    try {
+      judgement = await judgeClip({
+        client,
+        questions: judgeQuestions,
+        context: contextBlock,
+        words,
+        sentences,
+        boundary,
+        sleep,
+      })
+    } catch (err) {
+      keep(`re-judge failed: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
+
+    const retryScore = judgement.score
+    const facts: OpeningFacts = {
+      startMs: retryStartMs,
+      timecode: retryStartTimecode,
+      score: retryScore,
+    }
+    const failedHard = failedHardQuestions(judgement.answers, judgeQuestions)
+    if (failedHard.length > 0) {
+      keep(`re-judged opening fails ${failedHard.join(", ")}`, facts)
+      return
+    }
+    if (retryScore <= original.score) {
+      keep("re-judged opening did not score higher", facts)
+      return
+    }
+
+    // Adopted: the clip now starts at the judge's sentence and carries the second judgement.
+    s.boundary = boundary
+    s.suggestion.startMs = boundary.startMs
+    s.suggestion.endMs = boundary.endMs
+    s.suggestion.score = retryScore
+    s.suggestion.judge = judgement
+    s.suggestion.warnings = [...gate.warnings]
+    s.warnings = s.suggestion.warnings
+    s.entry.startMs = boundary.startMs
+    s.entry.endMs = boundary.endMs
+    s.entry.startTimecode = retryStartTimecode
+    s.entry.endTimecode = toTimecode(boundary.endMs)
+    s.entry.boundary = {
+      danglingUnresolved: boundary.danglingUnresolved,
+      endedOnCompleteThought: boundary.endedOnCompleteThought,
+      tooShort: boundary.tooShort,
+    }
+    s.entry.gate = { passed: true, reasons: [], warnings: gate.warnings }
+    s.entry.judge = judgement
+    s.entry.text = words
+      .filter((w) => w.startMs >= boundary.startMs && w.endMs <= boundary.endMs)
+      .map((w) => w.text)
+      .join(" ")
+    s.entry.opening = {
+      ...base,
+      retryStartMs,
+      retryStartTimecode,
+      retryScore,
+      adopted: true,
+      note: `judge proposed sentence #${suggested}`,
+    }
   })
 
   // ── Step 4 — rank every chunk together, dedupe, cut ────────────────────────

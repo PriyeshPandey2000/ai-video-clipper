@@ -150,7 +150,9 @@ for being on a good topic if the clip itself does not deliver.
 Also return:
 - note: ONE sentence on the clip's biggest strength or flaw, written for the editor.
 - bestOpeningSentence: the number from a "#N" label inside the clip whose sentence would make the
-  strongest opening. Omit it if the clip's first sentence is already the best opening.`
+  strongest opening — but ONLY if the clip still makes complete sense to a viewer starting there.
+  A later sentence that is punchier but strands the clip without its setup is a worse opening, not
+  a better one. Return null when the clip's first sentence is already the best opening.`
 
 export const JUDGE_USER_TEMPLATE = `{{CONTEXT}}
 

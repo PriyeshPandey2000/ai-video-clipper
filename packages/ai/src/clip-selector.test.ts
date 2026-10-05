@@ -1115,3 +1115,223 @@ describe("pipeline fingerprint covers the judge (#99)", () => {
     expect(computePipelineFingerprint(10, 0, changed)).not.toBe(computePipelineFingerprint(10, 0))
   })
 })
+
+describe("judge-chosen opening (#100)", () => {
+  /** One candidate starting at sentence 0, so the judge's proposal is the only thing that moves it. */
+  const oneClip: Handler = () => ({
+    clips: [{ startSentence: 0, endSentence: 12, title: "only", reason: "r", platform: "shorts" }],
+  })
+
+  /** Sentence 1 opens with "So" (see `transcript`), so D2 repairs a start moved there. */
+  const DANGLING = 1
+  const AFTER_DANGLING = 0
+
+  const openingOf = (trace: ClipSelectionTrace | undefined, title = "only") =>
+    trace!.candidates.find((c) => c.title === title)!.opening!
+
+  it("adopts a proposed opening that re-judges strictly higher", async () => {
+    const seen: number[] = []
+    const proposeThenApprove: JudgeHandler = (prompt, system) => {
+      const start = clipStart(prompt)
+      seen.push(start)
+      // First sighting proposes a later opening; the re-judge of that later opening scores full.
+      return start === 0
+        ? judgement(system, "partly", { bestOpeningSentence: 6 })
+        : judgement(system, "yes", { bestOpeningSentence: null })
+    }
+    const short = transcript(120)
+    const { clips, trace } = await selectClips(
+      mockClient(oneClip, [], undefined, [], proposeThenApprove),
+      short,
+      buildSentences(short),
+      [],
+      10,
+      [],
+      null,
+      noSleep,
+    )
+    expect(clips).toHaveLength(1)
+    const entry = trace!.candidates.find((c) => c.title === "only")!
+    // The clip now starts at the judge's sentence, not the model's.
+    expect(entry.opening!.adopted).toBe(true)
+    expect(entry.opening!.originalScore).toBeLessThan(entry.opening!.retryScore!)
+    expect(entry.opening!.originalStartMs).toBeLessThan(entry.opening!.retryStartMs!)
+    expect(clips[0]!.startMs).toBe(entry.opening!.retryStartMs)
+    expect(clips[0]!.score).toBe(1)
+    // Two judge calls: the original, and one for the proposal. Never a third.
+    expect(seen).toEqual([0, 6])
+  })
+
+  it("reverts to the original when the re-judge does not score higher", async () => {
+    const proposeThenReject: JudgeHandler = (prompt, system) =>
+      clipStart(prompt) === 0
+        ? judgement(system, "yes", { bestOpeningSentence: 6 })
+        : judgement(system, "partly", { bestOpeningSentence: null })
+    const short = transcript(120)
+    const { clips, trace } = await selectClips(
+      mockClient(oneClip, [], undefined, [], proposeThenReject),
+      short,
+      buildSentences(short),
+      [],
+      10,
+      [],
+      null,
+      noSleep,
+    )
+    const opening = openingOf(trace)
+    expect(opening.adopted).toBe(false)
+    expect(opening.retryScore!).toBeLessThan(opening.originalScore)
+    expect(opening.note).toBe("re-judged opening did not score higher")
+    // The clip is untouched: still starts where the model asked.
+    expect(clips[0]!.startMs).toBe(opening.originalStartMs)
+    expect(clips[0]!.score).toBe(opening.originalScore)
+  })
+
+  it("keeps a tie with the original, rather than churning the cut for no gain", async () => {
+    const tie: JudgeHandler = (prompt, system) =>
+      judgement(system, "yes", { bestOpeningSentence: clipStart(prompt) === 0 ? 6 : null })
+    const short = transcript(120)
+    const { clips, trace } = await selectClips(
+      mockClient(oneClip, [], undefined, [], tie),
+      short,
+      buildSentences(short),
+      [],
+      10,
+      [],
+      null,
+      noSleep,
+    )
+    expect(openingOf(trace).adopted).toBe(false)
+    expect(openingOf(trace).retryScore).toBe(openingOf(trace).originalScore)
+    expect(clips[0]!.startMs).toBe(openingOf(trace).originalStartMs)
+  })
+
+  it("spends no second call when the judge proposes no opening", async () => {
+    let judgeCalls = 0
+    const noProposal: JudgeHandler = (prompt, system) => {
+      judgeCalls++
+      return judgement(system, "yes", { bestOpeningSentence: null })
+    }
+    const short = transcript(120)
+    const { clips, trace } = await selectClips(
+      mockClient(oneClip, [], undefined, [], noProposal),
+      short,
+      buildSentences(short),
+      [],
+      10,
+      [],
+      null,
+      noSleep,
+    )
+    expect(judgeCalls).toBe(1)
+    expect(openingOf(trace).suggestedSentence).toBeNull()
+    expect(openingOf(trace).note).toBe("no better opening suggested")
+    expect(clips[0]!.startMs).toBe(openingOf(trace).originalStartMs)
+  })
+
+  it("keeps the original when the re-judge call fails", async () => {
+    const proposeThenThrow: JudgeHandler = (prompt, system) => {
+      if (clipStart(prompt) !== 0) throw new Error("provider exploded")
+      return judgement(system, "partly", { bestOpeningSentence: 6 })
+    }
+    const short = transcript(120)
+    const { clips, trace } = await selectClips(
+      mockClient(oneClip, [], undefined, [], proposeThenThrow),
+      short,
+      buildSentences(short),
+      [],
+      10,
+      [],
+      null,
+      noSleep,
+    )
+    const opening = openingOf(trace)
+    // A failed optional call must not cost the clip: the original judgement still stands.
+    expect(opening.adopted).toBe(false)
+    expect(opening.note).toContain("provider exploded")
+    expect(opening.retryScore).toBeNull()
+    expect(clips[0]!.startMs).toBe(opening.originalStartMs)
+  })
+
+  it("reverts a proposed opening that fails a hard question, whatever it scored", async () => {
+    // The proposal scores HIGHER than the original (0.86 vs 0.79) but strands the clip, failing
+    // `standalone`. The hard question has to win anyway, or a high score could smuggle out a clip
+    // that does not make sense on its own.
+    const strandsTheClip: JudgeHandler = (prompt, system) =>
+      clipStart(prompt) === 0
+        ? judgement(system, (id) => (id === "hook" ? "no" : "yes"), { bestOpeningSentence: 6 })
+        : judgement(system, (id) => (id === "standalone" ? "no" : "yes"), {
+            bestOpeningSentence: null,
+          })
+    const short = transcript(120)
+    const { clips, trace } = await selectClips(
+      mockClient(oneClip, [], undefined, [], strandsTheClip),
+      short,
+      buildSentences(short),
+      [],
+      10,
+      [],
+      null,
+      noSleep,
+    )
+    const opening = openingOf(trace)
+    expect(opening.originalScore).toBe(0.79)
+    expect(opening.retryScore).toBe(0.86)
+    expect(opening.retryScore!).toBeGreaterThan(opening.originalScore)
+    expect(opening.adopted).toBe(false)
+    expect(opening.note).toBe("re-judged opening fails standalone")
+    expect(clips[0]!.startMs).toBe(opening.originalStartMs)
+  })
+
+  it("lets D2 repair an opening that starts with 'So', rather than shipping the dangling start", async () => {
+    // Suggesting sentence 1 ("So then everything changed…") must be pulled back to sentence 0 by
+    // D2's dangling-opener repair. The retry therefore starts at 0 — where the clip already was —
+    // so the step declines to spend a call on a boundary identical to the one it has.
+    const proposeDangling: JudgeHandler = (prompt, system) =>
+      judgement(system, "yes", {
+        bestOpeningSentence: clipStart(prompt) === 0 ? DANGLING : null,
+      })
+    const short = transcript(120)
+    const { trace } = await selectClips(
+      mockClient(oneClip, [], undefined, [], proposeDangling),
+      short,
+      buildSentences(short),
+      [],
+      10,
+      [],
+      null,
+      noSleep,
+    )
+    const opening = openingOf(trace)
+    expect(opening.suggestedSentence).toBe(DANGLING)
+    expect(opening.adopted).toBe(false)
+    expect(opening.retryScore).toBeNull()
+    expect(opening.note).toContain("D2 repaired")
+    expect(opening.originalStartMs).toBe(short[0]!.startMs)
+    // The D2-repaired start is the sentence before the dangling one.
+    expect(DANGLING - 1).toBe(AFTER_DANGLING)
+  })
+
+  it("records an opening outcome for every clip that reaches the step", async () => {
+    const { trace } = await selectClips(
+      mockClient(twoPerChunk, [], undefined, [], allYes),
+      words,
+      sentences,
+    )
+    const kept = trace!.candidates.filter((c) => c.outcome === "kept")
+    expect(kept.length).toBeGreaterThan(0)
+    // Never null on a kept clip: the report has to be able to say "not moved", not say nothing.
+    expect(kept.every((c) => c.opening !== null)).toBe(true)
+  })
+
+  it("never lets a regex decide or move a clip start", async () => {
+    // Awaited: `selectClips` awaits `analyzeVideo` before it builds any chunk prompt, so reading
+    // `prompts` without awaiting inspected an empty array and passed whatever the prompt said.
+    // Asserting the annotated prompt was actually captured keeps that failure mode closed.
+    const prompts: string[] = []
+    await selectClips(mockClient(twoPerChunk, prompts), words, sentences)
+    const annotated = prompts.filter((p) => /Sentences #\d+ to #\d+/.test(p))
+    expect(annotated.length).toBeGreaterThan(0)
+    for (const p of annotated) expect(p).not.toMatch(/\{[^}]*hook/)
+  })
+})
