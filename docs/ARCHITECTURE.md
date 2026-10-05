@@ -120,6 +120,9 @@ words → sentences → topic segments                                  (package
   ├─ judge               one call per clip on its exact exported text, 3 in flight
   │                      graded yes / partly / no per question; clear "no" on standalone or
   │                      payoff rejects the clip
+  ├─ opening             if the judge proposes a later opening sentence: re-refine from it (D2
+  │                      repairs a dangling start), re-judge once, keep the cut only if it
+  │                      scores strictly higher and passes the hard questions
   └─ rank                all chunks together by judge score → overlap dedupe (keep higher score)
                          → top maxClips (10)
 ```
@@ -134,7 +137,7 @@ words → sentences → topic segments                                  (package
   calls failing, throws **before** any DB write, so a re-run keeps the previous suggestions. One
   failed judge call rejects only that candidate.
 - 429s on generation and judge calls back off, honouring `retry-after`.
-- `PIPELINE_VERSION` (hand-bumped, currently `v3-judge-global-rank`) names the code;
+- `PIPELINE_VERSION` (hand-bumped, currently `v4-judge-chosen-opening`) names the code;
   `pipelineHash` fingerprints every prompt, rubric, question, weight and threshold the path reads.
 
 **What a run stores**

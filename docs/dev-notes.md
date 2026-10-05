@@ -192,7 +192,7 @@ The Wave 3 notes below describe how the pipeline looked before the genre profile
 changed, in one place (full detail in `docs/ARCHITECTURE.md` and `docs/PIPELINE-DEVLOG.md` Session 9):
 
 - **C4 content-type rubric — replaced.** `detectContentType` is gone; an LLM call picks one of six profiles (`packages/ai/src/profiles.ts`, `video-analysis.ts`).
-- **D5 hook-first opening — removed.** `hookFirstAdjust` is deleted; `HOOK_RE` now only drives the `{hook}` prompt tag and the "weak opening" warning. #100 replaces it with a judge-chosen opening.
+- **D5 hook-first opening — replaced.** `hookFirstAdjust`, `HOOK_RE`, the `{hook}` prompt tag and the regex "weak opening" warning are deleted. The judge proposes the opening instead (#100): `selectClips` re-refines from the proposed sentence, re-judges once, and keeps the new cut only if it scores strictly higher.
 - **Borda re-rank — removed**, along with the random shuffle. Ranking is by judge score across all chunks (`clip-judge.ts`).
 - **Still true:** chunk overlap (150 s), B12 stays dropped, the dropped SenseVoice/laughter/active-speaker items stay dropped.
 

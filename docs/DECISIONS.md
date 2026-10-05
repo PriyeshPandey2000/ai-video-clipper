@@ -96,3 +96,20 @@
 - The score is a pure function of the stored answers, so weights can be re-tuned offline.
 
 **Consequences:** More calls per video than before (minus one re-rank call per chunk). A run where most judge calls fail throws before anything is written, so a re-run never replaces good suggestions with a half-judged set. Weights and the hard rule are starting values until the 5-video test (#101).
+
+---
+
+## ADR-011: The judge chooses the opening, never a regex (#100)
+
+**Decision:** The judge may propose a later opening sentence for a clip. The clip is re-refined from it, re-judged once, and the new cut is kept only if it scores strictly higher and passes the hard questions. No regex decides or moves a clip start.
+
+**Why:** The first seconds decide whether a viewer swipes, and a keyword regex matched most ordinary speech, so it deleted setup and warned about openings that were fine.
+
+**Choices worth remembering**
+
+- One retry, never a loop: repeated retries would only measure the model's persistence.
+- Strictly higher, so a tie keeps the original and a proposal is never adopted on a coin flip.
+- The mechanical dangling-opener repair (D2) still runs on the new start; it repairs the start instead of being fought by a second heuristic.
+- The report keeps both scores even when the proposal loses, so a reviewer can see whether the step helps at all.
+
+**Consequences:** up to one extra judge call per clip that has a proposal. How often openings move is unmeasured until the 5-video test (#101).
