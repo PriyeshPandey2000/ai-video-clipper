@@ -82,7 +82,7 @@ function mockClient(
     async complete() {
       return ""
     },
-    async generateObject({ prompt, system }) {
+    async generateObject({ prompt, system, schema }) {
       prompts.push(prompt)
       // Recorded separately because the rubric is a system-prompt concern: asserting on `prompts`
       // alone would only ever see the user half of what the model read.
@@ -90,7 +90,11 @@ function mockClient(
       if (prompt.startsWith(ANALYSIS_PROMPT_MARKER)) return analysisHandler(prompt) as never
       // #99 — the judge call. Recognised by the fence the judge prompt wraps the clip in.
       if (prompt.includes("[CLIP STARTS]")) return judgeHandler(prompt, system ?? "") as never
-      return handler(prompt) as never
+      // Validated against the schema the caller passed, because the real client does exactly this
+      // (`Output.object({ schema })`) and retries when it fails. Without it a test cannot tell a
+      // schema that accepts an oversized response from one that rejects it — which is the whole
+      // subject of the per-chunk budget tests below.
+      return schema.parse(handler(prompt)) as never
     },
   }
 }
@@ -134,6 +138,80 @@ function range(prompt: string): [number, number] | null {
   if (!m) return null
   return [Number(m[1]), Number(m[2])]
 }
+
+describe("per-chunk candidate budget", () => {
+  // The cap used to live in the response schema as `.max(20)`, which meant a chunk returning 21
+  // candidates failed validation rather than returning 20. The client's retries re-ask at
+  // temperature 0 and got the same oversized answer, so the whole chunk was lost — good candidates
+  // included. The budget is now enforced after parsing, and these two tests pin that.
+  const many: Handler = (prompt) => {
+    const r = range(prompt)
+    if (!r) return { ranking: [] }
+    const [lo, hi] = r
+    const clips = []
+    for (let i = 0; i < 24; i++) {
+      const start = Math.min(lo + i * 3, hi)
+      clips.push({
+        startSentence: start,
+        endSentence: Math.min(start + 2, hi),
+        title: `clip-${lo}-${i}`,
+        reason: "r",
+        strong: true,
+        platform: "shorts",
+      })
+    }
+    return { clips }
+  }
+
+  it("keeps the chunk instead of failing when the model returns more than the cap", async () => {
+    const { clips, trace } = await selectClips(mockClient(many), words, sentences)
+    // The point of the fix: a chunk with surplus candidates now contributes.
+    expect(clips.length).toBeGreaterThan(0)
+    expect(trace.chunks.some((c) => !c.failed && c.candidateCount > 0)).toBe(true)
+  })
+
+  it("keeps the first 20 candidates and records the remainder as dropped", async () => {
+    const { trace } = await selectClips(mockClient(many), words, sentences)
+    for (const chunk of trace.chunks) {
+      expect(chunk.candidateCount).toBeLessThanOrEqual(20)
+      expect(chunk.candidatesDropped).toBeGreaterThanOrEqual(0)
+    }
+    // The 24-per-chunk handler overflows, so at least one chunk must report the truncation —
+    // otherwise the field would always read 0 and look like it worked while capping nothing.
+    expect(trace.chunks.some((c) => c.candidatesDropped > 0)).toBe(true)
+    const chunk = trace.chunks.find((c) => c.candidatesDropped > 0)!
+    expect(chunk.candidateCount + chunk.candidatesDropped).toBe(24)
+  })
+
+  it("reports zero drops for a chunk under the cap", async () => {
+    const { trace } = await selectClips(mockClient(twoPerChunk), words, sentences)
+    expect(trace.chunks.every((c) => c.candidatesDropped === 0)).toBe(true)
+  })
+
+  it("does not spend the budget on out-of-chunk ranges", async () => {
+    // Malformed, not surplus: a candidate pointing outside the chunk is dropped before the cap is
+    // applied, so a chunk full of hallucinations still cannot push real candidates out of the
+    // budget by being long.
+    const hallucinating: Handler = (prompt) => {
+      const r = range(prompt)
+      if (!r) return { ranking: [] }
+      const [lo] = r
+      const clips = Array.from({ length: 30 }, (_, i) => ({
+        startSentence: lo + 100000 + i,
+        endSentence: lo + 100001 + i,
+        title: `bad-${i}`,
+        reason: "r",
+        strong: true,
+        platform: "shorts",
+      }))
+      return { clips }
+    }
+    const { trace } = await selectClips(mockClient(hallucinating), words, sentences)
+    expect(trace.chunks.every((c) => c.candidateCount === 0)).toBe(true)
+    // Nothing survived the range filter, so there was nothing to cap and nothing to report lost.
+    expect(trace.chunks.every((c) => c.candidatesDropped === 0)).toBe(true)
+  })
+})
 
 const twoPerChunk: Handler = (prompt) => {
   const r = range(prompt)
@@ -386,11 +464,15 @@ describe("hostile input", () => {
   })
 
   it("survives out-of-range and reversed sentence indices", async () => {
+    // Schema-valid but wrong: both indices are non-negative integers, so they parse and have to be
+    // caught by the in-chunk range filter and the reversed-range rejection instead. A negative index
+    // cannot appear here at all — `CandidateSchema` has `.min(0)`, so the real client would reject
+    // and retry the response, which the neighbouring test covers.
     const insane: Handler = () => ({
       clips: [
         {
-          startSentence: -50,
-          endSentence: 999_999,
+          startSentence: 5_000,
+          endSentence: 9_999,
           title: "oob",
           reason: "r",
           strong: true,
@@ -413,6 +495,28 @@ describe("hostile input", () => {
       expect(c.endMs - c.startMs).toBeGreaterThanOrEqual(15_000)
       expect(c.endMs - c.startMs).toBeLessThanOrEqual(90_000)
     }
+  })
+
+  it("rejects a response with a negative sentence index instead of using it", async () => {
+    // The schema is the first line of defence: `.min(0)` makes a negative index a validation error,
+    // so the client retries rather than the pipeline quietly building a range that starts before the
+    // transcript. Asserted through the run's own failure path so the behaviour is pinned from the
+    // outside rather than by inspecting the schema object.
+    const negative: Handler = () => ({
+      clips: [
+        {
+          startSentence: -50,
+          endSentence: 40,
+          title: "negative",
+          reason: "r",
+          strong: true,
+          platform: "shorts",
+        },
+      ],
+    })
+    await expect(selectClips(mockClient(negative), words, sentences)).rejects.toThrow(
+      /failed for all \d+ chunk/,
+    )
   })
 
   it("returns nothing for an empty transcript", async () => {
