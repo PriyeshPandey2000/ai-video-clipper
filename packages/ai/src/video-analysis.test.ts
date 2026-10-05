@@ -45,7 +45,12 @@ function clientReturning(value: unknown): AiClient {
     structuredModel: "mock",
     temperature: 0,
     complete: async () => "",
-    generateObject: async () => value as never,
+    // Validated against the schema the caller passed, as the real client is. Returning the raw
+    // object instead would let a test pass on an answer the pipeline would reject — which is
+    // precisely how the speaker/secondaryProfile bugs survived: every test supplied an answer that
+    // happened to satisfy the schema, and nothing checked the shapes the model actually emits.
+    generateObject: async ({ schema }: { schema: z.ZodType<unknown> }) =>
+      schema.parse(value) as never,
   } as unknown as AiClient
 }
 
@@ -183,6 +188,71 @@ describe("analyzeVideo", () => {
       sentencesOver(2),
     )
     expect(result.secondaryProfile).toBe("educational")
+  })
+
+  // The two schema bugs behind every `fallback: true` report. Each of these is a perfectly correct
+  // answer that `.optional()` and a strict object array rejected, so the call failed validation,
+  // retried at temperature 0 with the same answer, and the video was silently classified as
+  // solo_opinion with no summary.
+  it("accepts speakers written as plain strings", async () => {
+    const result = await analyzeVideo(
+      clientReturning({ ...answer, speakers: ["host", "guest"] }),
+      sentencesOver(2),
+    )
+    expect(result.fallback).toBe(false)
+    // Normalised to the object shape, so nothing downstream has to handle both forms.
+    expect(result.speakers).toEqual([{ role: "host" }, { role: "guest" }])
+  })
+
+  it("accepts a mixed speaker list of strings and objects", async () => {
+    const result = await analyzeVideo(
+      clientReturning({ ...answer, speakers: [{ role: "host" }, "guest"] }),
+      sentencesOver(2),
+    )
+    expect(result.speakers).toEqual([{ role: "host" }, { role: "guest" }])
+  })
+
+  it("treats an explicit null secondary profile as absent", async () => {
+    // `null` is the model's other way of saying "no second profile". `.optional()` rejects it while
+    // accepting nothing, so a null cost the run its entire classification.
+    const result = await analyzeVideo(
+      clientReturning({ ...answer, secondaryProfile: null }),
+      sentencesOver(2),
+    )
+    expect(result.fallback).toBe(false)
+    expect(result.secondaryProfile).toBeUndefined()
+  })
+
+  it("keeps a real secondary profile sent alongside null speakers", async () => {
+    const result = await analyzeVideo(
+      clientReturning({ ...answer, secondaryProfile: "educational", speakers: [] }),
+      sentencesOver(2),
+    )
+    expect(result.secondaryProfile).toBe("educational")
+    expect(result.speakers).toEqual([])
+  })
+
+  it("still rejects a profile outside the known set", async () => {
+    // The tolerance above is for shape, not for values: an unknown profile would break every
+    // profile lookup downstream, so it has to keep failing.
+    const client = clientReturning({ ...answer, profile: "documentary" })
+    const result = await analyzeVideo(client, sentencesOver(2))
+    expect(result.fallback).toBe(true)
+  })
+
+  it("shows the prompt an exact JSON answer shape", async () => {
+    // The reason the prompt documents speakers as `{ "role": … }` but the model still answers with
+    // strings: it was never shown what one looks like. Pinned so the example cannot be dropped.
+    let seenSystem = ""
+    const client = {
+      generateObject: async ({ system }: { system?: string }) => {
+        seenSystem = system ?? ""
+        return answer as never
+      },
+    } as unknown as AiClient
+    await analyzeVideo(client, sentencesOver(2))
+    expect(seenSystem).toContain('"speakers": [{"role": "host"}')
+    expect(seenSystem).toContain("secondaryProfile")
   })
 })
 

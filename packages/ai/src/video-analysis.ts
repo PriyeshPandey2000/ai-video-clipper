@@ -65,18 +65,39 @@ OUTPUT:
 - confidence: high, medium, or low.
 - secondaryProfile: include ONLY if a substantial second profile is genuinely present (for example
   a webinar that ends with audience Q&A, or a comedy set with a long story segment). Omit it
-  otherwise — a second guess here makes the caller less decisive, not more informed.
+  otherwise — a second guess here makes the caller less decisive, not more informed. If you have no
+  second profile, either leave the key out or set it to null.
 - summary: 2-3 sentences on what the video is about, written for someone who has not watched it.
-- speakers: one entry per speaker. Use "host", "guest", or a name the transcript states. Use an
-  empty string when the transcript does not establish who a speaker is — do not guess a name.
-- mainTopics: up to 6 short topic strings.`
+- speakers: one entry per speaker, as an object with a "role" string. Use "host", "guest", or a name
+  the transcript states. Use an empty string when the transcript does not establish who a speaker
+  is — do not guess a name.
+- mainTopics: up to 6 short topic strings.
+
+A complete answer for a two-person podcast looks like this:
+{"profile": "conversation", "confidence": "high", "secondaryProfile": null,
+ "summary": "Two people discuss why short-form video retention drops after the first day.",
+ "speakers": [{"role": "host"}, {"role": "guest"}], "mainTopics": ["retention", "short-form"]}`
+
+/**
+ * A speaker, as the model most often actually writes it.
+ *
+ * The prompt asks for `[{ "role": … }]`, and that is what it usually produces — but a bare
+ * `["host", "guest"]` is the other natural reading of "one entry per speaker", and when the model
+ * takes it the whole analysis failed validation. Three retries at temperature 0 then returned the
+ * same array, and the run fell back to `solo_opinion` with no summary: every video, silently. A
+ * plain string carries the same information, so it is read as that speaker's role rather than
+ * treated as a schema violation.
+ */
+const SpeakerSchema = zod.union([zod.object({ role: zod.string() }), zod.string()])
 
 const VideoAnalysisSchema = zod.object({
   profile: zod.enum(CLIP_PROFILE_IDS),
   confidence: zod.enum(["high", "medium", "low"]),
-  secondaryProfile: zod.enum(CLIP_PROFILE_IDS).optional(),
+  // `null` is the model's other way of saying "no second profile", and `optional()` alone rejects
+  // it — so a perfectly correct answer cost the run its classification.
+  secondaryProfile: zod.enum(CLIP_PROFILE_IDS).nullish(),
   summary: zod.string(),
-  speakers: zod.array(zod.object({ role: zod.string() })),
+  speakers: zod.array(SpeakerSchema),
   mainTopics: zod.array(zod.string()),
 })
 
@@ -281,11 +302,16 @@ export async function analyzeVideo(
 
   // Clamp the two open-ended fields. The closed enums are already safe: zod rejects anything
   // outside them, and the client's retries have been exhausted by the time we get here.
-  const speakers = raw.speakers.slice(0, MAX_REPORTED_SPEAKERS)
+  // A bare string speaker becomes `{ role }` here, so everything downstream — the context block, the
+  // report, the stored analysis — keeps one shape and never has to ask which form it is holding.
+  const speakers = raw.speakers
+    .slice(0, MAX_REPORTED_SPEAKERS)
+    .map((s) => (typeof s === "string" ? { role: s } : s))
   return {
     profile: raw.profile,
     confidence: raw.confidence,
-    ...(raw.secondaryProfile !== undefined ? { secondaryProfile: raw.secondaryProfile } : {}),
+    // `undefined` and `null` both mean "no second profile"; only the former is a key to spread.
+    ...(raw.secondaryProfile != null ? { secondaryProfile: raw.secondaryProfile } : {}),
     summary: raw.summary.trim(),
     speakers,
     mainTopics: raw.mainTopics
