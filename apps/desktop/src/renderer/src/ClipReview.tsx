@@ -44,6 +44,26 @@ function formatDuration(ms: number): string {
   return `${Math.floor(s / 60)}m${s % 60}s`
 }
 
+/** One line of the empty-state funnel: a stage, its count, and how much it should worry you. */
+function FunnelRow({
+  label,
+  value,
+  tone = "plain",
+}: {
+  label: string
+  value: string
+  tone?: "plain" | "warn" | "bad"
+}): React.ReactElement {
+  const toneClass =
+    tone === "bad" ? "text-red-400" : tone === "warn" ? "text-amber-400" : "text-neutral-400"
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <span className="text-neutral-500">{label}</span>
+      <span className={`font-mono ${toneClass}`}>{value}</span>
+    </div>
+  )
+}
+
 function scoreColor(score: number | null): "green" | "yellow" | "red" | "neutral" {
   if (score === null) return "neutral"
   if (score >= 0.7) return "green"
@@ -135,6 +155,13 @@ export function ClipReview({
   const [clipProgress, setClipProgress] = useState<Record<string, number>>({})
   const [reselecting, setReselecting] = useState(false)
   const [lastReportPath, setLastReportPath] = useState<string | null>(null)
+  /**
+   * The last run's funnel. Only read when it can change what this panel says: an empty result can
+   * mean the model found nothing, a chunk call failed, or every candidate was dropped later. The
+   * panel used to assert "nothing met the quality bar" in all three cases, which is a guess.
+   */
+  const [funnel, setFunnel] =
+    useState<Awaited<ReturnType<typeof window.api.invoke<"clip:last-report-funnel">>>>(null)
   const [reselectError, setReselectError] = useState<string | null>(null)
   const [progressMessage, setProgressMessage] = useState<string | null>(null)
   const [profileInfo, setProfileInfo] = useState<{
@@ -177,8 +204,12 @@ export function ClipReview({
   const loadLastReport = useCallback(async () => {
     try {
       setLastReportPath(await window.api.invoke("clip:last-report", { projectId }))
+      setFunnel(await window.api.invoke("clip:last-report-funnel", { projectId }))
     } catch {
+      // No report to explain this run with. The empty state degrades to its non-numeric wording
+      // rather than showing counts from nothing.
       setLastReportPath(null)
+      setFunnel(null)
     }
   }, [projectId])
 
@@ -434,13 +465,58 @@ export function ClipReview({
         {toolbar}
         <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 p-4 text-center">
           {analysisComplete ? (
-            <>
-              <p className="text-sm text-neutral-500">No strong moments found</p>
-              <p className="text-xs text-neutral-600 mt-1">
-                Nothing in this video met the quality bar. Returning weak clips would waste your
-                time.
-              </p>
-            </>
+            funnel ? (
+              <div className="space-y-3 text-left">
+                <p className="text-sm text-neutral-400 text-center">No clips kept</p>
+                <p className="text-xs text-neutral-600 text-center">
+                  Here is where every candidate went in the last run.
+                </p>
+                <div className="space-y-1">
+                  <FunnelRow label="Chunks run" value={String(funnel.chunkCount)} />
+                  {funnel.failedChunkCount > 0 && (
+                    // The one that is not about video quality at all: a chunk that never ran means
+                    // we never looked at that part of the transcript.
+                    <FunnelRow
+                      label="Chunks that failed"
+                      value={String(funnel.failedChunkCount)}
+                      tone="bad"
+                    />
+                  )}
+                  <FunnelRow label="Candidates found" value={String(funnel.candidateCount)} />
+                  {funnel.droppedCandidateCount > 0 && (
+                    <FunnelRow
+                      label="Dropped before judging"
+                      value={String(funnel.droppedCandidateCount)}
+                      tone="warn"
+                    />
+                  )}
+                  {funnel.steps
+                    .filter((s) => s.outcome !== "kept")
+                    .map((s) => (
+                      <FunnelRow
+                        key={s.outcome}
+                        label={`Rejected: ${s.label}`}
+                        value={String(s.count)}
+                      />
+                    ))}
+                  <FunnelRow label="Clips kept" value={String(funnel.keptCount)} />
+                </div>
+                {lastReportPath && (
+                  <p className="text-xs text-neutral-600 text-center">
+                    The full report has the per-candidate detail.
+                  </p>
+                )}
+              </div>
+            ) : (
+              // No readable report. This wording is deliberately a non-claim: the run either found
+              // nothing strong, or could not be inspected, and the panel does not know which.
+              <>
+                <p className="text-sm text-neutral-500">No clips were kept</p>
+                <p className="text-xs text-neutral-600 mt-1">
+                  No report was saved for this run, so the reasons are not available here.
+                </p>
+              </>
+            )
           ) : (
             <>
               <p className="text-sm text-neutral-500">No clips generated yet</p>
