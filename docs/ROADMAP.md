@@ -97,7 +97,7 @@ The wave-by-wave record is in `docs/CLIP-DETECTION-RESEARCH.md`. What shipped, a
 - [x] Audio energy scoring — `measureArousal` per-second RMS, surfaced as `{loud}`/`{fast}`/`{slow}`/`{burst}` prompt tags
 - [x] Content type detection — **replaced** by the LLM genre profile (#98, Phase 10); the regex detector is gone
 - [x] Explicit virality criteria in the prompt — the ranked signal list is in the system prompt
-- [~] Hook sentence per clip — the judge now returns `bestOpeningSentence` and it is stored, but nothing uses it yet (#100)
+- [x] Hook sentence per clip — the judge proposes the strongest opening sentence; it is adopted only if the re-judged cut scores higher (#100)
 - [~] Duration guidance — the 15–90s clamp is enforced; per-genre ranges wait on #102
 - [x] Retry on bad LLM JSON (#73)
 - [x] Dedupe overlapping clips — now after scoring, keeping the higher-scored clip
@@ -111,7 +111,7 @@ Goal: the best clips across the whole video, judged on what is actually exported
 - [x] **#97** Re-run clip selection from the stored transcript, plus a per-run selection report (#106)
 - [x] **#98** Genre profile — LLM analysis (profile, confidence, summary, speakers, topics), six profiles with rubrics and judge questions, override column, `project:get/set-clip-profile` (#109), and the genre control in `ClipReview`: detected profile and confidence, override dropdown that re-runs selection, `visual` warning
 - [x] **#99** Judge every final cut, rank globally (#110) — recall-first generation, one judge call per refined clip, graded answers, hard `standalone`/`payoff` gate, global ranking, real scores, `judge_json` + chips in `ClipReview`. Removed: `strong`, Borda re-rank, random shuffle, hook-first trim, round-robin interleaving
-- [ ] **#100** Judge-chosen opening sentence (replaces the regex hook-trim; `bestOpeningSentence` is already stored)
+- [x] **#100** Judge-chosen opening sentence (#113) — the judge proposes a later opening, the clip is re-refined from it (D2 repairs a dangling start) and re-judged once, and kept only if strictly better. `HOOK_RE`, the `{hook}` prompt tag and the regex "weak opening" warning are gone. The "no clip opens on a sentence that needs earlier context" check on real videos belongs to #101
 - [ ] **#101** The 5-video manual test: profile accuracy, your 15 reference moments, model comparison, chunking decision. Run this before building more knobs
 - [ ] **#102** Clip settings: length range, clip count, free-text topic steer (the genre override itself shipped with #98)
 - [ ] **#103** Topic diversity cap (only if #101 shows clustering)
@@ -128,7 +128,7 @@ the formal one.
 - [ ] **#46** Mechanical eval harness over 3–5 cached transcripts: cold-open rate, truncated-ending rate, length compliance, gate rejections, judge-call count, cost/time per hour. Taste tier (precision@5) later and weak
 - [ ] **#90** Noise floor — the shuffle is gone and temperature is pinned (done in #97/#99); what remains is measuring top-5 overlap across 3 identical runs, and deciding single-run vs mean-of-N
 - [ ] **#91** `scripts/recall-ablation.ts` still carries an old copy of the prompt (it still asks for `strong`); import the real one
-- [ ] **#92** Tighten `HOOK_RE` and the filler set — `hook` still drives a prompt tag and the "weak opening" warning (it no longer moves boundaries)
+- [ ] **#92** Tighten the filler set — the `HOOK_RE` half is done (deleted in #113); `filler:high` still counts "so", "right", "actually", "like" and "yeah"
 - [ ] **#94** Ablate what is left — signal tags and per-profile rubrics; Borda and the hook-first trim are already deleted. New candidate: the judge's questions and weights (starting values, never tuned)
 
 Feature freeze until #101's numbers exist: no SenseVoice or reframe work until we know where quality is being lost.

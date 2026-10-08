@@ -283,3 +283,19 @@ Transcript shows timestamps in seconds (`[10.50]`) but system prompt asked for m
 1. The newest file in `<project>/selection-reports/`: the judge answers show whether clips were rejected for `standalone`/`payoff` or never reached the judge.
 2. An error "Clip judging failed for N of M clip(s)" means the judge model or API failed, not that the clips were bad; the previous suggestions are untouched. Check for 429s in the log.
 3. `pipelineHash` / `pipelineVersion` on the clips: runs with different values are not comparable.
+
+---
+
+## Session 10 — Judge-chosen opening sentence (#100, PR #113)
+
+**Goal:** stop a regex deciding where a clip starts. `hookFirstAdjust` had trimmed up to two sentences off the start whenever a later sentence matched `HOOK_RE` (any question, number, or "first/last/only/ever"), which deleted setup, fought the dangling-opener repair, and fired the "weak opening" warning on most ordinary speech.
+
+**What changed**
+
+- The judge prompt now says to propose a later opening sentence **only if the clip still makes complete sense starting there**, and to return null otherwise.
+- `selectClips` step 3.5: for each clip that passed the hard gate and has a proposal later than its start, re-run `refineClipBoundaries` from that sentence to the same end (D2 still repairs a dangling opener), apply the mechanical gate, re-judge **once**, and adopt the new cut only if it scores **strictly higher** and passes the hard questions. A tie keeps the original. The adopted clip carries the second judgement, so `judge_json` and the displayed score always describe the exported range.
+- Trace and report: every clip that reaches the step records `opening` (original start, proposed sentence, both scores, adopted or kept, and why in one clause); the report prints `opening: MOVED a → b [old vs new]` or `kept`.
+- Deleted: `HOOK_RE`, the `{hook}` prompt tag and its legend line, the regex "weak opening" warning, and the `hookRe` fingerprint entry. `PIPELINE_VERSION` → `v4-judge-chosen-opening`.
+- Tests (mocked judge): a better opening is adopted, a worse or tied re-judge is reverted, no proposal means no second call, a failed re-judge keeps the original, a proposal that fails a hard question is reverted, a "So…" opening is repaired backward by D2, every clip gets an opening record, and no regex decides a start.
+
+**Not done:** the check on real videos (no final clip opens on a sentence that needs earlier context) is part of the 5-video test (#101). The share of clips whose opening is actually moved is unknown until then; the report's `opening:` lines will show it.
