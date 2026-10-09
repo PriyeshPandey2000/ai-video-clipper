@@ -32,7 +32,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Matches CI and local dev via .node-version. The Electron runtime is unaffected: it bundles
+          # its own Node, and @types/node stays at 20 to match Electron 32.
+          node-version-file: .node-version
           cache: pnpm
 
       # Must run before `pnpm install`: better-sqlite3's own install script is

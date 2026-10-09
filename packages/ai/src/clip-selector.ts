@@ -243,8 +243,12 @@ export interface ClipSelectionTrace {
 /**
  * The model picks sentence indices, never milliseconds (C1). A hallucinated timestamp is
  * structurally impossible: every ms in the output is derived from our own word table.
+ *
+ * Exported so `scripts/recall-ablation.ts` validates against the same shape the pipeline does.
+ * A private copy there once required a `strong` field this schema dropped in v3, so the script
+ * was parsing answers into a type the pipeline no longer produced (#91).
  */
-const CandidateSchema = zod.object({
+export const CandidateSchema = zod.object({
   startSentence: zod.number().int().min(0),
   endSentence: zod.number().int().min(0),
   title: zod.string(),
@@ -254,7 +258,12 @@ const CandidateSchema = zod.object({
 
 type Candidate = zod.infer<typeof CandidateSchema>
 
-const SYSTEM_PROMPT = `You are a short-form video editor selecting clips from a long transcript.
+/**
+ * The system half of every clip-selection call, exported because a tool that claims to mirror the
+ * pipeline must import this rather than paste it (#91). `buildChunkPrompts` is what actually
+ * assembles what the model reads — this is only the base it appends the profile rubric to.
+ */
+export const SYSTEM_PROMPT = `You are a short-form video editor selecting clips from a long transcript.
 
 The transcript is given as numbered sentences with optional signal tags in {braces}:
 #12 [10500-14200] {fast} Nobody expected this outcome.
@@ -523,6 +532,60 @@ function renderUserPrompt(
     .replace("{{TRANSCRIPT}}", () => buildAnnotatedPrompt(chunk, words, arousalPerSec))
 }
 
+// ─── The prompt, as an exported pair (#91) ───────────────────────────────────
+
+/**
+ * Everything `selectClips` decides *before* any chunk is rendered: which profile is in effect and
+ * the context block every chunk of the run shares.
+ *
+ * Extracted so `scripts/recall-ablation.ts` resolves the same three values the pipeline resolves
+ * instead of re-deriving them and drifting. Callers pass the analysis they intend to use — the
+ * pipeline passes the one `analyzeVideo` just returned, the ablation script passes the one stored
+ * for the run it is measuring, which is the same object by construction.
+ */
+export function resolveSelectionContext(
+  analysis: VideoAnalysis,
+  profileOverride: ClipProfileId | null,
+): { profileId: ClipProfileId; profile: ClipProfile; contextBlock: string } {
+  const profileId = profileOverride ?? analysis.profile
+  // Rendered once, not per chunk: it is a pure function of the analysis and the effective profile,
+  // so every chunk of a run necessarily carries the identical block.
+  const contextBlock = renderVideoContext(analysis, {
+    profileId: analysis.profile,
+    override: profileOverride,
+  })
+  return { profileId, profile: CLIP_PROFILES[profileId], contextBlock }
+}
+
+/**
+ * The exact system + user strings one selection call sends.
+ *
+ * This is the single definition of "the pipeline prompt". `selectFromChunk` builds its request
+ * from it, and `scripts/recall-ablation.ts` builds its unchunked whole-transcript request from it,
+ * so the two can only disagree on the *inputs* (which sentences, which analysis, whether arousal
+ * was measured) and never on the wording — which is precisely the failure #91 existed to fix.
+ *
+ * `arousalPerSec` defaults to `[]`, the same value the pipeline falls back to when ffmpeg fails:
+ * no `{loud}` tags rather than a differently-worded prompt.
+ */
+export function buildChunkPrompts(args: {
+  chunk: Sentence[]
+  words: Word[]
+  profile: ClipProfile
+  contextBlock: string
+  arousalPerSec?: number[]
+}): { system: string; prompt: string } {
+  const { chunk, words, profile, contextBlock } = args
+  const arousalPerSec = args.arousalPerSec ?? []
+  return {
+    // #98 — the profile's rubric, appended to the base system prompt. This is the swap the regex
+    // detector used to perform; what changed is that the profile now comes from the model's own
+    // reading of the video instead of a keyword match.
+    system: SYSTEM_PROMPT + profile.rubric,
+    prompt: renderUserPrompt(chunk, words, arousalPerSec, contextBlock),
+  }
+}
+
 // ─── Pipeline fingerprint (#89) ─────────────────────────────────────────────
 
 /**
@@ -684,12 +747,13 @@ async function selectFromChunk(
   const schema = zod.object({ clips: zod.array(CandidateSchema) })
   const firstIndex = chunk[0]!.index
   const lastIndex = chunk[chunk.length - 1]!.index
-  const prompt = renderUserPrompt(chunk, words, arousalPerSec, contextBlock)
-
-  // #98 — the profile's rubric, appended to the base system prompt. This is the swap the regex
-  // detector used to perform; what changed is that the profile now comes from the model's own
-  // reading of the video instead of a keyword match.
-  const system = SYSTEM_PROMPT + profile.rubric
+  const { prompt, system } = buildChunkPrompts({
+    chunk,
+    words,
+    profile,
+    contextBlock,
+    arousalPerSec,
+  })
 
   const result = await client.generateObject({
     prompt,
@@ -741,15 +805,8 @@ export async function selectClips(
   // Runs before the provenance literal is built so the profile can go straight in, rather than
   // being defaulted and overwritten. `analyzeVideo` answers the documented fallback without an API
   // call when there are no sentences, so this costs nothing on the empty-transcript path.
-  const analysis = await analyzeVideo(client, sentences, topics)
-  const profileId = profileOverride ?? analysis.profile
-  const profile = CLIP_PROFILES[profileId]
-  // Rendered once, not per chunk: it is a pure function of the analysis and the effective profile,
-  // so every chunk of a run necessarily carries the identical block.
-  const contextBlock = renderVideoContext(analysis, {
-    profileId: analysis.profile,
-    override: profileOverride,
-  })
+  const analysis = await analyzeVideo(client, sentences, topics, sleep)
+  const { profileId, profile, contextBlock } = resolveSelectionContext(analysis, profileOverride)
 
   const judgeQuestions = judgeQuestionsFor(profile)
 

@@ -163,17 +163,40 @@ describe("analyzeVideo", () => {
     expect(result.profile).toBe("solo_opinion")
   })
 
-  it("falls back without throwing when the call fails", async () => {
+  it("falls back without throwing when the call fails for a reason a retry cannot fix", async () => {
     const client = {
       generateObject: async () => {
-        throw new Error("429 rate limited")
+        throw new Error("model not found")
       },
     } as unknown as AiClient
     // Non-fatal is the whole requirement: one failed classification must not cost the user the
-    // selection run that depends on it.
+    // selection run that depends on it. A non-rate-limit error is rethrown by the retry wrapper at
+    // once, so this stays a fast test as well.
     const result = await analyzeVideo(client, sentencesOver(2))
     expect(result.fallback).toBe(true)
     expect(result.confidence).toBe("low")
+  })
+
+  it("retries a rate-limit failure rather than silently downgrading the rubric", async () => {
+    // Gate 1 regression. The analysis call was the one LLM call in the pipeline with no
+    // rate-limit-aware retry, so a single 429 fell straight through to the fallback: the whole run
+    // swapped onto `solo_opinion` and the report was marked FALLBACK for a transient window.
+    let attempts = 0
+    const client = {
+      generateObject: async () => {
+        attempts++
+        if (attempts === 1) throw Object.assign(new Error("rate limit"), { statusCode: 429 })
+        return answer as never
+      },
+    } as unknown as AiClient
+    const waits: number[] = []
+    const result = await analyzeVideo(client, sentencesOver(2), [], async (ms) => {
+      waits.push(ms)
+    })
+    expect(attempts).toBe(2)
+    expect(waits).toHaveLength(1)
+    expect(result.fallback).toBe(false)
+    expect(result.profile).toBe("conversation")
   })
 
   it("caps the reported speaker list", async () => {
