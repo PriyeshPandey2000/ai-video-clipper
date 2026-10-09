@@ -805,7 +805,7 @@ export async function selectClips(
   // Runs before the provenance literal is built so the profile can go straight in, rather than
   // being defaulted and overwritten. `analyzeVideo` answers the documented fallback without an API
   // call when there are no sentences, so this costs nothing on the empty-transcript path.
-  const analysis = await analyzeVideo(client, sentences, topics)
+  const analysis = await analyzeVideo(client, sentences, topics, sleep)
   const { profileId, profile, contextBlock } = resolveSelectionContext(analysis, profileOverride)
 
   const judgeQuestions = judgeQuestionsFor(profile)

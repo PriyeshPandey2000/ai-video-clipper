@@ -15,6 +15,7 @@ import { CLIP_PROFILE_IDS, type ClipProfileId, type VideoAnalysis } from "@video
 import type { Sentence } from "@video-editor/types"
 import type { TopicSegment } from "@video-editor/transcript"
 import type { AiClient } from "./client"
+import { realSleep, withRateLimitRetry, type Sleep } from "./concurrency"
 import { CLIP_PROFILES } from "./profiles"
 
 // ─── What the classifier is asked for ────────────────────────────────────────
@@ -254,8 +255,13 @@ export function analysisInputFingerprintFields(): string[] {
  *
  * A function, not a constant, because the returned object is handed to callers that store it —
  * a shared mutable instance would let one project write another's analysis.
+ *
+ * `summary` stays empty even though reaching this means something went wrong. The context block
+ * renders `summary` straight into the selection prompt as "Summary: …", so an error string here
+ * would be shown to the model as a fact about the video. The reason belongs in the log and the
+ * report; a `reason` parameter that overwrote `summary` used to exist and was exactly that trap.
  */
-export function fallbackAnalysis(reason?: string): VideoAnalysis {
+export function fallbackAnalysis(): VideoAnalysis {
   return {
     profile: "solo_opinion",
     confidence: "low",
@@ -263,7 +269,6 @@ export function fallbackAnalysis(reason?: string): VideoAnalysis {
     speakers: [],
     mainTopics: [],
     fallback: true,
-    ...(reason !== undefined ? { summary: reason } : {}),
   }
 }
 
@@ -275,11 +280,19 @@ export function fallbackAnalysis(reason?: string): VideoAnalysis {
  * away clips the user could otherwise have reviewed. The client's own retry loop has already run
  * by the time a rejection reaches this function, so a catch here means the analysis genuinely is
  * not going to happen.
+ *
+ * Rate limits get `withRateLimitRetry`, the same policy the chunk and judge calls run under. Without
+ * it this was the one call in the pipeline that a 429 could kill outright: `client.generateObject`
+ * does retry, but with a fixed short backoff that ignores the server's `retry-after`, so a few quick
+ * attempts inside one rate-limit window all fail. The fallback is not free — it swaps the entire run
+ * onto the `solo_opinion` rubric and marks the report `FALLBACK` — so it has to be a last resort, not
+ * a response to a transient window.
  */
 export async function analyzeVideo(
   client: AiClient,
   sentences: Sentence[],
   topics: TopicSegment[] = [],
+  sleep: Sleep = realSleep,
 ): Promise<VideoAnalysis> {
   // Nothing to classify. Not worth an API call, and `buildAnalysisInput` on an empty transcript
   // returns an empty string, which is a worse answer than the documented fallback.
@@ -288,11 +301,15 @@ export async function analyzeVideo(
   const input = buildAnalysisInput(sentences, topics)
   let raw: z.infer<typeof VideoAnalysisSchema>
   try {
-    raw = await client.generateObject({
-      prompt: `TRANSCRIPT\n\n${input.text}`,
-      schema: VideoAnalysisSchema as unknown as z.ZodType<z.infer<typeof VideoAnalysisSchema>>,
-      system: ANALYSIS_PROMPT,
-    })
+    raw = await withRateLimitRetry(
+      () =>
+        client.generateObject({
+          prompt: `TRANSCRIPT\n\n${input.text}`,
+          schema: VideoAnalysisSchema as unknown as z.ZodType<z.infer<typeof VideoAnalysisSchema>>,
+          system: ANALYSIS_PROMPT,
+        }),
+      sleep,
+    )
   } catch (err) {
     // Logged and swallowed. The trace and the report both record the fallback, so a video whose
     // analysis never ran is visible without being fatal.
