@@ -26,7 +26,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Single source of truth with local dev, so CI cannot validate on a Node the repo's own
+          # scripts (recall-ablation's node:sqlite, both scripts' --experimental-strip-types) can't run.
+          node-version-file: .node-version
           cache: pnpm
 
       # Must run before `pnpm install`: better-sqlite3's own install script is

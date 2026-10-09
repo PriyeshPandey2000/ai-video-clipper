@@ -14,7 +14,7 @@ import type { AiClient } from "@video-editor/ai"
 import { CLIP_PROFILES, CLIP_SELECTION_TEMPERATURE, selectClips } from "@video-editor/ai"
 import { buildSentences } from "@video-editor/transcript"
 import type { VideoAnalysis, Word } from "@video-editor/types"
-import { buildReferencePrompt } from "./recall-ablation"
+import { buildReferencePrompt, isStoredAnalysis } from "./recall-ablation"
 
 /** ~2.9s per phrase, so 40 phrases is under two minutes: one chunk, no chunking path. */
 function transcript(count: number): Word[] {
@@ -166,5 +166,27 @@ describe("recall-ablation prompt parity (#91)", () => {
     expect(reference.system).toBe(selection.system)
     expect(reference.prompt).toBe(selection.prompt)
     expect(reference.system).toContain(CLIP_PROFILES.comedy.rubric)
+  })
+})
+
+describe("stored analysis validation", () => {
+  it("accepts a well-formed row, so the stored context is reused rather than re-classified", () => {
+    expect(isStoredAnalysis(analysis)).toBe(true)
+  })
+
+  // Every case here is a row `renderVideoContext` would crash on: it reads `speakers[].role` and
+  // `mainTopics` directly. Rejecting them means the run re-classifies instead of dying mid-way.
+  it.each([
+    ["null", null],
+    ["a bare string", "analysis"],
+    ["an unknown profile id", { ...analysis, profile: "not_a_profile" }],
+    ["a missing summary", { ...analysis, summary: undefined }],
+    ["missing speakers", { ...analysis, speakers: undefined }],
+    ["a bare-string speaker", { ...analysis, speakers: ["Host"] }],
+    ["a speaker with no role", { ...analysis, speakers: [{ name: "Host" }] }],
+    ["missing mainTopics", { ...analysis, mainTopics: undefined }],
+    ["a non-string topic", { ...analysis, mainTopics: [1] }],
+  ])("rejects %s", (_label, value) => {
+    expect(isStoredAnalysis(value)).toBe(false)
   })
 })

@@ -14,12 +14,10 @@
 // `scripts/recall-ablation.test.ts` asserts the strings equal what `selectClips` sends for the
 // same inputs; that assertion, not this comment, is what stops the copy returning.
 //
-// Requires Node ≥22.13 (or ≥23.4) and GROQ_API_KEY env var. This is higher than the repo's
-// .node-version (20) — node:sqlite needs 22.5+, --experimental-strip-types needs 22.6+, and
-// 22.6–22.12 additionally requires the now-removed --experimental-sqlite flag. Run this script
-// with a separately-installed newer Node (e.g. `nvm exec 22 -- pnpm recall-ablation ...`); it's
-// a standalone analysis tool, not part of the app's runtime, so the repo-wide Node version is
-// intentionally left at 20 for Electron compatibility.
+// Requires Node ≥22.13 (or ≥23.4) and GROQ_API_KEY env var: node:sqlite is unflagged from 22.13
+// (22.5–22.12 need the since-removed --experimental-sqlite flag), and --experimental-strip-types
+// needs 22.6+. The repo's `.node-version` is 22, so `pnpm recall-ablation` runs as-is — no
+// separately-installed newer Node needed.
 //
 // Usage:
 //   node --experimental-strip-types scripts/recall-ablation.ts [projectId]
@@ -132,9 +130,34 @@ function toWord(row: WordRow): Word {
 }
 
 /**
+ * Whether a parsed `video_analysis` row has the shape the selection path reads. Only `profile` was
+ * checked before, but `renderVideoContext` maps `speakers[].role` and filters `mainTopics`, so a
+ * truncated, hand-edited or older row missing either field — or holding a bare string speaker — would
+ * throw a `TypeError` before `analyzeVideo` could fall back. Anything unrecognised counts as absent,
+ * which sends the run down the re-classify path instead of crashing it.
+ */
+export function isStoredAnalysis(value: unknown): value is VideoAnalysis {
+  if (typeof value !== "object" || value === null) return false
+  const a = value as Record<string, unknown>
+  return (
+    isClipProfileId(a.profile) &&
+    (a.confidence === "high" || a.confidence === "medium" || a.confidence === "low") &&
+    typeof a.summary === "string" &&
+    Array.isArray(a.speakers) &&
+    a.speakers.every(
+      (s) =>
+        typeof s === "object" && s !== null && typeof (s as { role?: unknown }).role === "string",
+    ) &&
+    Array.isArray(a.mainTopics) &&
+    a.mainTopics.every((t) => typeof t === "string")
+  )
+}
+
+/**
  * The analysis `selectClips` used for this project's most recent run, or null if the run predates
- * #98 or its row is unreadable. Re-reading it rather than re-classifying is the point: the context
- * block has to be the block that run sent, and a fresh call at a different time is not that.
+ * #98 or its row is unreadable or malformed. Re-reading it rather than re-classifying is the point:
+ * the context block has to be the block that run sent, and a fresh call at a different time is not
+ * that. A malformed row counts as absent rather than as a crash — see `isStoredAnalysis`.
  */
 function readStoredAnalysis(db: SqliteDatabase, projectId: string): VideoAnalysis | null {
   const row = db
@@ -144,7 +167,8 @@ function readStoredAnalysis(db: SqliteDatabase, projectId: string): VideoAnalysi
     .get(projectId) as { content: string } | undefined
   if (!row) return null
   try {
-    return JSON.parse(row.content) as VideoAnalysis
+    const parsed: unknown = JSON.parse(row.content)
+    return isStoredAnalysis(parsed) ? parsed : null
   } catch {
     return null
   }
@@ -274,11 +298,10 @@ async function main() {
   const client = createAiClient()
 
   // The analysis the measured run used. Fall back to classifying now — with no topic segments,
-  // which only changes the transcript excerpting decision for very long videos. A stored row whose
-  // profile id is not one this build knows would index `CLIP_PROFILES` to undefined, so it counts
-  // as absent rather than as a crash halfway through the run.
-  const stored = readStoredAnalysis(db, projectId)
-  const storedAnalysis = stored && isClipProfileId(stored.profile) ? stored : null
+  // which only changes the transcript excerpting decision for very long videos. `readStoredAnalysis`
+  // validates the row's shape, so a stale or malformed row counts as absent rather than crashing the
+  // run halfway through.
+  const storedAnalysis = readStoredAnalysis(db, projectId)
   const analysis = storedAnalysis ?? (await analyzeVideo(client, sentences, []))
   console.log(
     `Analysis        : ${

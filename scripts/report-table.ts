@@ -9,7 +9,7 @@
 //
 // Three views:
 //   (default)   one row per run, across every project
-//   --detail    one block per run plus the candidate table, for reading a single run closely
+//   --detail    one block per run with the funnel, judge, duration and opening break-down
 //   --blind     only rank, timecode, duration and transcript text — for labelling post/maybe/no
 //               WITHOUT seeing the judge's score, note, or the model's title/reason. The label has
 //               to measure the clip, not your agreement with the judge.
@@ -19,8 +19,8 @@
 //   pnpm report-table [--detail] [filter]
 //
 // `filter` is a substring of a project id or name; reports are newest-first and every run is shown
-// unless a filter is given. Requires Node ≥22.6 for --experimental-strip-types, like the sibling
-// recall-ablation script.
+// unless a filter is given. Requires Node ≥22.6 for --experimental-strip-types (the sibling
+// recall-ablation script needs ≥22.13, for node:sqlite); the repo's `.node-version` is 22.
 
 import { readdir, readFile } from "node:fs/promises"
 import { homedir } from "node:os"
@@ -252,6 +252,11 @@ function printDetail(summaries: Summary[]): void {
     console.log(
       `  funnel ${s.candidateCount} candidates → ${s.keptCount} kept   [${funnelText(s)}]`,
     )
+    if (s.candidatesDropped > 0) {
+      console.log(
+        `  ⚠ ${s.candidatesDropped} candidate(s) dropped over the per-chunk cap — a recall ceiling, not a safety valve`,
+      )
+    }
     console.log(
       `  judge  mean ${score(s.judgeMean)} (n=${s.judged}, min ${score(s.judgeMin)}, max ${score(s.judgeMax)})`,
     )
