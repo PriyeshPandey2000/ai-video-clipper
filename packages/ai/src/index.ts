@@ -2,9 +2,13 @@ export { createAiClient, SUPPORTED_PROVIDERS, CLIP_SELECTION_TEMPERATURE } from 
 export type { AiClient, AiClientConfig, AiProvider } from "./client"
 export {
   selectClips,
+  buildChunkPrompts,
+  resolveSelectionContext,
   computePipelineFingerprint,
   PIPELINE_VERSION,
   PIPELINE_FINGERPRINT,
+  SYSTEM_PROMPT,
+  CandidateSchema,
 } from "./clip-selector"
 export type {
   ClipSuggestion,

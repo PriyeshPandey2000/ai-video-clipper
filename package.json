@@ -11,12 +11,18 @@
     "dev": "turbo dev",
     "build": "turbo build",
     "lint": "turbo lint",
-    "typecheck": "turbo typecheck",
+    "typecheck": "turbo typecheck && tsc --noEmit -p scripts/tsconfig.json",
     "format": "prettier --write \"**/*.{ts,tsx,md,json,css}\" --ignore-path .gitignore",
     "format:check": "prettier --check \"**/*.{ts,tsx,md,json,css}\" --ignore-path .gitignore",
     "prepare": "husky",
     "test": "vitest run",
     "recall-ablation": "node --experimental-strip-types scripts/recall-ablation.ts"
+  },
+  "dependencies": {
+    "@video-editor/ai": "workspace:*",
+    "@video-editor/ffmpeg": "workspace:*",
+    "@video-editor/transcript": "workspace:*",
+    "@video-editor/types": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

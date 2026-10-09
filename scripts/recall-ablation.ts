@@ -3,6 +3,17 @@
 // compares against pipeline clips, and measures what % of pipeline clips are recalled.
 // Gates B12: need ≥90% recall before enabling the pre-filter.
 //
+// #91 — this file owns no copy of the pipeline prompt. The system and user strings are built by
+// `resolveSelectionContext` + `buildChunkPrompts`, the same pair `selectClips` and
+// `selectFromChunk` build every selection request from, with:
+//   - the `VideoAnalysis` stored for the run being measured (so the context block is the one that
+//     run actually sent, not a re-classification that may answer differently),
+//   - the project's own `clip_profile_override`, and
+//   - arousal re-measured from the same `audio.wav` the pipeline measured, so `{loud}` tags are
+//     present rather than silently absent.
+// `scripts/recall-ablation.test.ts` asserts the strings equal what `selectClips` sends for the
+// same inputs; that assertion, not this comment, is what stops the copy returning.
+//
 // Requires Node ≥22.13 (or ≥23.4) and GROQ_API_KEY env var. This is higher than the repo's
 // .node-version (20) — node:sqlite needs 22.5+, --experimental-strip-types needs 22.6+, and
 // 22.6–22.12 additionally requires the now-removed --experimental-sqlite flag. Run this script
@@ -14,68 +25,55 @@
 //   node --experimental-strip-types scripts/recall-ablation.ts [projectId]
 //   pnpm recall-ablation [projectId]       (omit projectId to list projects)
 
-import { DatabaseSync } from "node:sqlite"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { homedir } from "node:os"
+import { realpathSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 import { buildSentences } from "@video-editor/transcript"
-import { createAiClient } from "@video-editor/ai"
+import {
+  analyzeVideo,
+  buildChunkPrompts,
+  createAiClient,
+  isClipProfileId,
+  resolveSelectionContext,
+  CandidateSchema,
+} from "@video-editor/ai"
+import { measureArousal, resolveFfmpegBinary } from "@video-editor/ffmpeg"
 import { z } from "zod"
-import type { Word } from "@video-editor/types"
+import type { ClipProfileId, Sentence, VideoAnalysis, Word } from "@video-editor/types"
 
-const DB_PATH = join(
-  homedir(),
-  "Library",
-  "Application Support",
-  "@video-editor",
-  "desktop",
-  "db.sqlite",
-)
+/**
+ * The slice of `node:sqlite`'s `DatabaseSync` this file uses, stated structurally so importing the
+ * module for its exported prompt builder does not pull in `node:sqlite`.
+ *
+ * That matters twice over: the parity test runs under vitest, whose resolver predates `node:sqlite`
+ * and fails on it, and `@types/node` is pinned at 20 while `node:sqlite` shipped in 22.5 — so a
+ * type-level import would not compile even if the runtime one loads.
+ */
+interface SqlStatement {
+  all(...params: unknown[]): unknown[]
+  get(...params: unknown[]): unknown
+}
+interface SqliteDatabase {
+  exec(sql: string): void
+  prepare(sql: string): SqlStatement
+  close(): void
+}
+type DatabaseSyncCtor = new (path: string) => SqliteDatabase
+
+const SUPPORT_DIR = join(homedir(), "Library", "Application Support", "@video-editor", "desktop")
+const DB_PATH = join(SUPPORT_DIR, "db.sqlite")
+const PROJECTS_DIR = join(SUPPORT_DIR, "projects")
 
 // Clip overlap threshold: pipeline clip "recalled" if ref clip overlaps by ≥50% (see overlapRatio).
 const OVERLAP_THRESHOLD = 0.5
 // B12 gate: need ≥90% recall to safely pre-filter.
 const RECALL_GO_THRESHOLD = 0.9
 
-// Mirror the pipeline's SYSTEM_PROMPT exactly so the comparison is fair.
-const SYSTEM_PROMPT = `You are a short-form video editor selecting clips from a long transcript.
-
-The transcript is given as numbered sentences:
-#12 [10500-14200] Nobody expected this outcome.
-#13 [14200-16000] So then everything changed.
-
-Return clips as SENTENCE INDEX RANGES. Never write a timestamp — the numbers in brackets are for
-your reference only, and any time value you output is discarded.
-
-WHAT MAKES A CLIP WORTH POSTING — look for these, in rough order of value:
-1. Hook — the opening line creates curiosity, tension, or a promise in one sentence
-2. Emotional peak — anger, excitement, vulnerability, genuine laughter
-3. Opinion bomb — a strong, specific, contestable claim the speaker commits to
-4. Revelation — a surprising fact, number, or reversal of expectation
-5. Conflict — disagreement, pushback, a challenged assumption
-6. Quotable line — compressed, repeatable, survives without context
-7. Story peak — a complete beat with setup, turn, and payoff
-8. Practical value — one actionable idea a viewer could use today
-
-A clip MUST be self-contained. Someone who never saw the source video should understand it.
-Prefer a range that starts where a thought starts and ends where it resolves.
-
-RANKING: return clips in order, best first.
-
-STRONG FLAG: set "strong": true only if you would personally post this clip. Be strict.
-Returning weak clips is worse than returning nothing.
-
-Return JSON with a "clips" array. Each item: startSentence, endSentence, title, reason, strong,
-platform ("tiktok" | "reels" | "shorts" | "generic").`
-
-const CandidateSchema = z.object({
-  startSentence: z.number().int().min(0),
-  endSentence: z.number().int().min(0),
-  title: z.string(),
-  reason: z.string(),
-  strong: z.boolean(),
-  platform: z.enum(["tiktok", "reels", "shorts", "generic"]),
-})
-
+// `CandidateSchema` is the pipeline's own — importing it rather than restating it is what keeps a
+// field the pipeline stops sending (it dropped `strong` in v3) from being demanded here. The `.max`
+// is the one deliberate difference: the pipeline caps per *chunk*, and this is one call over the
+// whole transcript.
 const ResponseSchema = z.object({ clips: z.array(CandidateSchema).max(50) })
 
 // Matches packages/ai/src/clip-selector.ts overlapRatio exactly — intersection over the SHORTER
@@ -101,6 +99,7 @@ interface Project {
   id: string
   name: string
   status: string
+  clip_profile_override: string | null
 }
 
 interface Clip {
@@ -128,11 +127,74 @@ function toWord(row: WordRow): Word {
     startMs: row.start_ms,
     endMs: row.end_ms,
     confidence: row.confidence,
-    speakerLabel: row.speaker_label ?? undefined,
+    speakerLabel: row.speaker_label,
+  }
+}
+
+/**
+ * The analysis `selectClips` used for this project's most recent run, or null if the run predates
+ * #98 or its row is unreadable. Re-reading it rather than re-classifying is the point: the context
+ * block has to be the block that run sent, and a fresh call at a different time is not that.
+ */
+function readStoredAnalysis(db: SqliteDatabase, projectId: string): VideoAnalysis | null {
+  const row = db
+    .prepare(
+      "SELECT content FROM ai_outputs WHERE project_id = ? AND type = 'video_analysis' ORDER BY created_at DESC LIMIT 1",
+    )
+    .get(projectId) as { content: string } | undefined
+  if (!row) return null
+  try {
+    return JSON.parse(row.content) as VideoAnalysis
+  } catch {
+    return null
+  }
+}
+
+export interface ReferencePromptInput {
+  sentences: Sentence[]
+  words: Word[]
+  analysis: VideoAnalysis
+  profileOverride: ClipProfileId | null
+  arousalPerSec?: number[]
+}
+
+/**
+ * Exactly the system + user strings the pipeline sends for one selection call over `sentences`.
+ *
+ * Exported so the parity test can compare this against a captured `selectClips` request instead of
+ * the test re-deriving the assembly and drifting from the script it is meant to protect.
+ */
+export function buildReferencePrompt(input: ReferencePromptInput): {
+  system: string
+  prompt: string
+} {
+  const { profile, contextBlock } = resolveSelectionContext(input.analysis, input.profileOverride)
+  return buildChunkPrompts({
+    chunk: input.sentences,
+    words: input.words,
+    profile,
+    contextBlock,
+    arousalPerSec: input.arousalPerSec ?? [],
+  })
+}
+
+/** True when this file was invoked directly, rather than imported (by the parity test). */
+function isDirectRun(): boolean {
+  const entry = process.argv[1]
+  if (!entry) return false
+  try {
+    return realpathSync(resolve(entry)) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
   }
 }
 
 async function main() {
+  // Dynamic rather than top-level: see `SqliteDatabase` above. Only `main` needs the handle.
+  // @ts-expect-error `node:sqlite` shipped in Node 22.5 and @types/node is pinned at 20 for
+  // Electron compatibility — the runtime that actually loads it (Node ≥22.13) is newer than the
+  // types standing in for it here.
+  const { DatabaseSync } = (await import("node:sqlite")) as { DatabaseSync: DatabaseSyncCtor }
   const db = new DatabaseSync(DB_PATH)
   db.exec("PRAGMA journal_mode = WAL")
 
@@ -140,7 +202,7 @@ async function main() {
 
   if (!projectId) {
     const rows = db
-      .prepare("SELECT id, name, status FROM projects ORDER BY created_at")
+      .prepare("SELECT id, name, status, clip_profile_override FROM projects ORDER BY created_at")
       .all() as Project[]
     if (rows.length === 0) {
       console.log("No projects in DB.")
@@ -184,6 +246,18 @@ async function main() {
     process.exit(1)
   }
 
+  const project = db
+    .prepare("SELECT id, name, status, clip_profile_override FROM projects WHERE id = ?")
+    .get(projectId) as Project | undefined
+  if (!project) {
+    console.error(`Project "${projectId}" not found.`)
+    db.close()
+    process.exit(1)
+  }
+  const profileOverride = isClipProfileId(project.clip_profile_override)
+    ? project.clip_profile_override
+    : null
+
   // Build sentences
   const words = wordRows.map(toWord)
   const sentences = buildSentences(words)
@@ -197,31 +271,57 @@ async function main() {
     process.exit(1)
   }
 
-  // Full transcript prompt — all sentences, no chunking
-  const firstIdx = sentences[0]!.index
-  const lastIdx = sentences[sentences.length - 1]!.index
-  const transcriptText = sentences
-    .map((s) => `#${s.index} [${s.startMs}-${s.endMs}] ${s.text}`)
-    .join("\n")
+  const client = createAiClient()
 
-  const prompt = `Sentences #${firstIdx} to #${lastIdx}.
-
-${transcriptText}
-
-Select every clip worth posting, best first. Each clip should span roughly 30–90 seconds.
-Only use sentence indices between ${firstIdx} and ${lastIdx}.
-Return fewer clips — or an empty array — rather than padding with weak ones.`
-
+  // The analysis the measured run used. Fall back to classifying now — with no topic segments,
+  // which only changes the transcript excerpting decision for very long videos. A stored row whose
+  // profile id is not one this build knows would index `CLIP_PROFILES` to undefined, so it counts
+  // as absent rather than as a crash halfway through the run.
+  const stored = readStoredAnalysis(db, projectId)
+  const storedAnalysis = stored && isClipProfileId(stored.profile) ? stored : null
+  const analysis = storedAnalysis ?? (await analyzeVideo(client, sentences, []))
   console.log(
-    `\nTranscript      : ${sentences.length} sentences, ~${Math.round(transcriptText.length / 1000)}k chars`,
+    `Analysis        : ${
+      storedAnalysis
+        ? `stored (${storedAnalysis.profile}, ${storedAnalysis.confidence})`
+        : `classified now (${analysis.profile}) — no stored video_analysis row`
+    }`,
+  )
+  console.log(`Profile         : ${profileOverride ? `${profileOverride} (override)` : "detected"}`)
+
+  // Arousal, from the same audio.wav the pipeline measured. `measureArousal` resolves to [] on any
+  // ffmpeg failure, so a missing file degrades to "no {loud} tags" rather than aborting — but a
+  // silent shortfall here would make the reference prompt differ from the shipped one, so say so.
+  const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)))
+  const ffmpegBin = resolveFfmpegBinary(join(repoRoot, "resources"))
+  const arousalPerSec = await measureArousal(ffmpegBin, join(PROJECTS_DIR, projectId, "audio.wav"))
+  if (arousalPerSec.length === 0) {
+    console.warn(
+      "Arousal        : 0 seconds measured — {loud} tags will be absent from this run's prompt.",
+    )
+  } else {
+    console.log(`Arousal         : ${arousalPerSec.length} seconds measured`)
+  }
+
+  const { system, prompt } = buildReferencePrompt({
+    sentences,
+    words,
+    analysis,
+    profileOverride,
+    arousalPerSec,
+  })
+
+  // Full transcript prompt — all sentences, no chunking. `prompt` is the pipeline's own user
+  // template, so it already carries the context block, the sentence-range line and the signal tags.
+  console.log(
+    `\nPrompt          : ${sentences.length} sentences, ${Math.round(prompt.length / 1000)}k chars sent`,
   )
   console.log("Calling LLM (no chunking)...\n")
 
-  const client = createAiClient()
   const result = await client.generateObject({
     prompt,
     schema: ResponseSchema,
-    system: SYSTEM_PROMPT,
+    system,
   })
   const refCandidates = result.clips
   console.log(`Reference clips : ${refCandidates.length} from LLM`)
@@ -282,7 +382,9 @@ Return fewer clips — or an empty array — rather than padding with weak ones.
   db.close()
 }
 
-main().catch((e) => {
-  console.error(e)
-  process.exit(1)
-})
+if (isDirectRun()) {
+  main().catch((e) => {
+    console.error(e)
+    process.exit(1)
+  })
+}

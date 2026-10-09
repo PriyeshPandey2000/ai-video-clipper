@@ -16,7 +16,13 @@ export default defineConfig({
     // apps/desktop is included for its main-process pure-logic modules only (e.g. the #97
     // selection-report writer). Nothing there may import electron: these run under plain Node,
     // so an electron import would fail to load rather than silently skip.
-    include: ["packages/**/src/**/*.test.ts", "apps/desktop/src/main/**/*.test.ts"],
+    include: [
+      "packages/**/src/**/*.test.ts",
+      "apps/desktop/src/main/**/*.test.ts",
+      // scripts/recall-ablation.test.ts asserts the ablation script and the pipeline agree on the
+      // prompt (#91); it belongs next to the script, so the script's directory is in the run.
+      "scripts/**/*.test.ts",
+    ],
     environment: "node",
   },
 })
