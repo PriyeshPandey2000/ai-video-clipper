@@ -288,7 +288,14 @@ function renderJudgeQuestions(trace: ClipSelectionTrace): string[] {
 function renderMarkdown(report: SelectionReport): string {
   const { header, provenance, analysis, trace } = report
   const s = summarise(report)
-  const kept = trace.candidates.filter((c) => c.outcome === "kept")
+  // Same ordering as the "Final ranked clips" section: the trace holds candidates in generation
+  // order, while `finalRank` is 0-based best-first. Reading this section in trace order would
+  // print a lower-ranked clip above a higher-ranked one.
+  const kept = trace.candidates
+    .filter((c) => c.outcome === "kept")
+    .sort(
+      (a, b) => (a.finalRank ?? Number.MAX_SAFE_INTEGER) - (b.finalRank ?? Number.MAX_SAFE_INTEGER),
+    )
   const dropped = trace.candidates.filter((c) => c.outcome !== "kept")
   const lines: string[] = []
 
