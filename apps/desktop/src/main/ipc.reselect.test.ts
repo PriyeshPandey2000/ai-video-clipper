@@ -443,6 +443,47 @@ describeSqlite("clip:reselect (#97)", () => {
     expect(report.trace.temperature).toBe(0)
   })
 
+  it("writes finalRanked best-first even when the trace holds candidates in generation order", async () => {
+    let captured: unknown
+    mockWriteReport.mockImplementation(async (dir: string, report: unknown) => {
+      captured = report
+      return {
+        reportJsonPath: join(dir, "selection-reports", "r.json"),
+        reportMarkdownPath: join(dir, "selection-reports", "r.md"),
+      }
+    })
+    // The regression this guards: candidates arrive in generation order (second-best first), but
+    // `finalRank` is the 0-based best-first position ranking assigned during ranking. The report
+    // must carry rank order, or its Markdown prints `### 1.` above `### 0.`.
+    mockClipSelector.mockResolvedValue(
+      selection([], {
+        temperature: 0,
+        sentenceCount: 2,
+        chunks: [
+          {
+            index: 0,
+            firstSentence: 0,
+            lastSentence: 1,
+            candidateCount: 2,
+            candidatesDropped: 0,
+            failed: false,
+          },
+        ],
+        candidates: [
+          traceEntry({ title: "Second best", startMs: 40000, endMs: 62000, finalRank: 1 }),
+          traceEntry({ title: "Best", startMs: 1000, endMs: 31000, finalRank: 0 }),
+        ],
+        judgeQuestions: [],
+      }),
+    )
+
+    await invoke("clip:reselect", { projectId: PROJECT_ID })
+
+    const report = captured as { finalRanked: { rank: number; title: string }[] }
+    expect(report.finalRanked.map((c) => c.rank)).toEqual([0, 1])
+    expect(report.finalRanked.map((c) => c.title)).toEqual(["Best", "Second best"])
+  })
+
   it("leaves the previous suggestions in place when selection fails", async () => {
     insertClips(db, [
       {

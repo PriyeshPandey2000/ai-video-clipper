@@ -530,7 +530,12 @@ export function registerIpcHandlers(): void {
           endTimecode: c.endTimecode ?? "—",
           durationMs: (c.endMs ?? 0) - (c.startMs ?? 0),
           text: c.text,
-        })),
+        }))
+        // The trace holds candidates in generation order, but `finalRank` is the 0-based
+        // best-first position ranking assigned (clip-selector.ts). The report type promises rank
+        // order, and every reader (the Markdown headings, report-table) takes it as read — so
+        // sort here, or a response that arrived out of rank order prints `### 1.` above `### 0.`.
+        .sort((a, b) => a.rank - b.rank),
     })
 
     // Everything above is derived purely from the selection result, so it can only fail before
