@@ -951,6 +951,32 @@ describe("chunk recovery: retry and bisect (#97 follow-up)", () => {
     expect(result.clips.length).toBeGreaterThan(0)
   })
 
+  it("gives a split half a single attempt, so one bad section costs at most five calls", async () => {
+    // A short transcript is one chunk. Every call fails: the parent spends its full 3-attempt budget,
+    // then each half gets exactly one try (no retry). Without the depth-aware limit the halves would
+    // each retry 3× and one unrecoverable section would cost 3 + 3 + 3 = 9 calls instead of 3+1+1.
+    const oneChunkWords = transcript(200)
+    const oneChunkSentences = buildSentences(oneChunkWords)
+    let calls = 0
+    const alwaysFail: Handler = () => {
+      calls++
+      throw new Error("persistent outage")
+    }
+    await expect(
+      selectClips(
+        mockClient(alwaysFail),
+        oneChunkWords,
+        oneChunkSentences,
+        [],
+        10,
+        [],
+        null,
+        noSleep,
+      ),
+    ).rejects.toThrow(/all \d+ chunk\(s\)/)
+    expect(calls).toBe(5) // 3 parent attempts + 1 per half
+  })
+
   it("keeps a genuinely unrecoverable section as a hole", async () => {
     // One chunk (whichever the pool dispatches first) and both of its halves fail — a persistent
     // outage localised to that stretch. The section is reported as failed, not silently absent; the

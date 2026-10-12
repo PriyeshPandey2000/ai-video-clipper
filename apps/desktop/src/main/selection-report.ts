@@ -110,6 +110,12 @@ export interface SelectionFunnelStep {
 
 export interface SelectionFunnel {
   chunkCount: number
+  /**
+   * Leaf sections — the chunks a reader would count as "parts of the transcript" (`chunkCount`
+   * minus the bisected parents, whose halves are the real leaves). The UI's "N of M sections"
+   * notice pairs this with `failedChunkCount`, which is also leaves-only, so the two agree.
+   */
+  sectionCount: number
   /** Chunks whose model call failed outright — these contributed nothing at all. */
   failedChunkCount: number
   /** Candidates that reached the ranking stage. */
@@ -165,6 +171,7 @@ function buildFunnel(report: SelectionReport): SelectionFunnel {
     .filter((s) => s.count > 0)
   return {
     chunkCount: report.trace.chunks.length,
+    sectionCount: report.trace.chunks.filter((c) => !c.bisected).length,
     failedChunkCount: countFailedChunks(report.trace.chunks),
     candidateCount: report.trace.candidates.length,
     droppedCandidateCount: report.trace.chunks.reduce((n, c) => n + (c.candidatesDropped ?? 0), 0),

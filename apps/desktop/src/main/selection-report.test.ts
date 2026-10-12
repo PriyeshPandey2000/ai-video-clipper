@@ -743,6 +743,9 @@ describe("readLastReportFunnel", () => {
     // Only the failed right half is a hole; the parent and the answered left half are not.
     expect(funnel!.chunkCount).toBe(3)
     expect(funnel!.failedChunkCount).toBe(1)
+    // The leaf-section total the UI pairs the failure count with: the bisected parent is not a
+    // section a reader counts, so "1 of 2 sections" is what the banner must say, not "1 of 3".
+    expect(funnel!.sectionCount).toBe(2)
   })
 
   it("surfaces candidates dropped at the per-chunk cap", async () => {

@@ -873,10 +873,15 @@ async function runChunkNode(
 ): Promise<ChunkNode> {
   const firstSentence = chunk[0]!.index
   const lastSentence = chunk[chunk.length - 1]!.index
+  // A top-level chunk earns the full retry budget; a half produced by a split gets a single attempt.
+  // The halves are already the recovery path — giving each one three more tries would turn the
+  // worst case into nine calls (3 + 3 + 3) for one bad section, which is exactly the amplification
+  // the one-level bisection exists to avoid. Worst case stays 3 + 1 + 1 = 5.
+  const maxAttempts = depth === 0 ? CHUNK_RETRY_ATTEMPTS : 1
   let lastError: unknown
   let lastFailure: ChunkFailure | undefined
   let rateLimited = false
-  for (let attempt = 1; attempt <= CHUNK_RETRY_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const { candidates, dropped } = await withRateLimitRetry(
         () => selectFromChunk(client, chunk, words, profile, contextBlock, arousalPerSec),
@@ -897,7 +902,7 @@ async function runChunkNode(
       lastError = err
       lastFailure = readChunkFailure(err) ?? undefined
       console.warn(
-        `[clip-selector] chunk #${firstSentence}-#${lastSentence} attempt ${attempt}/${CHUNK_RETRY_ATTEMPTS} failed:`,
+        `[clip-selector] chunk #${firstSentence}-#${lastSentence} attempt ${attempt}/${maxAttempts} failed:`,
         err,
       )
       // `withRateLimitRetry` has already spent its own 1s/2s/4s(+retry-after) budget on a 429;
@@ -906,7 +911,7 @@ async function runChunkNode(
         rateLimited = true
         break
       }
-      if (attempt < CHUNK_RETRY_ATTEMPTS) await sleep(CHUNK_RETRY_BASE_MS * 3 ** (attempt - 1))
+      if (attempt < maxAttempts) await sleep(CHUNK_RETRY_BASE_MS * 3 ** (attempt - 1))
     }
   }
   const error = lastError instanceof Error ? lastError.message : String(lastError)
@@ -935,7 +940,7 @@ async function runChunkNode(
       depth + 1,
     )
     console.warn(
-      `[clip-selector] chunk #${firstSentence}-#${lastSentence} split in two after all ${CHUNK_RETRY_ATTEMPTS} attempts`,
+      `[clip-selector] chunk #${firstSentence}-#${lastSentence} split in two after all ${maxAttempts} attempts`,
     )
     return {
       kind: "bisect",

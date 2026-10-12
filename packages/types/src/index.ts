@@ -410,6 +410,8 @@ export interface IpcInvokeChannels {
     args: { projectId: string }
     result: {
       chunkCount: number
+      /** Leaf sections (chunkCount minus bisected parents) — pairs with failedChunkCount. */
+      sectionCount: number
       failedChunkCount: number
       candidateCount: number
       droppedCandidateCount: number
