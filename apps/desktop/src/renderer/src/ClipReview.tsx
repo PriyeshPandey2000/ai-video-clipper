@@ -558,6 +558,17 @@ export function ClipReview({
   return (
     <div className="space-y-3">
       {toolbar}
+      {funnel && funnel.failedChunkCount > 0 && (
+        // The clips below are real, but they were chosen without looking at every part of the
+        // transcript. The report already records this loudly; without a word here the review screen
+        // would show a short list and no reason to suspect a section was skipped.
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+          {funnel.failedChunkCount} of {funnel.chunkCount} transcript section
+          {funnel.chunkCount === 1 ? "" : "s"} couldn&apos;t be analysed in the last run, so no
+          clips were suggested from {funnel.failedChunkCount === 1 ? "it" : "them"}. The suggestions
+          below are from the sections that did return. Re-run clip selection to try again.
+        </div>
+      )}
       <div className="space-y-2">
         {sorted.map((clip) => {
           const isSelected = clip.id === selectedId

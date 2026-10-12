@@ -292,6 +292,87 @@ describe("renderSelectionReportMarkdown", () => {
     expect(md).toContain("duplicate of: The kept one")
   })
 
+  it("distinguishes a recovered chunk, a split and its halves, and a plain failure in the chunk table", async () => {
+    const dir = await tmpDir()
+    const { reportMarkdownPath } = await writeSelectionReport(dir, {
+      header: { projectId: "p1", projectName: "My Video", durationMs: 60000, startedAtMs: 0 },
+      provenance,
+      analysis: analysis(),
+      trace: trace({
+        chunks: [
+          // Answered after a fresh retry: reported as such, with the transient failure recorded.
+          {
+            index: 0,
+            firstSentence: 0,
+            lastSentence: 40,
+            candidateCount: 2,
+            candidatesDropped: 0,
+            failed: false,
+            recovered: true,
+            failure: {
+              reason: "AI_APICallError (json_validate_failed)",
+              attempts: 3,
+              promptChars: 4096,
+              inputTokens: 1200,
+              outputTokens: 0,
+            },
+          },
+          // A split: the parent failed, the two halves follow and carry splitOf.
+          {
+            index: 1,
+            firstSentence: 40,
+            lastSentence: 80,
+            candidateCount: 0,
+            candidatesDropped: 0,
+            failed: true,
+            bisected: true,
+            error: "NoOutputGeneratedError",
+            failure: {
+              reason: "AI_NoObjectGeneratedError",
+              attempts: 3,
+              promptChars: 8000,
+              inputTokens: 2000,
+              outputTokens: 0,
+            },
+          },
+          {
+            index: 2,
+            firstSentence: 40,
+            lastSentence: 59,
+            candidateCount: 1,
+            candidatesDropped: 0,
+            failed: false,
+            recovered: true,
+            splitOf: 1,
+          },
+          {
+            index: 3,
+            firstSentence: 60,
+            lastSentence: 80,
+            candidateCount: 0,
+            candidatesDropped: 0,
+            failed: true,
+            splitOf: 1,
+            error: "json_validate_failed",
+          },
+        ],
+        candidates: [],
+      }),
+      finalRanked: [],
+    })
+
+    const md = await readFile(reportMarkdownPath, "utf-8")
+    expect(md).toContain("answered after retries")
+    expect(md).toContain("**failed → split in two**")
+    expect(md).toContain("answered (split of #1)")
+    expect(md).toContain("**failed** (split of #1): json_validate_failed")
+    // The recorder detail is rendered, with the reason and the token counts the SDK returned.
+    expect(md).toContain("Chunk call details")
+    expect(md).toContain("AI_APICallError (json_validate_failed)")
+    expect(md).toContain("1200→0 tokens")
+    expect(md).toContain("#1 (parent of a split)")
+  })
+
   it("prints every rank heading best-first even when the trace holds kept candidates in generation order", async () => {
     const dir = await tmpDir()
     const { reportMarkdownPath } = await writeSelectionReport(dir, {
@@ -612,6 +693,55 @@ describe("readLastReportFunnel", () => {
     )
     const funnel = await readLastReportFunnel(dir)
     expect(funnel!.chunkCount).toBe(2)
+    expect(funnel!.failedChunkCount).toBe(1)
+  })
+
+  it("does not count a bisected parent as a failed chunk, but does count a failed half", async () => {
+    // A bisected parent is structural: its halves are the leaves. Counting the parent too would
+    // report the same hole twice; counting the answered halves would hide the hole entirely.
+    const dir = await tmpDir()
+    await report(
+      dir,
+      trace({
+        chunks: [
+          {
+            index: 0,
+            firstSentence: 0,
+            lastSentence: 100,
+            candidateCount: 0,
+            candidatesDropped: 0,
+            failed: true,
+            bisected: true,
+            error: "json_validate_failed",
+          },
+          {
+            index: 1,
+            firstSentence: 0,
+            lastSentence: 49,
+            candidateCount: 3,
+            candidatesDropped: 0,
+            failed: false,
+            recovered: true,
+            splitOf: 0,
+          },
+          {
+            index: 2,
+            firstSentence: 50,
+            lastSentence: 100,
+            candidateCount: 0,
+            candidatesDropped: 0,
+            failed: true,
+            splitOf: 0,
+            error: "json_validate_failed",
+          },
+        ],
+        candidates: [entry({})],
+      }),
+      1,
+    )
+    const funnel = await readLastReportFunnel(dir)
+    // Only the failed right half is a hole; the parent and the answered left half are not.
+    expect(funnel!.chunkCount).toBe(3)
     expect(funnel!.failedChunkCount).toBe(1)
   })
 

@@ -211,7 +211,8 @@ Download prebuilt binaries from ffmpeg.org static builds for each platform.
 
 Binary: `resources/whisper/whisper-cli` (bundled, same pattern as FFmpeg).
 Models: downloaded to `app.getPath("userData")/models/whisper/ggml-{size}.bin` on first use.
-Default model: `base` (~145MB). User can switch to `small` for better accuracy.
+Default model: `medium` (the `transcribe` default in `packages/whisper`); the size is a parameter,
+so callers can pick a smaller one (e.g. `small`) to trade accuracy for speed.
 
 ## AI abstraction
 
