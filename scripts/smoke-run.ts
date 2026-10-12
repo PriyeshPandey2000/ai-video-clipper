@@ -51,8 +51,12 @@ const MAX_CLIPS = 10
 // Transcript spot-check thresholds. Conservative on purpose: these gate the benchmark, so they only
 // flag shapes that cannot be real speech — a word lasting over ten seconds, a pairwise overlap
 // beyond half a second (whisper word timestamps can jitter slightly, so a strict `>` 0 would fire on
-// healthy audio), an empty or zero-length token. What they guard against is a corrupted transcript
+// healthy audio), an empty or reversed token. What they guard against is a corrupted transcript
 // (duplicated tail, runaway word) being scored as if it were a clean one.
+//
+// A zero-duration word (start == end) is tracked but is NOT a failure: whisper emits them on real
+// audio for clipped syllables and unstressed words — a 48-minute smoke video had 178 of them and a
+// perfectly usable transcript. Only blank text or a reversed range means the data is corrupted.
 const WORD_MAX_DURATION_MS = 10_000
 const WORD_OVERLAP_TOLERANCE_MS = 500
 
@@ -60,6 +64,8 @@ interface TranscriptSpotCheck {
   overlaps: number
   stuck: number
   empty: number
+  reversed: number
+  zeroDuration: number
   worstOverlapMs: number
   longestWordMs: number
 }
@@ -71,11 +77,15 @@ function transcriptSpotCheck(
   let overlaps = 0
   let stuck = 0
   let empty = 0
+  let reversed = 0
+  let zeroDuration = 0
   let worstOverlapMs = 0
   let longestWordMs = 0
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
-    if (w.text.trim() === "" || w.endMs <= w.startMs) empty++
+    if (w.text.trim() === "") empty++
+    if (w.endMs < w.startMs) reversed++
+    else if (w.endMs === w.startMs) zeroDuration++
     const duration = w.endMs - w.startMs
     if (duration > longestWordMs) longestWordMs = duration
     if (duration > WORD_MAX_DURATION_MS) stuck++
@@ -88,7 +98,7 @@ function transcriptSpotCheck(
       }
     }
   }
-  return { overlaps, stuck, empty, worstOverlapMs, longestWordMs }
+  return { overlaps, stuck, empty, reversed, zeroDuration, worstOverlapMs, longestWordMs }
 }
 
 interface ProjectRow {
@@ -266,7 +276,13 @@ async function runOne(projectId: string): Promise<RunVerdict> {
   const transcript = transcriptSpotCheck(words)
 
   const fallback = selection.analysis.fallback === true
-  const transcriptOk = transcript.overlaps === 0 && transcript.stuck === 0 && transcript.empty === 0
+  // Zero-duration words are reported but never fail the gate (see `transcriptSpotCheck`); blank text
+  // or a reversed range is the actual corruption signal.
+  const transcriptOk =
+    transcript.overlaps === 0 &&
+    transcript.stuck === 0 &&
+    transcript.empty === 0 &&
+    transcript.reversed === 0
   const gates = [
     {
       n: 1,
@@ -305,8 +321,8 @@ async function runOne(projectId: string): Promise<RunVerdict> {
       n: 7,
       ok: transcriptOk,
       detail: transcriptOk
-        ? `words ${words.length} · longest ${transcript.longestWordMs}ms · no overlaps/empty words`
-        : `words ${words.length} · overlaps ${transcript.overlaps} (worst ${transcript.worstOverlapMs}ms) · stuck ${transcript.stuck} · empty ${transcript.empty} · longest ${transcript.longestWordMs}ms`,
+        ? `words ${words.length} · longest ${transcript.longestWordMs}ms · no overlaps/empty/reversed words${transcript.zeroDuration > 0 ? ` · ${transcript.zeroDuration} zero-duration (benign)` : ""}`
+        : `words ${words.length} · overlaps ${transcript.overlaps} (worst ${transcript.worstOverlapMs}ms) · stuck ${transcript.stuck} · empty ${transcript.empty} · reversed ${transcript.reversed} · longest ${transcript.longestWordMs}ms`,
     },
   ]
 
