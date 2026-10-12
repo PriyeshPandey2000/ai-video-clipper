@@ -127,7 +127,7 @@ the formal one.
 
 - [ ] **#46** Mechanical eval harness over 3–5 cached transcripts: cold-open rate, truncated-ending rate, length compliance, gate rejections, judge-call count, cost/time per hour. Taste tier (precision@5) later and weak
 - [ ] **#90** Noise floor — the shuffle is gone and temperature is pinned (done in #97/#99); what remains is measuring top-5 overlap across 3 identical runs, and deciding single-run vs mean-of-N
-- [ ] **#91** `scripts/recall-ablation.ts` still carries an old copy of the prompt (it still asks for `strong`); import the real one
+- [x] **#91** `scripts/recall-ablation.ts` carried an old copy of the prompt (it still asked for `strong`); it now imports `buildChunkPrompts`/`resolveSelectionContext` from `@video-editor/ai`, and `scripts/recall-ablation.test.ts` asserts its strings equal what `selectClips` sends
 - [ ] **#92** Tighten the filler set — the `HOOK_RE` half is done (deleted in #113); `filler:high` still counts "so", "right", "actually", "like" and "yeah"
 - [ ] **#94** Ablate what is left — signal tags and per-profile rubrics; Borda and the hook-first trim are already deleted. New candidate: the judge's questions and weights (starting values, never tuned)
 

@@ -292,6 +292,53 @@ describe("renderSelectionReportMarkdown", () => {
     expect(md).toContain("duplicate of: The kept one")
   })
 
+  it("prints every rank heading best-first even when the trace holds kept candidates in generation order", async () => {
+    const dir = await tmpDir()
+    const { reportMarkdownPath } = await writeSelectionReport(dir, {
+      header: { projectId: "p1", projectName: "My Video", durationMs: 60000, startedAtMs: 0 },
+      provenance,
+      analysis: analysis(),
+      trace: trace({
+        // Generation order (second-best first); `finalRank` is the 0-based best-first position.
+        candidates: [
+          entry({ finalRank: 1, title: "Second best" }),
+          entry({ finalRank: 0, title: "Best" }),
+        ],
+      }),
+      // ipc.ts guarantees this array is rank-sorted; the kept-detail section below must not
+      // reintroduce trace order, or a report reads `### 1.` above `### 0.`.
+      finalRanked: [
+        {
+          rank: 0,
+          title: "Best",
+          reason: "r",
+          platform: "shorts",
+          startTimecode: "0:00",
+          endTimecode: "0:30",
+          durationMs: 30000,
+          text: "best",
+        },
+        {
+          rank: 1,
+          title: "Second best",
+          reason: "r",
+          platform: "shorts",
+          startTimecode: "0:41",
+          endTimecode: "1:11",
+          durationMs: 30000,
+          text: "second",
+        },
+      ],
+    })
+    const md = await readFile(reportMarkdownPath, "utf-8")
+    // Rank numbering restarts per section, so isolate the kept-detail section: the trace holds
+    // candidates in generation order (second-best first), and this section must still read
+    // best-first, or a report prints `### 1.` above `### 0.`.
+    const keptSection = md.split("## Kept candidates (full detail)")[1]!
+    const headings = [...keptSection.matchAll(/^### (\d+)\./gm)].map((m) => Number(m[1]))
+    expect(headings).toEqual([0, 1])
+  })
+
   it("does not leak a fence-breaking title out of its markdown cell", async () => {
     // A model-authored title can contain anything, including a pipe that would break the table
     // or a backtick run. Cell text is escaped; transcript text goes in a fenced block.

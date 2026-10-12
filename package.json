@@ -3,7 +3,7 @@
   "version": "0.1.3",
   "private": true,
   "engines": {
-    "node": ">=20.0.0",
+    "node": ">=22.13.0",
     "pnpm": ">=9.0.0"
   },
   "type": "module",
@@ -11,12 +11,19 @@
     "dev": "turbo dev",
     "build": "turbo build",
     "lint": "turbo lint",
-    "typecheck": "turbo typecheck",
+    "typecheck": "turbo typecheck && tsc --noEmit -p scripts/tsconfig.json",
     "format": "prettier --write \"**/*.{ts,tsx,md,json,css}\" --ignore-path .gitignore",
     "format:check": "prettier --check \"**/*.{ts,tsx,md,json,css}\" --ignore-path .gitignore",
     "prepare": "husky",
     "test": "vitest run",
-    "recall-ablation": "node --experimental-strip-types scripts/recall-ablation.ts"
+    "recall-ablation": "node --experimental-strip-types scripts/recall-ablation.ts",
+    "report-table": "node --experimental-strip-types scripts/report-table.ts"
+  },
+  "dependencies": {
+    "@video-editor/ai": "workspace:*",
+    "@video-editor/ffmpeg": "workspace:*",
+    "@video-editor/transcript": "workspace:*",
+    "@video-editor/types": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
