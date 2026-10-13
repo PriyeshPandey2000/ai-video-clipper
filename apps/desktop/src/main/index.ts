@@ -7,6 +7,16 @@ import { loadGroqApiKeySync } from "./config"
 import { initLogger } from "./logger"
 import { initUpdater } from "./updater"
 
+// Nothing ever called this, so Electron fell back to package.json's "name" field —
+// "@video-editor/desktop" — as the app's internal identity: the macOS Keychain prompt for the
+// encrypted Groq key showed that literal string instead of "Clipper", and the "/" in it split
+// userData into a nested ~/Library/Application Support/@video-editor/desktop/ folder. Pin
+// userData to that exact existing path before renaming — otherwise setName alone would silently
+// start a fresh empty userData dir under "Clipper" and orphan every existing user's local
+// database, saved key, and projects.
+app.setPath("userData", join(app.getPath("appData"), "@video-editor", "desktop"))
+app.setName("Clipper")
+
 initLogger()
 
 // Load .env into process.env for the main process.
