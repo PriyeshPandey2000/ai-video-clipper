@@ -58,7 +58,19 @@ export interface Sentence {
 export type JudgeGrade = "yes" | "partly" | "no"
 
 /**
- * What the judge said about a clip, as stored in `clips.judge_json` (#99).
+ * One raw judge sample, before any aggregation (#125). The same shape as a single-sample verdict,
+ * kept per-call so a voted verdict can be audited back to the samples that produced it.
+ */
+export interface ClipJudgeSample {
+  /** 0–1 for this one call. */
+  score: number
+  note: string
+  answers: Record<string, JudgeGrade>
+  bestOpeningSentence: number | null
+}
+
+/**
+ * What the judge said about a clip, as stored in `clips.judge_json` (#99, #125).
  *
  * Self-describing on purpose: `questions` is copied in with the answers, so a clip written under
  * one set of questions still renders correctly after the set changes, and the UI needs no access to
@@ -74,6 +86,12 @@ export interface ClipJudgeRecord {
   bestOpeningSentence: number | null
   /** The questions that were asked, in order. `hard` ones reject a clip on a clear "no". */
   questions: { id: string; text: string; hard: boolean }[]
+  /**
+   * The raw per-call samples behind `score`/`answers` (#125). Length 1 when the first sample was
+   * clearly dead (no resample spent) or when a resample failed, otherwise the vote size. Absent on
+   * rows written before voting existed, which is why the UI must treat it as optional.
+   */
+  samples?: ClipJudgeSample[]
 }
 
 /**
@@ -99,6 +117,9 @@ export function parseClipJudge(json: string | null | undefined): ClipJudgeRecord
       answers: v.answers as Record<string, JudgeGrade>,
       bestOpeningSentence: typeof v.bestOpeningSentence === "number" ? v.bestOpeningSentence : null,
       questions: v.questions,
+      // Optional and unvalidated beyond "is an array": a pre-vote row has none, and a shape we do
+      // not recognise must degrade to "no samples", never throw into the UI.
+      ...(Array.isArray(v.samples) ? { samples: v.samples as ClipJudgeSample[] } : {}),
     }
   } catch {
     return null

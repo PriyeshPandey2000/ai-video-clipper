@@ -299,6 +299,13 @@ function judgeLines(c: TraceEntry, questions: ClipSelectionTrace["judgeQuestions
       .join(" · ")
     out.push(`- judge: score ${c.judge.score.toFixed(2)} — ${marks}`)
     if (c.judge.note) out.push(`- judge note: ${cell(c.judge.note)}`)
+    // #125 — the per-sample scores behind a voted verdict, so a disagreement is visible rather
+    // than hidden inside the aggregate. Absent on single-sample (clearly-dead or old) clips.
+    if (c.judgeSamples.length > 1) {
+      out.push(
+        `- judge samples (${c.judgeSamples.length}): ${c.judgeSamples.map((s) => s.score.toFixed(2)).join(", ")} → voted ${c.judge.score.toFixed(2)}`,
+      )
+    }
   }
   if (c.judgeReasons.length > 0) out.push(`- judge verdict: ${c.judgeReasons.join("; ")}`)
   return out
@@ -422,6 +429,9 @@ function renderMarkdown(report: SelectionReport): string {
       .join(", ")}) |`,
   )
   lines.push(`| clips kept | ${s.clipCount} |`)
+  // #125 — the vote's real cost. The single-call equivalent is the judged-clip count, so a reader
+  // can see the multiplier the vote added rather than taking "bounded in theory" on trust.
+  lines.push(`| judge calls | ${trace.judgeCallCount} |`)
   if (s.droppedCandidateCount > 0) {
     // A recall ceiling, so it belongs next to the totals: this run could not have suggested more
     // than it did, and the number of moments that never got judged is otherwise invisible.
