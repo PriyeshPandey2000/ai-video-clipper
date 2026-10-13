@@ -75,6 +75,24 @@ module.exports = async function ({ appDir, electronVersion, arch, platform }) {
   copyReal(resolveRealDir("bindings"), join(appDir, "node_modules", "bindings"))
   copyReal(resolveRealDir("file-uri-to-path"), join(appDir, "node_modules", "file-uri-to-path"))
 
+  // 4. electron-log and electron-updater are pure JS (no native rebuild needed) but
+  // electron-vite's externalizeDepsPlugin leaves them as a bare require() in the packaged main
+  // bundle instead of inlining them — same reason better-sqlite3 needs steps 2/3 above. Walk each
+  // package's own declared dependencies recursively instead of hand-listing every transitive dep,
+  // which is what let electron-log go missing from the shipped app in the first place.
+  function copyDepTree(pkgName, visited) {
+    if (visited.has(pkgName)) return
+    visited.add(pkgName)
+    const realDir = resolveRealDir(pkgName)
+    copyReal(realDir, join(appDir, "node_modules", ...pkgName.split("/")))
+    const deps = JSON.parse(fs.readFileSync(join(realDir, "package.json"), "utf8")).dependencies || {}
+    for (const dep of Object.keys(deps)) copyDepTree(dep, visited)
+  }
+
+  const runtimeDepsCopied = new Set(["better-sqlite3", "bindings", "file-uri-to-path"])
+  copyDepTree("electron-log", runtimeDepsCopied)
+  copyDepTree("electron-updater", runtimeDepsCopied)
+
   console.log("Native deps prepared.\n")
   // Return false so electron-builder skips its own rebuild (crashes on pnpm workspace symlinks)
   return false
