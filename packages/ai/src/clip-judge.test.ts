@@ -224,6 +224,38 @@ describe("judge output tolerance", () => {
     })
     expect(outside.bestOpeningSentence).toBeNull()
   })
+
+  it("tolerates a model echoing the '#N' label or leaving the '#' on", async () => {
+    const { judgeClip } = await import("./clip-judge")
+    const base = {
+      questions,
+      context: "ctx",
+      words: [],
+      sentences: [],
+      boundary: { startMs: 0, endMs: 20000, startSentenceIndex: 4, endSentenceIndex: 9 },
+    }
+    const judge = async (bestOpeningSentence: unknown) =>
+      judgeClip({
+        ...base,
+        client: {
+          generateObject: async () =>
+            ({
+              answers: Object.fromEntries(questions.map((q) => [q.id, "yes"])),
+              note: "n",
+              bestOpeningSentence,
+            }) as never,
+        } as never,
+      })
+
+    expect((await judge("#7")).bestOpeningSentence).toBe(7)
+    expect((await judge("7")).bestOpeningSentence).toBe(7)
+    expect((await judge("# 8")).bestOpeningSentence).toBe(8)
+    // Out-of-range and unparseable labels still become null, never a hallucinated opening.
+    expect((await judge("#400")).bestOpeningSentence).toBeNull()
+    expect((await judge("#2")).bestOpeningSentence).toBeNull()
+    expect((await judge("second")).bestOpeningSentence).toBeNull()
+    expect((await judge(true)).bestOpeningSentence).toBeNull()
+  })
 })
 
 describe("stored judgement (#99)", () => {

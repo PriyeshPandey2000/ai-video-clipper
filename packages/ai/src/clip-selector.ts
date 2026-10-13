@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto"
-import { CLIP_SELECTION_TEMPERATURE, STRUCTURED_OUTPUT_SUFFIX, type AiClient } from "./client"
+import {
+  CLIP_SELECTION_TEMPERATURE,
+  STRUCTURED_OUTPUT_SUFFIX,
+  readChunkFailure,
+  type AiClient,
+  type ChunkFailure,
+} from "./client"
 import type { z } from "zod"
 import { z as zod } from "zod"
 import type { Word, Sentence } from "@video-editor/types"
@@ -18,7 +24,7 @@ import {
 } from "@video-editor/transcript"
 import type { TopicSegment } from "@video-editor/transcript"
 import { CLIP_PROFILES, type ClipProfile } from "./profiles"
-import { mapPool, withRateLimitRetry, realSleep, type Sleep } from "./concurrency"
+import { mapPool, withRateLimitRetry, isRateLimitError, realSleep, type Sleep } from "./concurrency"
 import {
   judgeClip,
   judgeQuestionsFor,
@@ -205,14 +211,14 @@ export interface TraceChunk {
   /** Candidates the model returned for this chunk, before interleaving. */
   candidateCount: number
   /**
-   * Candidates the model returned that we discarded to hold the chunk to
-   * `MAX_CANDIDATES_PER_CHUNK`. Zero on every run that stayed under the cap.
+   * Candidates the model returned that we discarded to hold the chunk to its own cap
+   * (`maxCandidatesFor`). Zero on every run that stayed under the cap.
    *
-   * This is a recall ceiling, not a safety valve: the model orders best-first, so what is dropped
-   * is its *worst* candidates, but on a dense chunk it is still N moments that can never be judged.
-   * It used to be worse than silent — the cap was enforced by the response schema, so a chunk
-   * returning 21 candidates failed validation, retried at temperature 0 (same answer), and lost
-   * every candidate including the good ones. Hence a schema-level cap is not the place to enforce a
+   * This is a runaway guard, not a recall ceiling: the cap scales with the chunk so it does not fire
+   * on dense but legitimate content, and the model orders best-first, so what is dropped is its
+   * *worst* candidates. It used to be a flat 20 enforced by the response schema — a chunk returning
+   * 21 candidates failed validation, retried at temperature 0 (same answer), and lost every
+   * candidate including the good ones. Hence a schema-level cap is not the place to enforce a
    * budget. Reported so a run that hit the ceiling is visible rather than quietly smaller.
    */
   candidatesDropped: number
@@ -228,6 +234,29 @@ export interface TraceChunk {
   failed: boolean
   /** Why it failed. Present only when `failed`. */
   error?: string
+  /**
+   * True when this chunk's section was eventually analysed after a rough start: either the chunk
+   * answered on a later fresh attempt (`failed: false`), or it was a chunk that failed and was then
+   * split (`failed: true`, `bisected: true`).
+   */
+  recovered?: boolean
+  /**
+   * Present with `failed: true` on a chunk whose model calls all failed but which was then split in
+   * two and analysed as two halves — the halves are separate entries carrying `splitOf` pointing
+   * back here. The parent contributes no candidates of its own.
+   */
+  bisected?: boolean
+  /**
+   * Present on the halves of a bisected chunk: the index of the `bisected` entry they came from.
+   * A reader sees "chunk 2 failed → 2a/2b" as a single story instead of two unexplained rows.
+   */
+  splitOf?: number
+  /**
+   * Why the chunk's own call(s) failed, from the client's failure recorder. Present on every entry
+   * whose call failed at least once (so also on a chunk that later recovered), and it carries only
+   * what the SDK actually reported — nothing is inferred.
+   */
+  failure?: ChunkFailure
 }
 
 export interface ClipSelectionTrace {
@@ -389,6 +418,18 @@ function toTimecode(ms: number): string {
 const CHUNK_CONCURRENCY = 3
 const JUDGE_CONCURRENCY = 3
 /**
+ * How many fresh attempts a chunk gets when its call fails (the client's own structured-output
+ * retries are already exhausted by then). Each attempt makes a new call, so a provider blip that
+ * clears within a backoff window never costs the chunk its candidates.
+ *
+ * The waits are 2s, 6s, 18s — honest exponential backoff that stays under the 20s rate-limit cap
+ * (`RATE_LIMIT_POLICY.maxWaitMs`) shared with `withRateLimitRetry`. Rate-limit responses are not
+ * retried here: `withRateLimitRetry` already owns those, at a 1s/2s/4s cadence honouring
+ * `retry-after`.
+ */
+const CHUNK_RETRY_ATTEMPTS = 3
+const CHUNK_RETRY_BASE_MS = 2_000
+/**
  * Share of judge calls that may fail before the run is treated as failed. A run where most judge
  * calls died has not judged the clips it returns; keeping its few survivors and replacing the
  * user's previous suggestions with them would be worse than failing.
@@ -401,8 +442,34 @@ const MAX_JUDGE_FAILURE_RATIO = 0.5
  */
 const PRE_JUDGE_DUPLICATE_OVERLAP = 0.9
 
-/** Ceiling on candidates requested per chunk, independent of how many survive the gate. */
-const MAX_CANDIDATES_PER_CHUNK = 20
+/**
+ * Runaway guard on candidates per chunk — NOT a recall limiter.
+ *
+ * The prompt asks the model to "list every plausible clip" and the system prompt says not to
+ * self-censor, so whatever it proposes is a moment we asked for. The old fixed ceiling of 20 then
+ * silently sliced that tail off — throwing away the very recall the prompt was built to collect.
+ * A dense 20-minute chunk routinely proposes ~30, so the cap fired on real content, not on runaway
+ * output, and gate 5 ("candidates dropped over the per-chunk cap") started failing on long videos.
+ *
+ * So the ceiling scales with the chunk's own length — a longer section can legitimately hold more
+ * moments — with a floor so a short section is not starved and a ceiling so a model listing
+ * hundreds of near-duplicates cannot blow up the judge budget. A full 20-minute chunk
+ * (`CHUNK_SIZE_MS` the chunking target) allows 40; the ceiling only bites above ~25 minutes.
+ */
+const CANDIDATE_CAP_FLOOR = 20
+// Exported so tests can assert against the real ceiling instead of duplicating/hardcoding it.
+export const CANDIDATE_CAP_CEIL = 50
+const CANDIDATE_CAP_PER_MINUTE = 2
+
+/** Candidates one chunk may keep. See the cap policy above; floors/ceilings keep it well-defined. */
+function maxCandidatesFor(chunk: Sentence[]): number {
+  const first = chunk[0]
+  const last = chunk[chunk.length - 1]
+  if (!first || !last) return CANDIDATE_CAP_FLOOR
+  const minutes = (last.endMs - first.startMs) / 60_000
+  const scaled = Math.ceil(minutes * CANDIDATE_CAP_PER_MINUTE)
+  return Math.min(CANDIDATE_CAP_CEIL, Math.max(CANDIDATE_CAP_FLOOR, scaled))
+}
 /** Default clip count per video. Overridable per call, so the effective value is hashed per run. */
 const DEFAULT_MAX_CLIPS = 10
 
@@ -715,7 +782,9 @@ export function computePipelineFingerprint(
         `minClipMs:${MIN_CLIP_MS}`,
         `maxClipMs:${MAX_CLIP_MS}`,
         `dedupeOverlap:${DEDUPE_OVERLAP_RATIO}`,
-        `maxCandidatesPerChunk:${MAX_CANDIDATES_PER_CHUNK}`,
+        `candidateCapFloor:${CANDIDATE_CAP_FLOOR}`,
+        `candidateCapCeil:${CANDIDATE_CAP_CEIL}`,
+        `candidateCapPerMinute:${CANDIDATE_CAP_PER_MINUTE}`,
         `maxClips:${maxClips}`,
         // Temperature (#97/#90). Left out, two runs differing only in temperature would share a
         // hash — and the hash is the thing that makes a stored clip's behaviour attributable.
@@ -741,9 +810,9 @@ async function selectFromChunk(
 ): Promise<{ candidates: Candidate[]; dropped: number }> {
   // No `.max()` on the array. The cap is a budget we impose on ourselves after the fact, and
   // enforcing it here made a dense chunk fail validation — then fail its retries at temperature 0
-  // with the same oversized answer — and lose every candidate it had, good ones included. The
-  // prompt already asks for at most MAX_CANDIDATES_PER_CHUNK; this is the backstop for when the
-  // model ignores it, and it costs one `slice`.
+  // with the same oversized answer — and lose every candidate it had, good ones included. The prompt
+  // asks for every plausible clip, so this is a runaway guard sized to the chunk, not a recall
+  // limiter (see the cap policy); it costs one `slice`.
   const schema = zod.object({ clips: zod.array(CandidateSchema) })
   const firstIndex = chunk[0]!.index
   const lastIndex = chunk[chunk.length - 1]!.index
@@ -767,15 +836,216 @@ async function selectFromChunk(
   )
   // Reversed ranges (`start: 900, end: 100`) pass the filter above, and `refineClipBoundaries` swaps
   // them rather than discarding them — a recoverable slip, not a broken one. So they are kept, but
-  // they must not be allowed to spend the budget: twenty reversed candidates would otherwise take all
-  // 20 slots and push out every well-formed one, which is the exact failure the cap was meant to
-  // prevent. Well-formed candidates are laid down first, so a reversed range can only use a slot no
-  // real candidate wanted, and the model's own best-first order still decides the winners.
+  // they must not be allowed to spend the budget: reversed candidates filling every slot would push
+  // out every well-formed one, which is the exact failure the cap was meant to prevent. Well-formed
+  // candidates are laid down first, so a reversed range can only use a slot no real candidate
+  // wanted, and the model's own best-first order still decides the winners.
   const wellFormed = inRange.filter((c) => c.startSentence <= c.endSentence)
   const reversed = inRange.filter((c) => c.startSentence > c.endSentence)
   const ordered = [...wellFormed, ...reversed]
-  const candidates = ordered.slice(0, MAX_CANDIDATES_PER_CHUNK)
+  const candidates = ordered.slice(0, maxCandidatesFor(chunk))
   return { candidates, dropped: ordered.length - candidates.length }
+}
+
+/**
+ * How one chunk turned out, before it is assigned a trace index. The tree shape exists because a
+ * failed chunk may be split in two and each half analysed separately, and the report needs to tell
+ * a plain failure from a failure that was recovered — both of which the halves themselves encode.
+ * Each node carries its own sentence span, so a half reports its half rather than its parent's.
+ */
+type ChunkNode =
+  | {
+      kind: "answered"
+      firstSentence: number
+      lastSentence: number
+      candidates: Candidate[]
+      dropped: number
+      /** How many fresh attempts this chunk needed to get an answer (1 on a clean run). */
+      attempts: number
+      /** Failure of the last failed attempt that preceded this answer, when there was one. */
+      failure?: ChunkFailure
+    }
+  | {
+      kind: "failed"
+      firstSentence: number
+      lastSentence: number
+      error: string
+      failure?: ChunkFailure
+    }
+  | {
+      kind: "bisect"
+      firstSentence: number
+      lastSentence: number
+      error: string
+      failure?: ChunkFailure
+      left: ChunkNode
+      right: ChunkNode
+    }
+
+/** True when a chunk's whole tree failed — after a split, that means both halves failed. */
+function treeFailed(node: ChunkNode): boolean {
+  if (node.kind === "answered") return false
+  if (node.kind === "failed") return true
+  return treeFailed(node.left) && treeFailed(node.right)
+}
+
+async function runChunkNode(
+  client: AiClient,
+  chunk: Sentence[],
+  words: Word[],
+  profile: ClipProfile,
+  contextBlock: string,
+  arousalPerSec: number[],
+  sleep: Sleep,
+  depth: number,
+): Promise<ChunkNode> {
+  const firstSentence = chunk[0]!.index
+  const lastSentence = chunk[chunk.length - 1]!.index
+  // A top-level chunk earns the full retry budget; a half produced by a split gets a single attempt.
+  // The halves are already the recovery path — giving each one three more tries would turn the
+  // worst case into nine calls (3 + 3 + 3) for one bad section, which is exactly the amplification
+  // the one-level bisection exists to avoid. Worst case stays 3 + 1 + 1 = 5.
+  const maxAttempts = depth === 0 ? CHUNK_RETRY_ATTEMPTS : 1
+  let lastError: unknown
+  let lastFailure: ChunkFailure | undefined
+  let rateLimited = false
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const { candidates, dropped } = await withRateLimitRetry(
+        () => selectFromChunk(client, chunk, words, profile, contextBlock, arousalPerSec),
+        sleep,
+      )
+      // Recovered mid-way: the earlier failures are still worth recording so the report can say an
+      // answer arrived on the Nth try, not that the call was clean.
+      return {
+        kind: "answered",
+        firstSentence,
+        lastSentence,
+        candidates,
+        dropped,
+        attempts: attempt,
+        ...(lastFailure ? { failure: lastFailure } : {}),
+      }
+    } catch (err) {
+      lastError = err
+      lastFailure = readChunkFailure(err) ?? undefined
+      console.warn(
+        `[clip-selector] chunk #${firstSentence}-#${lastSentence} attempt ${attempt}/${maxAttempts} failed:`,
+        err,
+      )
+      // `withRateLimitRetry` has already spent its own 1s/2s/4s(+retry-after) budget on a 429;
+      // retrying here or splitting the chunk would only pile more calls onto a throttled key.
+      if (isRateLimitError(err)) {
+        rateLimited = true
+        break
+      }
+      if (attempt < maxAttempts) await sleep(CHUNK_RETRY_BASE_MS * 3 ** (attempt - 1))
+    }
+  }
+  const error = lastError instanceof Error ? lastError.message : String(lastError)
+  // A one-sentence chunk cannot be split further, halves never split again (`depth > 0`), and a
+  // rate-limited chunk is a throttling problem rather than a section the model could not read.
+  if (depth === 0 && chunk.length > 1 && !rateLimited) {
+    const mid = Math.ceil(chunk.length / 2)
+    const left = await runChunkNode(
+      client,
+      chunk.slice(0, mid),
+      words,
+      profile,
+      contextBlock,
+      arousalPerSec,
+      sleep,
+      depth + 1,
+    )
+    const right = await runChunkNode(
+      client,
+      chunk.slice(mid),
+      words,
+      profile,
+      contextBlock,
+      arousalPerSec,
+      sleep,
+      depth + 1,
+    )
+    console.warn(
+      `[clip-selector] chunk #${firstSentence}-#${lastSentence} split in two after all ${maxAttempts} attempts`,
+    )
+    return {
+      kind: "bisect",
+      firstSentence,
+      lastSentence,
+      error,
+      ...(lastFailure ? { failure: lastFailure } : {}),
+      left,
+      right,
+    }
+  }
+  return {
+    kind: "failed",
+    firstSentence,
+    lastSentence,
+    error,
+    ...(lastFailure ? { failure: lastFailure } : {}),
+  }
+}
+
+/**
+ * Unpicks one chunk's node tree into `trace.chunks` and `perChunk`, assigning positional indexes as
+ * it goes so `TraceEntry.chunk` stays an index into `trace.chunks`. DFS order — parent, then its
+ * two halves — keeps a bisect's story together. `parentIndex` is set only on the halves of a split.
+ */
+function flattenChunkNode(
+  node: ChunkNode,
+  traceChunks: TraceChunk[],
+  perChunk: Candidate[][],
+  parentIndex?: number,
+): void {
+  const index = traceChunks.length
+  const base = { index, firstSentence: node.firstSentence, lastSentence: node.lastSentence }
+  switch (node.kind) {
+    case "answered":
+      perChunk.push(node.candidates)
+      traceChunks.push({
+        ...base,
+        candidateCount: node.candidates.length,
+        candidatesDropped: node.dropped,
+        failed: false,
+        // True when this slot's candidates came from a fresh retry or from a split of a failed
+        // chunk — the two recovery paths the report must distinguish from a clean answer.
+        recovered: parentIndex !== undefined || node.attempts > 1,
+        ...(parentIndex !== undefined ? { splitOf: parentIndex } : {}),
+        ...(node.failure ? { failure: node.failure } : {}),
+      })
+      return
+    case "failed":
+      perChunk.push([])
+      traceChunks.push({
+        ...base,
+        candidateCount: 0,
+        candidatesDropped: 0,
+        failed: true,
+        error: node.error,
+        ...(parentIndex !== undefined ? { splitOf: parentIndex } : {}),
+        ...(node.failure ? { failure: node.failure } : {}),
+      })
+      return
+    case "bisect":
+      // A hinge, not a hole: it contributed nothing itself, but its halves follow and the report
+      // reads the whole story as one row plus its splits.
+      perChunk.push([])
+      traceChunks.push({
+        ...base,
+        candidateCount: 0,
+        candidatesDropped: 0,
+        failed: true,
+        bisected: true,
+        error: node.error,
+        ...(node.failure ? { failure: node.failure } : {}),
+      })
+      flattenChunkNode(node.left, traceChunks, perChunk, index)
+      flattenChunkNode(node.right, traceChunks, perChunk, index)
+      return
+  }
 }
 
 export interface SelectClipsOptions {
@@ -848,68 +1118,33 @@ export async function selectClips(
 
   // ── Step 1 — generate for recall, chunks in parallel ───────────────────────
   const chunks = topicsToChunks(sentences, topics)
-  type ChunkResult =
-    { ok: true; candidates: Candidate[]; dropped: number } | { ok: false; error: string }
-  // mapPool returns results in chunk order, so the trace and the candidate order are the same on
-  // every run regardless of which response arrives first.
-  const chunkResults = await mapPool(
-    chunks,
-    CHUNK_CONCURRENCY,
-    async (chunk): Promise<ChunkResult> => {
-      // client.generateObject already retries malformed-JSON failures. If a chunk still fails after
-      // that, drop just this chunk's candidates rather than aborting selection for the whole video.
-      try {
-        const { candidates, dropped } = await withRateLimitRetry(
-          () => selectFromChunk(client, chunk, words, profile, contextBlock, arousalPerSec),
-          sleep,
-        )
-        return { ok: true, candidates, dropped }
-      } catch (err) {
-        console.error(
-          `[clip-selector] chunk (sentences #${chunk[0]?.index}-#${chunk[chunk.length - 1]?.index}) failed after retries, skipping:`,
-          err,
-        )
-        return { ok: false, error: err instanceof Error ? err.message : String(err) }
-      }
-    },
+  // mapPool returns the node trees in chunk order; `flattenChunkNode` unpicks them in that same
+  // order afterwards, so the trace and the candidate order are identical on every run regardless
+  // of which response arrives first.
+  const chunkNodes = await mapPool(chunks, CHUNK_CONCURRENCY, (chunk) =>
+    runChunkNode(
+      client,
+      chunk,
+      words,
+      profile,
+      contextBlock,
+      arousalPerSec,
+      sleep,
+      // Top-level chunks may recover a total failure by splitting; the halves themselves may not
+      // (one level of bisection keeps the worst-case call budget finite).
+      0,
+    ),
   )
 
   const perChunk: Candidate[][] = []
-  let failedChunks = 0
-  chunks.forEach((chunk, index) => {
-    const result = chunkResults[index]!
-    const base = {
-      index,
-      firstSentence: chunk[0]!.index,
-      lastSentence: chunk[chunk.length - 1]!.index,
-    }
-    if (result.ok) {
-      perChunk.push(result.candidates)
-      trace.chunks.push({
-        ...base,
-        candidateCount: result.candidates.length,
-        candidatesDropped: result.dropped,
-        failed: false,
-      })
-    } else {
-      perChunk.push([])
-      // Recorded even though it produced nothing: "chunk 3 of 5 returned no candidates" and
-      // "chunk 3 of 5 never ran" are very different answers to why a long video yielded two clips.
-      trace.chunks.push({
-        ...base,
-        candidateCount: 0,
-        candidatesDropped: 0,
-        failed: true,
-        error: result.error,
-      })
-      failedChunks++
-    }
-  })
+  for (const node of chunkNodes) flattenChunkNode(node, trace.chunks, perChunk)
 
   // A run where every chunk failed has told us nothing about the transcript — only that the API was
   // unreachable. Throwing here, before any swap, is what lets a re-selection keep its previous
-  // suggestions. The partial-failure case (some chunks answered) still succeeds.
-  if (chunks.length > 0 && failedChunks === chunks.length) {
+  // suggestions. The partial-failure case (some chunks answered) still succeeds. A chunk counts as
+  // failed once its whole tree is failed (a bisect only recovered when a half answered).
+  const allFailed = chunkNodes.filter((n) => treeFailed(n)).length
+  if (chunks.length > 0 && allFailed === chunks.length) {
     throw new Error(
       `Clip selection failed for all ${chunks.length} chunk(s) after retries. ` +
         `This is an API or model-configuration failure, not an absence of good clips. ` +

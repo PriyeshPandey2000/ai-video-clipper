@@ -39,8 +39,22 @@ module.exports = async function ({ appDir, electronVersion, arch, platform }) {
   // pnpm store — no assumptions about which layout is in effect. realpathSync follows through any
   // symlink to the actual on-disk package electron-builder needs to copy.
   function resolveRealDir(pkgName) {
-    const pkgJsonPath = require.resolve(`${pkgName}/package.json`, { paths: [appDir] })
-    return dirname(fs.realpathSync(pkgJsonPath))
+    try {
+      const pkgJsonPath = require.resolve(`${pkgName}/package.json`, { paths: [appDir] })
+      return dirname(fs.realpathSync(pkgJsonPath))
+    } catch (err) {
+      if (err.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw err
+    }
+    // A package whose "exports" map blocks "./package.json" (onnxruntime-common) — or has no
+    // main entry at all, just a prebuilt binary asset (e.g. @img/sharp-darwin-arm64) — can't be
+    // found through require.resolve at all. Fall back to Node's own node_modules search path
+    // list (the same ancestor-walk require.resolve uses internally) and take the first one that
+    // actually contains this package directory.
+    for (const candidate of require.resolve.paths(pkgName) ?? []) {
+      const dir = join(candidate, ...pkgName.split("/"))
+      if (fs.existsSync(dir)) return fs.realpathSync(dir)
+    }
+    throw new Error(`Could not locate ${pkgName} in any node_modules ancestor of ${appDir}`)
   }
 
   const sqlite3Real = resolveRealDir("better-sqlite3")
@@ -74,6 +88,43 @@ module.exports = async function ({ appDir, electronVersion, arch, platform }) {
   // which are almost never hoisted to appDir/node_modules even when better-sqlite3 itself is.
   copyReal(resolveRealDir("bindings"), join(appDir, "node_modules", "bindings"))
   copyReal(resolveRealDir("file-uri-to-path"), join(appDir, "node_modules", "file-uri-to-path"))
+
+  // 4. electron-log and electron-updater are pure JS (no native rebuild needed) but
+  // electron-vite's externalizeDepsPlugin leaves them as a bare require() in the packaged main
+  // bundle instead of inlining them — same reason better-sqlite3 needs steps 2/3 above. Walk each
+  // package's own declared dependencies recursively instead of hand-listing every transitive dep,
+  // which is what let electron-log go missing from the shipped app in the first place.
+  function copyDepTree(pkgName, visited) {
+    if (visited.has(pkgName)) return
+    visited.add(pkgName)
+    const realDir = resolveRealDir(pkgName)
+    copyReal(realDir, join(appDir, "node_modules", ...pkgName.split("/")))
+    const deps = JSON.parse(fs.readFileSync(join(realDir, "package.json"), "utf8")).dependencies || {}
+    for (const dep of Object.keys(deps)) copyDepTree(dep, visited)
+  }
+
+  const runtimeDepsCopied = new Set(["better-sqlite3", "bindings", "file-uri-to-path"])
+  copyDepTree("electron-log", runtimeDepsCopied)
+  copyDepTree("electron-updater", runtimeDepsCopied)
+
+  // 5. onnxruntime-node (local transcription/transformers pipeline) is pure JS plus prebuilt
+  // native binaries — no rebuild needed, but the same externalized-dependency gap as step 4.
+  // Its package.json also lists adm-zip/global-agent, but those only run inside its own install
+  // script to fetch platform binaries from a CDN — never required at runtime (confirmed by
+  // grepping dist/ for actual require() calls) — so copyDepTree's declared-deps walk would ship
+  // dead weight here. Copying the one dep it actually requires by hand instead.
+  copyReal(resolveRealDir("onnxruntime-node"), join(appDir, "node_modules", "onnxruntime-node"))
+  copyReal(resolveRealDir("onnxruntime-common"), join(appDir, "node_modules", "onnxruntime-common"))
+
+  // 6. sharp (image preprocessing for the same pipeline) resolves its native binding through its
+  // own optionalDependencies at require-time, scoped to exactly one platform/arch pair — only the
+  // one matching the host machine is ever installed (mirrors why better-sqlite3 can't
+  // cross-compile above), so copy exactly that pair rather than sharp's full optional list.
+  copyDepTree("sharp", runtimeDepsCopied)
+  const sharpArch = `${platform.nodeName}-${arch}`
+  for (const sharpPkg of [`@img/sharp-${sharpArch}`, `@img/sharp-libvips-${sharpArch}`]) {
+    copyReal(resolveRealDir(sharpPkg), join(appDir, "node_modules", ...sharpPkg.split("/")))
+  }
 
   console.log("Native deps prepared.\n")
   // Return false so electron-builder skips its own rebuild (crashes on pnpm workspace symlinks)

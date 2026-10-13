@@ -238,8 +238,18 @@ function buildSchema(questions: readonly JudgeQuestion[]) {
     answers: zod.object(Object.fromEntries(questions.map((q) => [q.id, grade]))),
     note: zod.string(),
     // null is accepted as well as absent: models routinely answer "none" with an explicit null.
-    bestOpeningSentence: zod.number().int().nullable().optional(),
+    // A string is tolerated too: the clip renders sentences as "#N" labels, and models occasionally
+    // echo the whole label back instead of the digits. parseOpeningSentence normalises it.
+    bestOpeningSentence: zod.union([zod.number().int(), zod.string()]).nullish(),
   })
+}
+
+/** `1` from a number, "1" or "#1" from a string, or null when the answer is not an integer label. */
+function parseOpeningSentence(value: number | string | null | undefined): number | null {
+  if (value == null) return null
+  if (typeof value === "number") return Number.isInteger(value) ? value : null
+  const m = /^#?\s*(\d+)\s*$/.exec(value)
+  return m ? Number(m[1]) : null
 }
 
 export interface JudgeClipInput {
@@ -279,10 +289,12 @@ export async function judgeClip(input: JudgeClipInput): Promise<ClipJudgement> {
 
   const answers = raw.answers as Record<string, JudgeGrade>
   // Only an index that is really inside the clip is kept — a hallucinated number must not reach #100.
-  const best = raw.bestOpeningSentence
+  const parsedOpening = parseOpeningSentence(raw.bestOpeningSentence)
   const bestOpeningSentence =
-    best != null && best >= boundary.startSentenceIndex && best <= boundary.endSentenceIndex
-      ? best
+    parsedOpening != null &&
+    parsedOpening >= boundary.startSentenceIndex &&
+    parsedOpening <= boundary.endSentenceIndex
+      ? parsedOpening
       : null
 
   return {

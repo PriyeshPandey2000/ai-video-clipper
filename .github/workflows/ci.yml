@@ -64,3 +64,10 @@ jobs:
       # Unsigned, --dir mode — validates the full electron-builder config (electronVersion,
       # entitlements path, extraResources, asarUnpack) without needing any signing credentials.
       - run: pnpm --filter @video-editor/desktop package:dir
+
+      # package:dir succeeding only means electron-builder's config is valid — it doesn't mean the
+      # output actually runs. electron-log/electron-updater got silently dropped from real builds
+      # this way (#119) and nothing short of launching the packaged app would have caught it. This
+      # checks every bare require() the built main/preload bundles reference actually resolves
+      # inside the packaged app's own node_modules, without needing a display.
+      - run: node apps/desktop/scripts/verify-packaged-deps.js

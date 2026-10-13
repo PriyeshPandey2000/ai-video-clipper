@@ -10,7 +10,12 @@
 
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import type { ClipSelectionProvenance, ClipSelectionTrace, TraceEntry } from "@video-editor/ai"
+import type {
+  ClipSelectionProvenance,
+  ClipSelectionTrace,
+  TraceChunk,
+  TraceEntry,
+} from "@video-editor/ai"
 import { CLIP_PROFILES, renderVideoContext } from "@video-editor/ai"
 import type { VideoAnalysis } from "@video-editor/types"
 
@@ -105,6 +110,12 @@ export interface SelectionFunnelStep {
 
 export interface SelectionFunnel {
   chunkCount: number
+  /**
+   * Leaf sections — the chunks a reader would count as "parts of the transcript" (`chunkCount`
+   * minus the bisected parents, whose halves are the real leaves). The UI's "N of M sections"
+   * notice pairs this with `failedChunkCount`, which is also leaves-only, so the two agree.
+   */
+  sectionCount: number
   /** Chunks whose model call failed outright — these contributed nothing at all. */
   failedChunkCount: number
   /** Candidates that reached the ranking stage. */
@@ -138,6 +149,15 @@ export async function readLastReportFunnel(projectDir: string): Promise<Selectio
   }
 }
 
+/**
+ * Sections that genuinely produced nothing. A bisected parent is structural — its halves are the
+ * leaves of the same story — so counting it too would report one hole twice; its failed halves count
+ * on their own. Shared by the funnel and the summary so the review screen and the report agree.
+ */
+function countFailedChunks(chunks: TraceChunk[]): number {
+  return chunks.filter((c) => c.failed && !c.bisected).length
+}
+
 function buildFunnel(report: SelectionReport): SelectionFunnel {
   const tally: Record<string, number> = {}
   for (const c of report.trace.candidates) {
@@ -151,7 +171,8 @@ function buildFunnel(report: SelectionReport): SelectionFunnel {
     .filter((s) => s.count > 0)
   return {
     chunkCount: report.trace.chunks.length,
-    failedChunkCount: report.trace.chunks.filter((c) => c.failed).length,
+    sectionCount: report.trace.chunks.filter((c) => !c.bisected).length,
+    failedChunkCount: countFailedChunks(report.trace.chunks),
     candidateCount: report.trace.candidates.length,
     droppedCandidateCount: report.trace.chunks.reduce((n, c) => n + (c.candidatesDropped ?? 0), 0),
     keptCount: report.finalRanked.length,
@@ -192,7 +213,7 @@ function summarise(report: SelectionReport): {
     candidateCount: report.trace.candidates.length,
     outcomes,
     chunkCount: report.trace.chunks.length,
-    failedChunkCount: report.trace.chunks.filter((c) => c.failed).length,
+    failedChunkCount: countFailedChunks(report.trace.chunks),
     droppedCandidateCount: report.trace.chunks.reduce((n, c) => n + (c.candidatesDropped ?? 0), 0),
   }
 }
@@ -212,6 +233,37 @@ function fence(text: string | null): string {
 /** Escapes the pipe-heavy characters a title or reason can contain in a Markdown table cell. */
 function cell(text: string): string {
   return text.replace(/\|/g, "\\|").replace(/\n/g, " ")
+}
+
+/**
+ * The "result" cell for one chunk row. "answered" vs "failed" is no longer the whole story: a chunk
+ * that answered on a later attempt, a parent that was split in two, and the halves that replaced it
+ * are different outcomes, and the report is where a reviewer reads which one happened.
+ */
+function chunkResultCell(c: TraceChunk): string {
+  if (!c.failed) {
+    if (c.splitOf !== undefined) return `answered (split of #${c.splitOf})`
+    return c.recovered ? "answered after retries" : "answered"
+  }
+  if (c.bisected) return "**failed → split in two**"
+  const origin = c.splitOf !== undefined ? ` (split of #${c.splitOf})` : ""
+  return `**failed**${origin}${c.error ? `: ${cell(c.error)}` : ""}`
+}
+
+/**
+ * One line per chunk whose call(s) actually failed, carrying the client's recorder fields. Kept out
+ * of the table so the row stays one line, and rendered because this is the detail a reviewer greps
+ * for when a long video came back short (the `json_validate_failed` smoke run had no correction to
+ * record — it printed an empty `failed_generation` — so the metadata is all there is to go on).
+ */
+function chunkFailureLine(c: TraceChunk): string {
+  const f = c.failure!
+  const tokens =
+    f.inputTokens !== null || f.outputTokens !== null
+      ? ` · ${f.inputTokens ?? "?"}→${f.outputTokens ?? "?"} tokens`
+      : ""
+  const label = c.bisected ? `#${c.index} (parent of a split)` : `#${c.index}`
+  return `- chunk ${label}: ${f.attempts} client attempt(s) · ${f.promptChars} prompt chars · ${f.reason}${tokens}`
 }
 
 /**
@@ -393,10 +445,15 @@ function renderMarkdown(report: SelectionReport): string {
       // were never judged, so a run that hit the cap produced a smaller clip set than it could have.
       const dropped = c.candidatesDropped > 0 ? ` (+${c.candidatesDropped} dropped)` : ""
       lines.push(
-        `| ${c.index} | #${c.firstSentence}–#${c.lastSentence} | ${c.candidateCount}${dropped} | ${
-          c.failed ? `**failed**${c.error ? `: ${c.error}` : ""}` : "answered"
-        } |`,
+        `| ${c.index} | #${c.firstSentence}–#${c.lastSentence} | ${c.candidateCount}${dropped} | ${chunkResultCell(c)} |`,
       )
+    }
+    const failures = trace.chunks.filter((c) => c.failure)
+    if (failures.length > 0) {
+      lines.push("")
+      lines.push("Chunk call details (recorded by the client when its calls failed):")
+      lines.push("")
+      for (const c of failures) lines.push(chunkFailureLine(c))
     }
   }
   lines.push("")

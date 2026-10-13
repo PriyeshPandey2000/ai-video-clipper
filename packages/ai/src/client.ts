@@ -97,6 +97,69 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * Why a chunk's generation calls gave up, attached to the error the client throws and read by the
+ * chunk loop in `clip-selector.ts`. Recorded at the client because that is the only call site that
+ * has the prompt and the SDK error together; the report and the review screen stay truthful by only
+ * printing whatever actually came back (the `json_validate_failed` smoke failure had an empty
+ * `failed_generation`, so the whole point of the field is that we do NOT guess a correction).
+ */
+export interface ChunkFailure {
+  /** Short diagnostic of the last failure, e.g. `AI_APICallError (json_validate_failed)`. */
+  reason: string
+  /**
+   * How many structured-output calls the client made before giving up on this attempt. The chunk
+   * loop's own fresh re-calls are its business, not the client's.
+   */
+  attempts: number
+  /** Characters in the prompt that was sent with the failing call. */
+  promptChars: number
+  /** Provider-reported input tokens, when the SDK error exposed them (it usually does). */
+  inputTokens: number | null
+  /** Provider-reported output tokens, when the SDK error exposed them. */
+  outputTokens: number | null
+}
+
+function generationFailureReason(error: unknown): string {
+  const err = error as {
+    name?: string
+    data?: { error?: { code?: string } }
+    code?: string
+  } | null
+  const code = err?.data?.error?.code ?? err?.code ?? ""
+  return code ? `${err?.name ?? "(unknown)"} (${code})` : (err?.name ?? "(unknown)")
+}
+
+/**
+ * Stamps `chunkFailure` onto an error the chunk loop is about to see. Non-enumerable so that
+ * serialising the error (or `isRateLimitError` walking it) behaves exactly as before, and skipped
+ * when a provider already wrapped it — the first record is the deepest, which is the useful one.
+ */
+export function recordGenerationFailure(error: unknown, promptChars: number): void {
+  if (error === null || typeof error !== "object") return
+  const err = error as { chunkFailure?: unknown }
+  if (err.chunkFailure !== undefined) return
+  const usage = (error as { usage?: { inputTokens?: unknown; outputTokens?: unknown } }).usage
+  Object.defineProperty(err, "chunkFailure", {
+    value: {
+      reason: generationFailureReason(error),
+      attempts: GENERATE_OBJECT_ATTEMPTS,
+      promptChars,
+      // `null` for a failure that did not carry usage — recording a number here would be guessing.
+      inputTokens: typeof usage?.inputTokens === "number" ? usage.inputTokens : null,
+      outputTokens: typeof usage?.outputTokens === "number" ? usage.outputTokens : null,
+    },
+    enumerable: false,
+    configurable: true,
+  })
+}
+
+/** Reads the failure stamped by `recordGenerationFailure`, if the error carries one. */
+export function readChunkFailure(error: unknown): ChunkFailure | null {
+  if (error === null || typeof error !== "object") return null
+  return (error as { chunkFailure?: ChunkFailure }).chunkFailure ?? null
+}
+
 function createGroqClient(
   groq: ReturnType<typeof createGroq>,
   textModel: string,
@@ -139,6 +202,9 @@ function createGroqClient(
           if (attempt < GENERATE_OBJECT_ATTEMPTS) await sleep(RETRY_BACKOFF_MS * attempt)
         }
       }
+      // The chunk loop and the report read this to say *why* the call died (error name, provider
+      // code, tokens, attempt count), so a skipped chunk is diagnosable from the report alone.
+      recordGenerationFailure(lastError, prompt.length)
       throw lastError
     },
   }

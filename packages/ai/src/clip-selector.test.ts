@@ -3,12 +3,13 @@ import type { Word, Sentence } from "@video-editor/types"
 import { buildSentences } from "@video-editor/transcript"
 import type { TopicSegment } from "@video-editor/transcript"
 import type { AiClient } from "./client"
-import { CLIP_SELECTION_TEMPERATURE } from "./client"
+import { CLIP_SELECTION_TEMPERATURE, readChunkFailure, recordGenerationFailure } from "./client"
 import {
   selectClips,
   computePipelineFingerprint,
   PIPELINE_FINGERPRINT,
   PIPELINE_VERSION,
+  CANDIDATE_CAP_CEIL,
 } from "./clip-selector"
 import type { TraceEntry } from "./clip-selector"
 import { CLIP_PROFILES } from "./profiles"
@@ -144,12 +145,17 @@ describe("per-chunk candidate budget", () => {
   // candidates failed validation rather than returning 20. The client's retries re-ask at
   // temperature 0 and got the same oversized answer, so the whole chunk was lost — good candidates
   // included. The budget is now enforced after parsing, and these two tests pin that.
+  //
+  // The cap scales with chunk duration (see `maxCandidatesFor` in clip-selector.ts), so a fixed
+  // count can't reliably exceed it for every chunk — except CANDIDATE_CAP_CEIL, which no chunk's
+  // cap ever goes above. Returning more than that guarantees truncation regardless of chunk length.
+  const SURPLUS = CANDIDATE_CAP_CEIL + 10
   const many: Handler = (prompt) => {
     const r = range(prompt)
     if (!r) return { ranking: [] }
     const [lo, hi] = r
     const clips = []
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < SURPLUS; i++) {
       const start = Math.min(lo + i * 3, hi)
       clips.push({
         startSentence: start,
@@ -170,17 +176,18 @@ describe("per-chunk candidate budget", () => {
     expect(trace.chunks.some((c) => !c.failed && c.candidateCount > 0)).toBe(true)
   })
 
-  it("keeps the first 20 candidates and records the remainder as dropped", async () => {
+  it("keeps candidates up to the chunk's own cap and records the remainder as dropped", async () => {
     const { trace } = await selectClips(mockClient(many), words, sentences)
     for (const chunk of trace.chunks) {
-      expect(chunk.candidateCount).toBeLessThanOrEqual(20)
+      expect(chunk.candidateCount).toBeLessThanOrEqual(CANDIDATE_CAP_CEIL)
       expect(chunk.candidatesDropped).toBeGreaterThanOrEqual(0)
     }
-    // The 24-per-chunk handler overflows, so at least one chunk must report the truncation —
-    // otherwise the field would always read 0 and look like it worked while capping nothing.
+    // The SURPLUS-per-chunk handler overflows every chunk's cap, so at least one chunk must report
+    // the truncation — otherwise the field would always read 0 and look like it worked while
+    // capping nothing.
     expect(trace.chunks.some((c) => c.candidatesDropped > 0)).toBe(true)
     const chunk = trace.chunks.find((c) => c.candidatesDropped > 0)!
-    expect(chunk.candidateCount + chunk.candidatesDropped).toBe(24)
+    expect(chunk.candidateCount + chunk.candidatesDropped).toBe(SURPLUS)
   })
 
   it("reports zero drops for a chunk under the cap", async () => {
@@ -190,18 +197,22 @@ describe("per-chunk candidate budget", () => {
 
   it("keeps a reversed range out of the budget ahead of well-formed candidates", async () => {
     // `refineClipBoundaries` swaps a reversed range rather than discarding it, so these are
-    // recoverable and worth keeping — but they must not outrank real candidates for the 20 slots. With
-    // only `start >= first && end <= last` as the filter, twenty reversed candidates take every slot
-    // and the one well-formed candidate behind them is reported as dropped.
+    // recoverable and worth keeping — but they must not outrank real candidates for the budget's
+    // slots. With only `start >= first && end <= last` as the filter, enough reversed candidates
+    // take every slot and the one well-formed candidate behind them is reported as dropped.
+    //
+    // SURPLUS reversed candidates guarantees overflow regardless of this chunk's own cap (see the
+    // comment on `many` above) — the exact number dropped isn't the point; that the well-formed
+    // one always survives despite being last in the model's own order, is.
     const reversedFirst: Handler = (prompt) => {
       const r = range(prompt)
       if (!r) return { ranking: [] }
       const [lo, hi] = r
       // Strictly reversed throughout: the start must stay above the end for every i, or later
       // entries become well-formed by accident and the fixture stops testing what it claims.
-      const clips = Array.from({ length: 20 }, (_, i) => ({
+      const clips = Array.from({ length: SURPLUS }, (_, i) => ({
         startSentence: hi - i,
-        endSentence: lo + 20 - i - 1,
+        endSentence: lo + SURPLUS - i - 1,
         title: `reversed-${i}`,
         reason: "r",
         strong: true,
@@ -221,13 +232,12 @@ describe("per-chunk candidate budget", () => {
     const { trace } = await selectClips(mockClient(reversedFirst), words, sentences)
     const seen = trace.candidates.filter((c) => c.title === "well-formed")
     expect(seen.length).toBeGreaterThan(0)
-    // 21 candidates against a 20 budget, so exactly one is dropped — and it has to be a reversed
-    // range. Before this ordering the well-formed candidate was the one that got dropped, which is
-    // the whole defect.
+    // Before this ordering the well-formed candidate was the one that got dropped when the budget
+    // overflowed, which is the whole defect.
+    expect(trace.chunks.some((c) => c.candidatesDropped > 0)).toBe(true)
     for (const chunk of trace.chunks) {
       if (chunk.failed) continue
-      expect(chunk.candidateCount).toBeLessThanOrEqual(20)
-      expect(chunk.candidatesDropped).toBeLessThanOrEqual(1)
+      expect(chunk.candidateCount).toBeLessThanOrEqual(CANDIDATE_CAP_CEIL)
     }
   })
 
@@ -592,9 +602,9 @@ describe("hostile input", () => {
         },
       ],
     })
-    await expect(selectClips(mockClient(negative), words, sentences)).rejects.toThrow(
-      /failed for all \d+ chunk/,
-    )
+    await expect(
+      selectClips(mockClient(negative), words, sentences, [], 10, [], null, noSleep),
+    ).rejects.toThrow(/failed for all \d+ chunk/)
   })
 
   it("returns nothing for an empty transcript", async () => {
@@ -783,7 +793,16 @@ describe("chunk failure isolation", () => {
       if (lo === 0) throw new Error("simulated malformed JSON")
       return twoPerChunk(prompt)
     }
-    const { clips } = await selectClips(mockClient(flaky), words, sentences)
+    const { clips } = await selectClips(
+      mockClient(flaky),
+      words,
+      sentences,
+      [],
+      10,
+      [],
+      null,
+      noSleep,
+    )
     // First chunk's candidates are lost, but later chunks still produced clips — selectClips
     // didn't abort the whole run when one chunk failed.
     expect(clips.length).toBeGreaterThan(0)
@@ -826,15 +845,15 @@ describe("chunk failure is not an empty selection (#97)", () => {
   })
 
   it("succeeds when only some chunks failed, keeping the chunks that answered", async () => {
-    const seen: number[] = []
+    // The first chunk fails every fresh attempt, so it is split; its left half (same start) still
+    // fails, its right half answers. Later chunks answer outright. Nothing about this is fatal.
     const flaky: Handler = (prompt) => {
       const r = range(prompt)
       if (!r) return { ranking: [] }
-      seen.push(r[0])
-      if (seen.length % 2 === 0) throw new Error("504 gateway timeout")
+      if (r[0] === 0) throw new Error("504 gateway timeout")
       return twoPerChunk(prompt)
     }
-    const result = await selectClips(mockClient(flaky), words, sentences)
+    const result = await selectClips(mockClient(flaky), words, sentences, [], 10, [], null, noSleep)
     // Partial failure is not failure — the clips that came back are real.
     expect(result.clips.length).toBeGreaterThan(0)
     const trace = result.trace!
@@ -849,17 +868,221 @@ describe("chunk failure is not an empty selection (#97)", () => {
 
   it("distinguishes a failed chunk from an empty one in the trace", async () => {
     // Both look like candidateCount: 0. Without the flag the report cannot answer "why did the
-    // long video yield two clips", which is the question the report exists for.
+    // long video yield two clips", which is the question the report exists for. The first chunk's
+    // whole span fails, so it is the bisected parent (failed, firstSentence 0); its right half
+    // answers with nothing, which is the genuine empty case.
     const flaky: Handler = (prompt) => {
       const r = range(prompt)
       if (!r) return { ranking: [] }
       if (r[0] === 0) throw new Error("invalid api key")
       return { clips: [] } // answered, with nothing
     }
-    const result = await selectClips(mockClient(flaky), words, sentences)
+    const result = await selectClips(mockClient(flaky), words, sentences, [], 10, [], null, noSleep)
     const chunks = result.trace!.chunks
     expect(chunks.find((c) => c.firstSentence === 0)?.failed).toBe(true)
     expect(chunks.find((c) => c.firstSentence !== 0)?.failed).toBe(false)
+  })
+})
+
+describe("chunk recovery: retry and bisect (#97 follow-up)", () => {
+  it("recovers a chunk on a later fresh attempt and records the transient failure", async () => {
+    // Every chunk's first call throws and its second answers — the shape of the intermittent
+    // `json_validate_failed` / `NoOutputGeneratedError` blips the smoke run saw. Before the fresh
+    // attempt existed, each of these chunks simply lost its candidates.
+    const calls = new Map<string, number>()
+    const once: Handler = (prompt) => {
+      const r = range(prompt)
+      if (!r) return { ranking: [] }
+      const key = `${r[0]}-${r[1]}`
+      const n = (calls.get(key) ?? 0) + 1
+      calls.set(key, n)
+      if (n === 1) {
+        const err = new Error("transient blip")
+        recordGenerationFailure(err, 512)
+        throw err
+      }
+      return twoPerChunk(prompt)
+    }
+    const result = await selectClips(mockClient(once), words, sentences, [], 10, [], null, noSleep)
+    const chunks = result.trace!.chunks
+    // Nothing was lost and nothing was split: the retry carried every chunk.
+    expect(chunks.every((c) => !c.failed)).toBe(true)
+    expect(chunks.some((c) => c.bisected)).toBe(false)
+    // And the report can still say an answer arrived on the second try, not that the call was clean.
+    const recovered = chunks.filter((c) => c.recovered && c.failure)
+    expect(recovered.length).toBeGreaterThan(0)
+    expect(recovered[0]!.failure!.promptChars).toBe(512)
+    expect(result.clips.length).toBeGreaterThan(0)
+  })
+
+  it("splits a chunk that fails every attempt and keeps the halves' candidates", async () => {
+    // One small chunk (a short transcript), so the first call is the whole chunk. It fails every
+    // attempt; the two halves are asked with a narrower span and answer. The candidates survive,
+    // which is the whole point — the alternative used to lose this section entirely.
+    const oneChunkWords = transcript(200)
+    const oneChunkSentences = buildSentences(oneChunkWords)
+    let fullWidth = -1
+    const splits: Handler = (prompt) => {
+      const r = range(prompt)
+      if (!r) return { ranking: [] }
+      const width = r[1] - r[0]
+      if (fullWidth === -1) fullWidth = width
+      if (width === fullWidth) {
+        const err = Object.assign(new Error("bad json"), {
+          name: "AI_APICallError",
+          data: { error: { code: "json_validate_failed" } },
+        })
+        recordGenerationFailure(err, 2048)
+        throw err
+      }
+      return twoPerChunk(prompt)
+    }
+    const result = await selectClips(
+      mockClient(splits),
+      oneChunkWords,
+      oneChunkSentences,
+      [],
+      10,
+      [],
+      null,
+      noSleep,
+    )
+    const chunks = result.trace!.chunks
+    const parent = chunks.find((c) => c.bisected)
+    expect(parent).toBeDefined()
+    expect(parent!.failed).toBe(true)
+    expect(parent!.failure?.reason).toMatch(/json_validate_failed/)
+    expect(parent!.failure?.promptChars).toBe(2048)
+    const halves = chunks.filter((c) => c.splitOf === parent!.index)
+    expect(halves).toHaveLength(2)
+    expect(halves.every((c) => !c.failed && c.recovered)).toBe(true)
+    // The recovered section is not a hole: nothing counts as a failed chunk for the gate.
+    expect(chunks.filter((c) => c.failed && !c.bisected)).toHaveLength(0)
+    expect(result.clips.length).toBeGreaterThan(0)
+  })
+
+  it("gives a split half a single attempt, so one bad section costs at most five calls", async () => {
+    // A short transcript is one chunk. Every call fails: the parent spends its full 3-attempt budget,
+    // then each half gets exactly one try (no retry). Without the depth-aware limit the halves would
+    // each retry 3× and one unrecoverable section would cost 3 + 3 + 3 = 9 calls instead of 3+1+1.
+    const oneChunkWords = transcript(200)
+    const oneChunkSentences = buildSentences(oneChunkWords)
+    let calls = 0
+    const alwaysFail: Handler = () => {
+      calls++
+      throw new Error("persistent outage")
+    }
+    await expect(
+      selectClips(
+        mockClient(alwaysFail),
+        oneChunkWords,
+        oneChunkSentences,
+        [],
+        10,
+        [],
+        null,
+        noSleep,
+      ),
+    ).rejects.toThrow(/all \d+ chunk\(s\)/)
+    expect(calls).toBe(5) // 3 parent attempts + 1 per half
+  })
+
+  it("keeps a genuinely unrecoverable section as a hole", async () => {
+    // One chunk (whichever the pool dispatches first) and both of its halves fail — a persistent
+    // outage localised to that stretch. The section is reported as failed, not silently absent; the
+    // other chunks still yield their clips. Failing anything inside the first captured span is how
+    // the handler stays deterministic regardless of which chunk the pool happens to call first.
+    let holeFirst = -1
+    let holeLast = -1
+    const never: Handler = (prompt) => {
+      const r = range(prompt)
+      if (!r) return { ranking: [] }
+      const [lo, hi] = r
+      if (holeFirst === -1) {
+        holeFirst = lo
+        holeLast = hi
+      }
+      if (lo >= holeFirst && hi <= holeLast) throw new Error("persistent outage")
+      return twoPerChunk(prompt)
+    }
+    const result = await selectClips(mockClient(never), words, sentences, [], 10, [], null, noSleep)
+    const chunks = result.trace!.chunks
+    expect(chunks.some((c) => c.failed && !c.bisected)).toBe(true)
+    expect(result.clips.length).toBeGreaterThan(0)
+  })
+
+  it("does not split a rate-limited chunk — throttling is not a section the model could not read", async () => {
+    // One chunk 429s while the rest answer. `withRateLimitRetry` has already spent the 429 retry
+    // budget by the time the error surfaces, so the chunk loop must record a single failure and stop
+    // rather than piling a fresh call and two halves onto a key that is already being throttled.
+    let rlFirst = -1
+    let rlLast = -1
+    const throttled: Handler = (prompt) => {
+      const r = range(prompt)
+      if (!r) return { ranking: [] }
+      const [lo, hi] = r
+      if (rlFirst === -1) {
+        rlFirst = lo
+        rlLast = hi
+      }
+      if (lo >= rlFirst && hi <= rlLast) {
+        throw Object.assign(new Error("429 rate limit reached"), { statusCode: 429 })
+      }
+      return twoPerChunk(prompt)
+    }
+    const result = await selectClips(
+      mockClient(throttled),
+      words,
+      sentences,
+      [],
+      10,
+      [],
+      null,
+      noSleep,
+    )
+    const chunks = result.trace!.chunks
+    const hole = chunks.find((c) => c.failed && !c.bisected)
+    expect(hole).toBeDefined()
+    expect(hole!.error).toMatch(/429|rate limit/)
+    // The whole point: no split was attempted for the throttled chunk.
+    expect(chunks.some((c) => c.splitOf !== undefined)).toBe(false)
+    expect(result.clips.length).toBeGreaterThan(0)
+  })
+})
+
+describe("chunk failure recorder", () => {
+  it("round-trips the metadata it stamps on an error", () => {
+    const err = Object.assign(new Error("upstream said no"), {
+      name: "AI_APICallError",
+      data: { error: { code: "json_validate_failed" } },
+      usage: { inputTokens: 1200, outputTokens: 4 },
+    })
+    recordGenerationFailure(err, 4096)
+    const failure = readChunkFailure(err)
+    expect(failure).not.toBeNull()
+    expect(failure!.reason).toBe("AI_APICallError (json_validate_failed)")
+    expect(failure!.promptChars).toBe(4096)
+    expect(failure!.attempts).toBe(3)
+    expect(failure!.inputTokens).toBe(1200)
+    expect(failure!.outputTokens).toBe(4)
+  })
+
+  it("stamps non-enumerably, so serialising or inspecting the error is unchanged", () => {
+    const err = new Error("x")
+    recordGenerationFailure(err, 1)
+    expect(Object.keys(err)).not.toContain("chunkFailure")
+  })
+
+  it("reports null tokens when the SDK exposed no usage, rather than guessing", () => {
+    const err = new Error("boom")
+    recordGenerationFailure(err, 10)
+    expect(readChunkFailure(err)!.inputTokens).toBeNull()
+    expect(readChunkFailure(err)!.outputTokens).toBeNull()
+  })
+
+  it("returns null for an error that was never stamped", () => {
+    expect(readChunkFailure(new Error("plain"))).toBeNull()
+    expect(readChunkFailure("not an error")).toBeNull()
   })
 })
 
