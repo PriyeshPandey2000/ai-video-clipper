@@ -211,14 +211,14 @@ export interface TraceChunk {
   /** Candidates the model returned for this chunk, before interleaving. */
   candidateCount: number
   /**
-   * Candidates the model returned that we discarded to hold the chunk to
-   * `MAX_CANDIDATES_PER_CHUNK`. Zero on every run that stayed under the cap.
+   * Candidates the model returned that we discarded to hold the chunk to its own cap
+   * (`maxCandidatesFor`). Zero on every run that stayed under the cap.
    *
-   * This is a recall ceiling, not a safety valve: the model orders best-first, so what is dropped
-   * is its *worst* candidates, but on a dense chunk it is still N moments that can never be judged.
-   * It used to be worse than silent — the cap was enforced by the response schema, so a chunk
-   * returning 21 candidates failed validation, retried at temperature 0 (same answer), and lost
-   * every candidate including the good ones. Hence a schema-level cap is not the place to enforce a
+   * This is a runaway guard, not a recall ceiling: the cap scales with the chunk so it does not fire
+   * on dense but legitimate content, and the model orders best-first, so what is dropped is its
+   * *worst* candidates. It used to be a flat 20 enforced by the response schema — a chunk returning
+   * 21 candidates failed validation, retried at temperature 0 (same answer), and lost every
+   * candidate including the good ones. Hence a schema-level cap is not the place to enforce a
    * budget. Reported so a run that hit the ceiling is visible rather than quietly smaller.
    */
   candidatesDropped: number
@@ -442,8 +442,34 @@ const MAX_JUDGE_FAILURE_RATIO = 0.5
  */
 const PRE_JUDGE_DUPLICATE_OVERLAP = 0.9
 
-/** Ceiling on candidates requested per chunk, independent of how many survive the gate. */
-const MAX_CANDIDATES_PER_CHUNK = 20
+/**
+ * Runaway guard on candidates per chunk — NOT a recall limiter.
+ *
+ * The prompt asks the model to "list every plausible clip" and the system prompt says not to
+ * self-censor, so whatever it proposes is a moment we asked for. The old fixed ceiling of 20 then
+ * silently sliced that tail off — throwing away the very recall the prompt was built to collect.
+ * A dense 20-minute chunk routinely proposes ~30, so the cap fired on real content, not on runaway
+ * output, and gate 5 ("candidates dropped over the per-chunk cap") started failing on long videos.
+ *
+ * So the ceiling scales with the chunk's own length — a longer section can legitimately hold more
+ * moments — with a floor so a short section is not starved and a ceiling so a model listing
+ * hundreds of near-duplicates cannot blow up the judge budget. A full 20-minute chunk
+ * (`CHUNK_SIZE_MS` the chunking target) allows 40; the ceiling only bites above ~25 minutes.
+ */
+const CANDIDATE_CAP_FLOOR = 20
+// Exported so tests can assert against the real ceiling instead of duplicating/hardcoding it.
+export const CANDIDATE_CAP_CEIL = 50
+const CANDIDATE_CAP_PER_MINUTE = 2
+
+/** Candidates one chunk may keep. See the cap policy above; floors/ceilings keep it well-defined. */
+function maxCandidatesFor(chunk: Sentence[]): number {
+  const first = chunk[0]
+  const last = chunk[chunk.length - 1]
+  if (!first || !last) return CANDIDATE_CAP_FLOOR
+  const minutes = (last.endMs - first.startMs) / 60_000
+  const scaled = Math.ceil(minutes * CANDIDATE_CAP_PER_MINUTE)
+  return Math.min(CANDIDATE_CAP_CEIL, Math.max(CANDIDATE_CAP_FLOOR, scaled))
+}
 /** Default clip count per video. Overridable per call, so the effective value is hashed per run. */
 const DEFAULT_MAX_CLIPS = 10
 
@@ -756,7 +782,9 @@ export function computePipelineFingerprint(
         `minClipMs:${MIN_CLIP_MS}`,
         `maxClipMs:${MAX_CLIP_MS}`,
         `dedupeOverlap:${DEDUPE_OVERLAP_RATIO}`,
-        `maxCandidatesPerChunk:${MAX_CANDIDATES_PER_CHUNK}`,
+        `candidateCapFloor:${CANDIDATE_CAP_FLOOR}`,
+        `candidateCapCeil:${CANDIDATE_CAP_CEIL}`,
+        `candidateCapPerMinute:${CANDIDATE_CAP_PER_MINUTE}`,
         `maxClips:${maxClips}`,
         // Temperature (#97/#90). Left out, two runs differing only in temperature would share a
         // hash — and the hash is the thing that makes a stored clip's behaviour attributable.
@@ -782,9 +810,9 @@ async function selectFromChunk(
 ): Promise<{ candidates: Candidate[]; dropped: number }> {
   // No `.max()` on the array. The cap is a budget we impose on ourselves after the fact, and
   // enforcing it here made a dense chunk fail validation — then fail its retries at temperature 0
-  // with the same oversized answer — and lose every candidate it had, good ones included. The
-  // prompt already asks for at most MAX_CANDIDATES_PER_CHUNK; this is the backstop for when the
-  // model ignores it, and it costs one `slice`.
+  // with the same oversized answer — and lose every candidate it had, good ones included. The prompt
+  // asks for every plausible clip, so this is a runaway guard sized to the chunk, not a recall
+  // limiter (see the cap policy); it costs one `slice`.
   const schema = zod.object({ clips: zod.array(CandidateSchema) })
   const firstIndex = chunk[0]!.index
   const lastIndex = chunk[chunk.length - 1]!.index
@@ -808,14 +836,14 @@ async function selectFromChunk(
   )
   // Reversed ranges (`start: 900, end: 100`) pass the filter above, and `refineClipBoundaries` swaps
   // them rather than discarding them — a recoverable slip, not a broken one. So they are kept, but
-  // they must not be allowed to spend the budget: twenty reversed candidates would otherwise take all
-  // 20 slots and push out every well-formed one, which is the exact failure the cap was meant to
-  // prevent. Well-formed candidates are laid down first, so a reversed range can only use a slot no
-  // real candidate wanted, and the model's own best-first order still decides the winners.
+  // they must not be allowed to spend the budget: reversed candidates filling every slot would push
+  // out every well-formed one, which is the exact failure the cap was meant to prevent. Well-formed
+  // candidates are laid down first, so a reversed range can only use a slot no real candidate
+  // wanted, and the model's own best-first order still decides the winners.
   const wellFormed = inRange.filter((c) => c.startSentence <= c.endSentence)
   const reversed = inRange.filter((c) => c.startSentence > c.endSentence)
   const ordered = [...wellFormed, ...reversed]
-  const candidates = ordered.slice(0, MAX_CANDIDATES_PER_CHUNK)
+  const candidates = ordered.slice(0, maxCandidatesFor(chunk))
   return { candidates, dropped: ordered.length - candidates.length }
 }
 

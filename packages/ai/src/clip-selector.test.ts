@@ -9,6 +9,7 @@ import {
   computePipelineFingerprint,
   PIPELINE_FINGERPRINT,
   PIPELINE_VERSION,
+  CANDIDATE_CAP_CEIL,
 } from "./clip-selector"
 import type { TraceEntry } from "./clip-selector"
 import { CLIP_PROFILES } from "./profiles"
@@ -144,12 +145,17 @@ describe("per-chunk candidate budget", () => {
   // candidates failed validation rather than returning 20. The client's retries re-ask at
   // temperature 0 and got the same oversized answer, so the whole chunk was lost — good candidates
   // included. The budget is now enforced after parsing, and these two tests pin that.
+  //
+  // The cap scales with chunk duration (see `maxCandidatesFor` in clip-selector.ts), so a fixed
+  // count can't reliably exceed it for every chunk — except CANDIDATE_CAP_CEIL, which no chunk's
+  // cap ever goes above. Returning more than that guarantees truncation regardless of chunk length.
+  const SURPLUS = CANDIDATE_CAP_CEIL + 10
   const many: Handler = (prompt) => {
     const r = range(prompt)
     if (!r) return { ranking: [] }
     const [lo, hi] = r
     const clips = []
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < SURPLUS; i++) {
       const start = Math.min(lo + i * 3, hi)
       clips.push({
         startSentence: start,
@@ -170,17 +176,18 @@ describe("per-chunk candidate budget", () => {
     expect(trace.chunks.some((c) => !c.failed && c.candidateCount > 0)).toBe(true)
   })
 
-  it("keeps the first 20 candidates and records the remainder as dropped", async () => {
+  it("keeps candidates up to the chunk's own cap and records the remainder as dropped", async () => {
     const { trace } = await selectClips(mockClient(many), words, sentences)
     for (const chunk of trace.chunks) {
-      expect(chunk.candidateCount).toBeLessThanOrEqual(20)
+      expect(chunk.candidateCount).toBeLessThanOrEqual(CANDIDATE_CAP_CEIL)
       expect(chunk.candidatesDropped).toBeGreaterThanOrEqual(0)
     }
-    // The 24-per-chunk handler overflows, so at least one chunk must report the truncation —
-    // otherwise the field would always read 0 and look like it worked while capping nothing.
+    // The SURPLUS-per-chunk handler overflows every chunk's cap, so at least one chunk must report
+    // the truncation — otherwise the field would always read 0 and look like it worked while
+    // capping nothing.
     expect(trace.chunks.some((c) => c.candidatesDropped > 0)).toBe(true)
     const chunk = trace.chunks.find((c) => c.candidatesDropped > 0)!
-    expect(chunk.candidateCount + chunk.candidatesDropped).toBe(24)
+    expect(chunk.candidateCount + chunk.candidatesDropped).toBe(SURPLUS)
   })
 
   it("reports zero drops for a chunk under the cap", async () => {
@@ -190,18 +197,22 @@ describe("per-chunk candidate budget", () => {
 
   it("keeps a reversed range out of the budget ahead of well-formed candidates", async () => {
     // `refineClipBoundaries` swaps a reversed range rather than discarding it, so these are
-    // recoverable and worth keeping — but they must not outrank real candidates for the 20 slots. With
-    // only `start >= first && end <= last` as the filter, twenty reversed candidates take every slot
-    // and the one well-formed candidate behind them is reported as dropped.
+    // recoverable and worth keeping — but they must not outrank real candidates for the budget's
+    // slots. With only `start >= first && end <= last` as the filter, enough reversed candidates
+    // take every slot and the one well-formed candidate behind them is reported as dropped.
+    //
+    // SURPLUS reversed candidates guarantees overflow regardless of this chunk's own cap (see the
+    // comment on `many` above) — the exact number dropped isn't the point; that the well-formed
+    // one always survives despite being last in the model's own order, is.
     const reversedFirst: Handler = (prompt) => {
       const r = range(prompt)
       if (!r) return { ranking: [] }
       const [lo, hi] = r
       // Strictly reversed throughout: the start must stay above the end for every i, or later
       // entries become well-formed by accident and the fixture stops testing what it claims.
-      const clips = Array.from({ length: 20 }, (_, i) => ({
+      const clips = Array.from({ length: SURPLUS }, (_, i) => ({
         startSentence: hi - i,
-        endSentence: lo + 20 - i - 1,
+        endSentence: lo + SURPLUS - i - 1,
         title: `reversed-${i}`,
         reason: "r",
         strong: true,
@@ -221,13 +232,12 @@ describe("per-chunk candidate budget", () => {
     const { trace } = await selectClips(mockClient(reversedFirst), words, sentences)
     const seen = trace.candidates.filter((c) => c.title === "well-formed")
     expect(seen.length).toBeGreaterThan(0)
-    // 21 candidates against a 20 budget, so exactly one is dropped — and it has to be a reversed
-    // range. Before this ordering the well-formed candidate was the one that got dropped, which is
-    // the whole defect.
+    // Before this ordering the well-formed candidate was the one that got dropped when the budget
+    // overflowed, which is the whole defect.
+    expect(trace.chunks.some((c) => c.candidatesDropped > 0)).toBe(true)
     for (const chunk of trace.chunks) {
       if (chunk.failed) continue
-      expect(chunk.candidateCount).toBeLessThanOrEqual(20)
-      expect(chunk.candidatesDropped).toBeLessThanOrEqual(1)
+      expect(chunk.candidateCount).toBeLessThanOrEqual(CANDIDATE_CAP_CEIL)
     }
   })
 

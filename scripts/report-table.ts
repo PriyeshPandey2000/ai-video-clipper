@@ -228,7 +228,7 @@ function printTable(summaries: Summary[]): void {
     console.log(cols.map((c) => c.value(s).padEnd(c.width)).join("  "))
     if (s.candidatesDropped > 0) {
       console.log(
-        `  ⚠ ${s.candidatesDropped} candidate(s) dropped over the per-chunk cap — a recall ceiling, not a safety valve`,
+        `  ⚠ ${s.candidatesDropped} candidate(s) dropped over the per-chunk cap — a runaway guard firing, not routine recall loss`,
       )
     }
   }
@@ -254,7 +254,7 @@ function printDetail(summaries: Summary[]): void {
     )
     if (s.candidatesDropped > 0) {
       console.log(
-        `  ⚠ ${s.candidatesDropped} candidate(s) dropped over the per-chunk cap — a recall ceiling, not a safety valve`,
+        `  ⚠ ${s.candidatesDropped} candidate(s) dropped over the per-chunk cap — a runaway guard firing, not routine recall loss`,
       )
     }
     console.log(
