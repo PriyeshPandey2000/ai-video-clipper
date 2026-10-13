@@ -138,6 +138,7 @@ interface RunVerdict {
   chunkFailures: string[]
   keptCount: number
   judgeFailedCount: number
+  judgeCallCount: number
   candidatesDropped: number
   transcript: TranscriptSpotCheck
   gates: { n: number; ok: boolean; detail: string }[]
@@ -350,6 +351,7 @@ async function runOne(projectId: string): Promise<RunVerdict> {
     chunkFailures,
     keptCount,
     judgeFailedCount,
+    judgeCallCount: trace.judgeCallCount,
     candidatesDropped,
     transcript,
     gates,
@@ -377,6 +379,7 @@ function printVerdict(v: RunVerdict): void {
   console.log(
     `  chunks       : ${v.chunks.length} total · ${v.failedChunkCount} failed · ${v.bisectedChunkCount} split · ${v.recoveredChunkCount} recovered`,
   )
+  console.log(`  judge calls  : ${v.judgeCallCount}`)
   for (const f of v.chunkFailures) console.log(`    entry: ${f}`)
   console.log("  gates:")
   for (const g of v.gates) {

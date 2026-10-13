@@ -51,6 +51,7 @@ interface ReportFile {
   }
   trace: {
     temperature?: number
+    judgeCallCount?: number
     chunks: { index: number; failed: boolean; candidateCount: number; candidatesDropped?: number }[]
     candidates: {
       outcome: string
@@ -110,6 +111,7 @@ interface Summary {
   judgeMean: number | null
   judgeMin: number | null
   judgeMax: number | null
+  judgeCallCount: number | null
   meanDurationS: number | null
   minDurationS: number | null
   maxDurationS: number | null
@@ -161,6 +163,7 @@ function summarise(report: ReportFile, path: string): Summary {
     judgeMean,
     judgeMin: scores.length ? Math.min(...scores) : null,
     judgeMax: scores.length ? Math.max(...scores) : null,
+    judgeCallCount: report.trace.judgeCallCount ?? null,
     meanDurationS: mean(durationsS),
     minDurationS: durationsS.length ? Math.min(...durationsS) : null,
     maxDurationS: durationsS.length ? Math.max(...durationsS) : null,
@@ -260,6 +263,12 @@ function printDetail(summaries: Summary[]): void {
     console.log(
       `  judge  mean ${score(s.judgeMean)} (n=${s.judged}, min ${score(s.judgeMin)}, max ${score(s.judgeMax)})`,
     )
+    if (s.judgeCallCount !== null) {
+      console.log(
+        `  judge calls ${s.judgeCallCount} for ${s.judged} clip(s) judged` +
+          (s.judged > 0 ? ` (${(s.judgeCallCount / s.judged).toFixed(1)}/clip)` : ""),
+      )
+    }
     console.log(
       `  clips  ${s.keptCount} · mean ${secs(s.meanDurationS)} (${secs(s.minDurationS)}–${secs(s.maxDurationS)})`,
     )

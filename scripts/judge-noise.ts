@@ -20,8 +20,10 @@ import { buildSentences } from "@video-editor/transcript"
 import {
   createAiClient,
   judgeClip,
+  judgeClipVoted,
   failedHardQuestions,
   renderVideoContext,
+  JUDGE_DEAD_SCORE,
   type JudgeQuestion,
 } from "@video-editor/ai"
 import type { Word, Sentence, VideoAnalysis } from "@video-editor/types"
@@ -95,9 +97,18 @@ async function mapPool<T, R>(
 }
 
 async function main(): Promise<void> {
-  const [projectId, reportJson, repeatsArg, limitArg] = process.argv.slice(2)
+  const argv = process.argv.slice(2)
+  const voted = argv.includes("--voted")
+  const positional = argv.filter((a) => !a.startsWith("--"))
+  const [projectId, reportJson, repeatsArg, limitArg] = positional
   if (!projectId || !reportJson) {
-    console.error("Usage: judge-noise.ts <projectId> <reportJson> [repeats=3] [limit=all]")
+    console.error(
+      "Usage: judge-noise.ts <projectId> <reportJson> [repeats=3] [limit=all] [--voted]",
+    )
+    console.error("  --voted: judge through the voted production path (judgeClipVoted) instead of")
+    console.error(
+      "           a single call, so the flip rate measured is the shipped decision rule.",
+    )
     process.exit(1)
   }
   const repeats = Number(repeatsArg ?? 3)
@@ -152,7 +163,10 @@ async function main(): Promise<void> {
     const runs: { score: number; fails: string[] }[] = []
     for (let r = 0; r < repeats; r++) {
       try {
-        const j = await judgeClip({ client, questions, context, words, sentences, boundary })
+        const j = voted
+          ? (await judgeClipVoted({ client, questions, context, words, sentences, boundary }))
+              .judgement
+          : await judgeClip({ client, questions, context, words, sentences, boundary })
         runs.push({ score: j.score, fails: failedHardQuestions(j.answers, questions) })
       } catch (err) {
         runs.push({ score: -1, fails: [`CALL_FAILED: ${(err as Error).message}`] })
@@ -187,6 +201,24 @@ async function main(): Promise<void> {
   console.log(
     `\n[judge-noise] mean score range ${(sumRange / counted).toFixed(3)} across ${counted} clips; ` +
       `${flips} clip(s) flipped kept↔rejected on the SAME input (${((flips / counted) * 100).toFixed(0)}%)`,
+  )
+
+  // #125 skip-rule check: a clip whose FIRST sample is "clearly dead" is never resampled, so if a
+  // later sample would have passed, that is a false reject the skip rule caused. The number to
+  // keep the "both hard no" clause only if it is a few percent.
+  let deadFirst = 0
+  let revived = 0
+  for (const { scores, fails } of results) {
+    if (scores.length === 0) continue
+    const hardCount = (f: string): number => (f === "pass" ? 0 : f.split("+").length)
+    const firstDead = scores[0]! < JUDGE_DEAD_SCORE || hardCount(fails[0]!) >= 2
+    if (!firstDead) continue
+    deadFirst++
+    if (fails.slice(1).some((f) => f === "pass")) revived++
+  }
+  console.log(
+    `[judge-noise] skip-rule: ${deadFirst} first-sample-dead clip(s); ${revived} revived on a later ` +
+      `sample (${deadFirst ? ((revived / deadFirst) * 100).toFixed(0) : "0"}%)`,
   )
 }
 

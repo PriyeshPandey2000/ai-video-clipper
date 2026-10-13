@@ -13,7 +13,7 @@ import {
 } from "./clip-selector"
 import type { TraceEntry } from "./clip-selector"
 import { CLIP_PROFILES } from "./profiles"
-import { UNIVERSAL_JUDGE_QUESTIONS } from "./clip-judge"
+import { UNIVERSAL_JUDGE_QUESTIONS, JUDGE_SAMPLES } from "./clip-judge"
 import { vi } from "vitest"
 import type { JudgeGrade } from "./clip-judge"
 
@@ -743,6 +743,7 @@ describe("selection trace (#97)", () => {
       chunks: [],
       candidates: [],
       judgeQuestions: expect.any(Array),
+      judgeCallCount: 0,
     })
   })
 
@@ -1563,8 +1564,37 @@ describe("judge-chosen opening (#100)", () => {
     expect(entry.opening!.originalStartMs).toBeLessThan(entry.opening!.retryStartMs!)
     expect(clips[0]!.startMs).toBe(entry.opening!.retryStartMs)
     expect(clips[0]!.score).toBe(1)
-    // Two judge calls: the original, and one for the proposal. Never a third.
-    expect(seen).toEqual([0, 6])
+    // Each judgement is voted over JUDGE_SAMPLES calls: the original cut, then the proposed one.
+    // Never a second proposal round.
+    expect(seen).toEqual([...Array(JUDGE_SAMPLES).fill(0), ...Array(JUDGE_SAMPLES).fill(6)])
+  })
+
+  it("stores the moved-opening samples, not the original, when a proposal is adopted (#125)", async () => {
+    // Original cut reads "partly" (0.5); the moved opening reads "yes" (1.0) on every sample.
+    const proposeThenApprove: JudgeHandler = (prompt, system) =>
+      clipStart(prompt) === 0
+        ? judgement(system, "partly", { bestOpeningSentence: 6 })
+        : judgement(system, "yes", { bestOpeningSentence: null })
+    const short = transcript(120)
+    const { trace, clips } = await selectClips(
+      mockClient(oneClip, [], undefined, [], proposeThenApprove),
+      short,
+      buildSentences(short),
+      [],
+      10,
+      [],
+      null,
+      noSleep,
+    )
+    const entry = trace!.candidates.find((c) => c.title === "only")!
+    expect(entry.opening!.adopted).toBe(true)
+    // The samples stored are the MOVED cut's, all "yes" — i.e. the judgement on the boundary that is
+    // finally exported, not the original the proposal replaced.
+    expect(entry.judgeSamples).toHaveLength(JUDGE_SAMPLES)
+    expect(entry.judgeSamples.every((s) => s.score === 1)).toBe(true)
+    expect(entry.judgeSamples.every((s) => s.answers.payoff === "yes")).toBe(true)
+    expect(clips[0]!.score).toBe(1)
+    expect(clips[0]!.startMs).toBe(entry.opening!.retryStartMs)
   })
 
   it("reverts to the original when the re-judge does not score higher", async () => {
@@ -1611,7 +1641,7 @@ describe("judge-chosen opening (#100)", () => {
     expect(clips[0]!.startMs).toBe(openingOf(trace).originalStartMs)
   })
 
-  it("spends no second call when the judge proposes no opening", async () => {
+  it("spends no re-judge call when the judge proposes no opening", async () => {
     let judgeCalls = 0
     const noProposal: JudgeHandler = (prompt, system) => {
       judgeCalls++
@@ -1628,7 +1658,8 @@ describe("judge-chosen opening (#100)", () => {
       null,
       noSleep,
     )
-    expect(judgeCalls).toBe(1)
+    // The one judgement is voted over JUDGE_SAMPLES calls; a null proposal spends no re-judge.
+    expect(judgeCalls).toBe(JUDGE_SAMPLES)
     expect(openingOf(trace).suggestedSentence).toBeNull()
     expect(openingOf(trace).note).toBe("no better opening suggested")
     expect(clips[0]!.startMs).toBe(openingOf(trace).originalStartMs)

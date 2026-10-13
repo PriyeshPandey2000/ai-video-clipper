@@ -36,10 +36,16 @@ export { CLIP_PROFILES, getClipProfile, isClipProfileId } from "./profiles"
 export type { ClipProfile } from "./profiles"
 export {
   judgeClip,
+  judgeClipVoted,
+  aggregateJudgements,
+  isClearlyDead,
+  disagreementCounts,
+  JUDGE_SAMPLES,
+  JUDGE_DEAD_SCORE,
   judgeQuestionsFor,
   scoreAnswers,
   failedHardQuestions,
   toJudgeRecord,
   UNIVERSAL_JUDGE_QUESTIONS,
 } from "./clip-judge"
-export type { ClipJudgement, JudgeGrade, JudgeQuestion } from "./clip-judge"
+export type { ClipJudgement, VotedJudgement, JudgeGrade, JudgeQuestion } from "./clip-judge"

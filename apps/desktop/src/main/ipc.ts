@@ -457,7 +457,9 @@ export function registerIpcHandlers(): void {
       // #99 — the verdict on exactly this range, with its questions copied in so the stored clip
       // stays readable after the question set changes. NULL, not "{}", when there is none.
       judgeJson: c.judge
-        ? JSON.stringify(toJudgeRecord(c.judge, selection.trace?.judgeQuestions ?? []))
+        ? JSON.stringify(
+            toJudgeRecord(c.judge, selection.trace?.judgeQuestions ?? [], c.judgeSamples),
+          )
         : null,
       status: "suggested" as const,
       platform: c.platform,

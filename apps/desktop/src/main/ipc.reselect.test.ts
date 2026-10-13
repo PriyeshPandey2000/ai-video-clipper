@@ -156,6 +156,7 @@ function traceEntry(overrides: Partial<TraceEntry> = {}): TraceEntry {
     platform: "shorts",
     outcome: "kept",
     judge: null,
+    judgeSamples: [],
     judgeReasons: [],
     startMs: 1000,
     endMs: 31000,
@@ -192,6 +193,7 @@ function selection(
       traceEntry({ title: c.title, startMs: c.startMs, endMs: c.endMs, finalRank: i }),
     ),
     judgeQuestions: [],
+    judgeCallCount: clips.length,
   }
   return {
     clips: clips.map((c, i): ClipSuggestion => ({
@@ -474,6 +476,7 @@ describeSqlite("clip:reselect (#97)", () => {
           traceEntry({ title: "Best", startMs: 1000, endMs: 31000, finalRank: 0 }),
         ],
         judgeQuestions: [],
+        judgeCallCount: 2,
       }),
     )
 

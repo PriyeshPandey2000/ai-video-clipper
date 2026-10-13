@@ -52,6 +52,7 @@ function trace(overrides: Partial<ClipSelectionTrace> = {}): ClipSelectionTrace 
       { id: "hook", text: "Would it stop the scroll?", weight: 3, hard: false },
       { id: "payoff", text: "Does it pay off?", weight: 2, hard: true },
     ],
+    judgeCallCount: 2,
     ...overrides,
   }
 }
@@ -66,6 +67,7 @@ function entry(overrides: Partial<TraceEntry>): TraceEntry {
     platform: "shorts",
     outcome: "kept",
     judge: null,
+    judgeSamples: [],
     judgeReasons: [],
     startMs: 0,
     endMs: 30000,

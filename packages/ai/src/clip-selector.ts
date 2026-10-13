@@ -26,12 +26,15 @@ import type { TopicSegment } from "@video-editor/transcript"
 import { CLIP_PROFILES, type ClipProfile } from "./profiles"
 import { mapPool, withRateLimitRetry, isRateLimitError, realSleep, type Sleep } from "./concurrency"
 import {
-  judgeClip,
+  judgeClipVoted,
   judgeQuestionsFor,
   failedHardQuestions,
+  disagreementCounts,
   JUDGE_SYSTEM_PROMPT,
   JUDGE_USER_TEMPLATE,
   JUDGE_BEFORE_SENTENCES,
+  JUDGE_SAMPLES,
+  JUDGE_DEAD_SCORE,
   UNIVERSAL_JUDGE_QUESTIONS,
   PROFILE_QUESTION_WEIGHT,
   GRADE_VALUE,
@@ -58,6 +61,11 @@ export interface ClipSuggestion {
   warnings: string[]
   /** The judge's verdict on this clip's exact exported range (#99). `score` is derived from it. */
   judge?: ClipJudgement
+  /**
+   * The raw samples behind `judge` when it was voted (#125). Length 1 when the first sample was
+   * clearly dead or a resample failed. Absent when the clip was never judged.
+   */
+  judgeSamples?: ClipJudgement[]
 }
 
 export interface ClipRejection {
@@ -142,6 +150,12 @@ export interface TraceEntry extends TraceCandidate {
    * judge (mechanical rejection, pre-judge duplicate) or the judge call failed.
    */
   judge: ClipJudgement | null
+  /**
+   * The raw samples behind `judge` when it was voted (#125), empty when the candidate never reached
+   * the judge. Kept on the entry as well as in the stored record so the report can show a
+   * disagreement the single-sample `judge` would hide.
+   */
+  judgeSamples: ClipJudgement[]
   /** Why the judge stage rejected it: a failed hard question, or the call error. Else empty. */
   judgeReasons: string[]
   /** Final refined boundaries, or null when refinement produced nothing. */
@@ -267,6 +281,12 @@ export interface ClipSelectionTrace {
   candidates: TraceEntry[]
   /** The judge's question table for this run, so the report is self-describing. */
   judgeQuestions: JudgeQuestion[]
+  /**
+   * Total judge calls this run, opening-retry samples included (#125). The single-call equivalent
+   * is the count of judged clips, so the ratio here is the vote's real cost multiplier — the number
+   * to watch before shipping the vote, and the reason it must be measured rather than assumed.
+   */
+  judgeCallCount: number
 }
 
 /**
@@ -673,8 +693,13 @@ export function buildChunkPrompts(args: {
  * on most ordinary sentences tells the model nothing. The version moves because what decides a clip
  * start changed, from a regex to a model — which no constant in the fingerprint can see, though the
  * hash does move on its own via `judgeSystem`.
+ *
+ * v5 — every judged clip is sampled up to `JUDGE_SAMPLES` times and voted (#125): per-question
+ * median grade, mean score. A single sampled hard "no" no longer rejects a clip. The version moves
+ * because the *decision rule* changed from one call to a majority, which no rubric constant shows;
+ * the count and thresholds are also hashed below.
  */
-export const PIPELINE_VERSION = "v4-judge-chosen-opening"
+export const PIPELINE_VERSION = "v5-voted-judge"
 
 /**
  * sha256 over every prompt template and heuristic threshold the clip-selection path reads, so a
@@ -748,6 +773,11 @@ export function computePipelineFingerprint(
           (q) => `judgeQ:${q.id}|w=${q.weight}|hard=${q.hard}|${q.text}`,
         ),
         `judgeProfileQuestionWeight:${PROFILE_QUESTION_WEIGHT}`,
+        // #125 — how many samples a clip gets, when the first is treated as clearly dead, and how
+        // the samples combine. All three change which clips are kept, so all three name the config.
+        `judgeSamples:${JUDGE_SAMPLES}`,
+        `judgeDeadScore:${JUDGE_DEAD_SCORE}`,
+        `judgeAggregation:median-grade-mean-score`,
         // Every profile's questions, not just the effective one — same reasoning as the rubrics.
         ...CLIP_PROFILE_IDS.slice()
           .sort()
@@ -1101,6 +1131,7 @@ export async function selectClips(
     chunks: [],
     candidates: [],
     judgeQuestions,
+    judgeCallCount: 0,
   }
   if (sentences.length === 0) {
     return { ...provenance, analysis, clips: [], rejected: [], trace }
@@ -1176,6 +1207,7 @@ export async function selectClips(
         platform: candidate.platform,
         outcome: "kept",
         judge: null,
+        judgeSamples: [],
         judgeReasons: [],
         startMs: null,
         endMs: null,
@@ -1258,11 +1290,15 @@ export async function selectClips(
     }
   })
 
-  // ── Step 3 — judge each final cut, one call per clip ───────────────────────
-  type JudgeResult = { ok: true; judgement: ClipJudgement } | { ok: false; error: string }
+  // ── Step 3 — judge each final cut, one voted call per clip ─────────────────
+  type JudgeResult =
+    { ok: true; judgement: ClipJudgement; samples: ClipJudgement[] } | { ok: false; error: string }
+  // Total judge calls, counted where they happen so the report can state the vote's real cost
+  // (#125). A first-sample failure throws before samples exist, so it is not counted here.
+  let judgeCallCount = 0
   const judged = await mapPool(survivors, JUDGE_CONCURRENCY, async (s): Promise<JudgeResult> => {
     try {
-      const judgement = await judgeClip({
+      const { judgement, samples } = await judgeClipVoted({
         client,
         questions: judgeQuestions,
         context: contextBlock,
@@ -1271,7 +1307,8 @@ export async function selectClips(
         boundary: s.boundary,
         sleep,
       })
-      return { ok: true, judgement }
+      judgeCallCount += samples.length
+      return { ok: true, judgement, samples }
     } catch (err) {
       console.error(`[clip-judge] judging "${s.candidate.title}" failed:`, err)
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -1299,7 +1336,9 @@ export async function selectClips(
       return
     }
     s.entry.judge = result.judgement
+    s.entry.judgeSamples = result.samples
     s.suggestion.judge = result.judgement
+    s.suggestion.judgeSamples = result.samples
     s.suggestion.score = result.judgement.score
     const failed = failedHardQuestions(result.judgement.answers, judgeQuestions)
     if (failed.length > 0) {
@@ -1388,8 +1427,12 @@ export async function selectClips(
     const retryStartMs = boundary.startMs
     const retryStartTimecode = toTimecode(boundary.startMs)
     let judgement: ClipJudgement
+    let retrySamples: ClipJudgement[]
     try {
-      judgement = await judgeClip({
+      // The moved opening is judged by the same voted path (#125): it is the same "is this cut
+      // postable" question, so it gets the same noise control as the first judgement. Its samples
+      // become the entry's samples when the proposal is adopted.
+      const voted = await judgeClipVoted({
         client,
         questions: judgeQuestions,
         context: contextBlock,
@@ -1398,6 +1441,9 @@ export async function selectClips(
         boundary,
         sleep,
       })
+      judgement = voted.judgement
+      retrySamples = voted.samples
+      judgeCallCount += voted.samples.length
     } catch (err) {
       keep(`re-judge failed: ${err instanceof Error ? err.message : String(err)}`)
       return
@@ -1425,6 +1471,7 @@ export async function selectClips(
     s.suggestion.endMs = boundary.endMs
     s.suggestion.score = retryScore
     s.suggestion.judge = judgement
+    s.suggestion.judgeSamples = retrySamples
     s.suggestion.warnings = [...gate.warnings]
     s.warnings = s.suggestion.warnings
     s.entry.startMs = boundary.startMs
@@ -1438,6 +1485,7 @@ export async function selectClips(
     }
     s.entry.gate = { passed: true, reasons: [], warnings: gate.warnings }
     s.entry.judge = judgement
+    s.entry.judgeSamples = retrySamples
     s.entry.text = words
       .filter((w) => w.startMs >= boundary.startMs && w.endMs <= boundary.endMs)
       .map((w) => w.text)
@@ -1451,6 +1499,20 @@ export async function selectClips(
       note: `judge proposed sentence #${suggested}`,
     }
   })
+
+  trace.judgeCallCount = judgeCallCount
+  // #125 — the vote's real cost and its residual noise, in one line: how many calls it took, and
+  // which questions the samples disagreed on (the candidates for a wording fix, `payoff` first).
+  const disagreements = disagreementCounts(
+    scored.map((s) => s.entry.judgeSamples),
+    judgeQuestions,
+  ).filter((d) => d.voted > 0 && d.disagreed > 0)
+  console.log(
+    `[clip-judge] ${judgeCallCount} judge call(s) for ${survivors.length} clip verdict(s) — ` +
+      (disagreements.length
+        ? `sample disagreement: ${disagreements.map((d) => `${d.id} ${d.disagreed}/${d.voted}`).join(", ")}`
+        : "samples agreed on every question"),
+  )
 
   // ── Step 4 — rank every chunk together, dedupe, cut ────────────────────────
   // Best score first; ties broken by position in the video so the order never depends on anything

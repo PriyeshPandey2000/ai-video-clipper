@@ -4,7 +4,11 @@ import {
   failedHardQuestions,
   judgeQuestionsFor,
   renderJudgePrompt,
+  aggregateJudgements,
+  isClearlyDead,
+  disagreementCounts,
   UNIVERSAL_JUDGE_QUESTIONS,
+  type ClipJudgement,
   type JudgeGrade,
 } from "./clip-judge"
 import { parseClipJudge } from "@video-editor/types"
@@ -291,5 +295,138 @@ describe("stored judgement (#99)", () => {
     const parsed = parseClipJudge(JSON.stringify({ score: 1, answers: {}, questions: [] }))
     expect(parsed?.note).toBe("")
     expect(parsed?.bestOpeningSentence).toBeNull()
+  })
+})
+
+// ─── Voted judging (#125) — pure aggregation, no model calls ────────────────
+const sample = (
+  answers: Record<string, JudgeGrade>,
+  score: number,
+  note = "note",
+  bestOpeningSentence: number | null = null,
+): ClipJudgement => ({ answers, note, bestOpeningSentence, score })
+
+describe("aggregateJudgements", () => {
+  it("returns a single sample unchanged (not-resampled clips stay identical to today)", () => {
+    const one = sample(all("yes"), 1)
+    expect(aggregateJudgements([one])).toBe(one)
+  })
+
+  it("throws on zero samples — a vote needs at least one", () => {
+    expect(() => aggregateJudgements([])).toThrow()
+  })
+
+  it("takes the median grade per question", () => {
+    const out = aggregateJudgements([
+      sample({ ...all("no"), hook: "yes" }, 0.2),
+      sample({ ...all("no"), hook: "partly" }, 0.1),
+      sample({ ...all("no"), hook: "no" }, 0.0),
+    ])
+    expect(out.answers.hook).toBe("partly") // median of yes, partly, no
+  })
+
+  it("scores as the mean of the per-sample scores, to 2dp", () => {
+    expect(
+      aggregateJudgements([sample(all("yes"), 1), sample(all("no"), 0), sample(all("partly"), 0.5)])
+        .score,
+    ).toBe(0.5)
+    // 0.2, 0.5, 0.9 → 0.5333 → 0.53
+    expect(
+      aggregateJudgements([
+        sample(all("yes"), 0.2),
+        sample(all("yes"), 0.5),
+        sample(all("yes"), 0.9),
+      ]).score,
+    ).toBe(0.53)
+  })
+
+  it("a hard gate rejects on 2 of 3 no but not on 1 of 3", () => {
+    const oneNo = [
+      sample({ ...all("yes"), payoff: "no" }, 0.6),
+      sample(all("yes"), 1),
+      sample(all("yes"), 1),
+    ]
+    expect(failedHardQuestions(aggregateJudgements(oneNo).answers, questions)).toEqual([])
+
+    const twoNo = [
+      sample({ ...all("yes"), payoff: "no" }, 0.4),
+      sample({ ...all("yes"), payoff: "no" }, 0.4),
+      sample(all("yes"), 1),
+    ]
+    expect(failedHardQuestions(aggregateJudgements(twoNo).answers, questions)).toEqual(["payoff"])
+  })
+
+  it("treats a question missing from some samples as no", () => {
+    const out = aggregateJudgements([
+      sample({ hook: "yes" }, 0.3), // only hook present
+      sample(all("no"), 0),
+      sample(all("no"), 0),
+    ])
+    expect(out.answers.hook).toBe("no") // yes, no, no → median no
+    expect(out.answers.payoff).toBe("no") // absent every time → no
+  })
+
+  it("picks the modal best opening, ties toward the earlier sentence", () => {
+    const out = aggregateJudgements([
+      sample(all("yes"), 1, "a", 5),
+      sample(all("yes"), 1, "b", 5),
+      sample(all("yes"), 1, "c", 9),
+    ])
+    expect(out.bestOpeningSentence).toBe(5)
+  })
+
+  it("is null when no sample proposed an opening", () => {
+    const out = aggregateJudgements([
+      sample(all("yes"), 1, "a", null),
+      sample(all("yes"), 1, "b", null),
+      sample(all("yes"), 1, "c", null),
+    ])
+    expect(out.bestOpeningSentence).toBeNull()
+  })
+
+  it("takes the note from the sample closest to the mean score", () => {
+    const out = aggregateJudgements([
+      sample(all("yes"), 0.2, "low"),
+      sample(all("yes"), 0.5, "mid"),
+      sample(all("yes"), 0.9, "high"),
+    ])
+    expect(out.note).toBe("mid")
+  })
+})
+
+describe("disagreementCounts", () => {
+  it("counts, per question, how many voted clips disagreed on the grade", () => {
+    const voted1 = [
+      sample({ ...all("yes"), payoff: "no" }, 0.6),
+      sample(all("yes"), 1),
+      sample(all("yes"), 1),
+    ]
+    const voted2 = [sample(all("yes"), 1), sample(all("yes"), 1), sample(all("yes"), 1)]
+    const counts = disagreementCounts([voted1, voted2], questions)
+    const payoff = counts.find((c) => c.id === "payoff")!
+    expect(payoff).toEqual({ id: "payoff", disagreed: 1, voted: 2 })
+    const hook = counts.find((c) => c.id === "hook")!
+    expect(hook).toEqual({ id: "hook", disagreed: 0, voted: 2 })
+  })
+
+  it("ignores single-sample clips (not voted)", () => {
+    const counts = disagreementCounts([[sample(all("yes"), 1)]], questions)
+    expect(counts.every((c) => c.voted === 0 && c.disagreed === 0)).toBe(true)
+  })
+})
+
+describe("isClearlyDead", () => {
+  it("is true below the score threshold", () => {
+    expect(isClearlyDead(sample(all("no"), 0.1), questions)).toBe(true)
+  })
+
+  it("is true when both hard questions are no", () => {
+    expect(
+      isClearlyDead(sample({ ...all("yes"), standalone: "no", payoff: "no" }, 0.5), questions),
+    ).toBe(true)
+  })
+
+  it("is false for one hard no at a decent score", () => {
+    expect(isClearlyDead(sample({ ...all("yes"), payoff: "no" }, 0.6), questions)).toBe(false)
   })
 })
