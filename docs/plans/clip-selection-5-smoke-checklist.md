@@ -68,3 +68,21 @@ reference moments **before** the first run, then baseline twice for a noise floo
 - `#46` — the formal eval harness (`pnpm report-table` is its mechanical-metrics core)
 - `#90` — noise floor (the baseline-twice step)
 - `#98` — genre profiles (gate 1)
+
+## Tools
+
+- `pnpm report-table [--detail|--blind] [filter]` — mechanical metrics over every stored report.
+- `scripts/judge-noise.ts` — judge-stability harness. Re-judges ONE run's already-proposed
+  candidates N times each with no regeneration, reconstructing the exact production `judgeClip`
+  input (same words, sentences, context block, questions, and `refineClipBoundaries` boundary). It
+  prints each clip's score across repeats and the count that flip kept↔rejected on identical input —
+  the judge's own noise floor, isolated from generation and boundary variance. Run it after any gate
+  or judge-prompt change as a regression test:
+
+  ```bash
+  GROQ_API_KEY=... node --experimental-strip-types scripts/judge-noise.ts \
+    <projectId> <reportJsonFile> [repeats=3] [limit]
+  ```
+
+  Confirm parity first: the current `PIPELINE_FINGERPRINT` must equal the report's `pipelineHash`,
+  or the harness is judging with code that did not produce the report.
