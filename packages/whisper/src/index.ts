@@ -268,6 +268,9 @@ export async function transcribe(
       // progress line at all, so onProgress below was never called and the UI sat frozen at
       // whatever percentage the last stage left it at until the whole process exited.
       "-pp",
+      // whisper-cli defaults to `-l en`, which decodes any other language as English.
+      "-l",
+      "auto",
     ]
     if (vadReady) {
       args.push("--vad", "-vm", vadModelPath(config.modelsDir))
